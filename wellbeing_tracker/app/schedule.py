@@ -52,6 +52,16 @@ PERSON_DEFAULTS = {
         "expire_after": 180,    # take the reminder away after this many minutes
     },
     "checkins_from": None,      # set by the app when check-in times change
+    # Reminders to drink water when none has been logged for a while.
+    "hydration": {
+        "enabled": False,
+        "tracker_id": None,     # None = the tracker called Water
+        "every": 120,           # remind if nothing logged for this many minutes
+        "start": "09:00",
+        "end": "21:00",
+        "days": {"mode": "daily", "weekdays": [0, 1, 2, 3, 4, 5, 6], "every": 2, "start": None},
+        "amount": 250,          # for trackers measured as an amount (ml): how much one tap adds
+    },
 }
 
 SCHEDULE_DEFAULTS = {
@@ -134,6 +144,7 @@ def normalise_person_settings(data: dict) -> dict:
     s["tts_entity"] = _entity(s["tts_entity"], "tts", "Voice")
     s["person_entity"] = _entity(s["person_entity"], "person", "Person")
     s["checkins"] = normalise_checkins(s["checkins"])
+    s["hydration"] = normalise_hydration(s["hydration"])
     return s
 
 
@@ -218,6 +229,36 @@ def normalise_checkins(data: dict | None) -> dict:
         if not lo <= s[key] <= hi:
             raise ValidationError(f"{label}: {lo}–{hi} minutes")
     return {k: s[k] for k in PERSON_DEFAULTS["checkins"]}
+
+
+def normalise_hydration(data: dict | None) -> dict:
+    s = {**PERSON_DEFAULTS["hydration"], **(data or {})}
+    s["enabled"] = bool(s["enabled"])
+    if s["tracker_id"] in (None, ""):
+        s["tracker_id"] = None
+    else:
+        try:
+            s["tracker_id"] = int(s["tracker_id"])
+        except (TypeError, ValueError):
+            raise ValidationError("Choose what to count as water") from None
+    try:
+        s["every"] = int(s["every"])
+    except (TypeError, ValueError):
+        raise ValidationError("Remind after how long?") from None
+    if not 15 <= s["every"] <= 720:
+        raise ValidationError("Remind after 15 minutes to 12 hours")
+    s["start"] = _time(s["start"], "Start time")
+    s["end"] = _time(s["end"], "End time")
+    if s["end"] <= s["start"]:
+        raise ValidationError("The end time must be after the start time")
+    s["days"] = _days({**PERSON_DEFAULTS["hydration"]["days"], **(s["days"] or {})})
+    try:
+        s["amount"] = int(s["amount"])
+    except (TypeError, ValueError):
+        raise ValidationError("How much is one drink?") from None
+    if not 1 <= s["amount"] <= 5000:
+        raise ValidationError("One drink must be 1–5000")
+    return {k: s[k] for k in PERSON_DEFAULTS["hydration"]}
 
 
 def normalise_schedule(data: dict) -> dict:

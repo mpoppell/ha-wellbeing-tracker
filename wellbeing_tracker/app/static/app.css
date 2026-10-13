@@ -38,8 +38,10 @@
   color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
+/* Dark mode. The page sets data-theme from Home Assistant's own theme (or the
+   system setting when it can't see Home Assistant), and Home Assistant's theme
+   colours are applied over these as inline variables. */
+:root[data-theme="dark"] {
     --base: #11161c;
     --surface: #1a2129;
     --sunken: #232b35;
@@ -59,7 +61,6 @@
     --sev2: #e2904c;
     --sev3: #e06b62;
     color-scheme: dark;
-  }
 }
 
 * { box-sizing: border-box; }
@@ -188,9 +189,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   transform: scale(1.04);
 }
 
-@media (prefers-color-scheme: dark) {
-  .scale button[aria-pressed="true"] { color: #10151b; }
-}
+:root[data-theme="dark"] .scale button[aria-pressed="true"] { color: #10151b; }
 
 /* segmented and chips */
 
@@ -218,9 +217,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 .seg.severity button[aria-pressed="true"] { background: var(--sev); border-color: var(--sev); color: #fff; }
 
-@media (prefers-color-scheme: dark) {
-  .seg.severity button[aria-pressed="true"] { color: #10151b; }
-}
+:root[data-theme="dark"] .seg.severity button[aria-pressed="true"] { color: #10151b; }
 
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 
@@ -674,3 +671,27 @@ details.more[open] > summary { margin-bottom: 8px; }
 .emoji-cell:hover, .emoji-cell[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 18%, transparent); }
 
 .section-title { margin: 34px 0 -10px 4px; font-size: 1.15rem; }
+
+/* ---------- medication doses ---------- */
+
+.med-controls { display: grid; gap: 8px; }
+
+.med-controls .hint { margin: 0; }
+
+.dose-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.dose-chip {
+  display: inline-flex;
+  gap: 8px;
+  align-items: baseline;
+  min-height: 40px;
+  padding: 8px 14px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  background: var(--sunken);
+  cursor: pointer;
+}
+
+.dose-chip span { color: var(--muted); }
+
+.med-taken { min-height: 40px; padding: 6px 18px; }

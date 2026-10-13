@@ -152,6 +152,28 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX checkins_status ON checkins (status, due_at);
     """,
+    # 6: Mood and Energy move to a 1–10 scale (existing answers rescaled), Water gets a
+    # daily goal, and reminders can carry extra details (how much water was logged).
+    """
+    ALTER TABLE reminders ADD COLUMN payload TEXT;
+
+    UPDATE entries SET value_num = CAST(((value_num - 1) * 9.0 / 4 + 1) + 0.5 AS INTEGER)
+    WHERE tracker_id IN (
+        SELECT id FROM trackers WHERE key IN ('mood', 'energy') AND kind = 'rating'
+        AND json_extract(config, '$.min') = 1 AND json_extract(config, '$.max') = 5);
+
+    UPDATE trackers SET config = json('{"min": 1, "max": 10, "labels": ["Awful", "Very bad", "Bad", "Poor", "Meh", "Okay", "Fine", "Good", "Very good", "Great"]}')
+    WHERE key = 'mood' AND kind = 'rating'
+      AND json_extract(config, '$.min') = 1 AND json_extract(config, '$.max') = 5;
+
+    UPDATE trackers SET config = json('{"min": 1, "max": 10, "labels": ["Exhausted", "Drained", "Very low", "Low", "Flat", "Okay", "Fair", "Good", "High", "Buzzing"]}')
+    WHERE key = 'energy' AND kind = 'rating'
+      AND json_extract(config, '$.min') = 1 AND json_extract(config, '$.max') = 5;
+
+    UPDATE trackers SET config = json_set(config, '$.goal', 8)
+    WHERE key = 'water' AND kind = 'factor' AND json_extract(config, '$.mode') = 'count'
+      AND json_extract(config, '$.goal') IS NULL;
+    """,
 ]
 
 
@@ -285,10 +307,11 @@ class Database:
         return cur.lastrowid
 
     def list_trackers(self, user_id: str, include_hidden: bool = False) -> list[dict]:
-        sql = "SELECT * FROM trackers WHERE user_id = ?"
+        sql = ("SELECT t.*, (SELECT COUNT(*) FROM entries e WHERE e.tracker_id = t.id) AS entry_count "
+               "FROM trackers t WHERE t.user_id = ?")
         if not include_hidden:
-            sql += " AND hidden = 0"
-        sql += " ORDER BY sort_order, id"
+            sql += " AND t.hidden = 0"
+        sql += " ORDER BY t.sort_order, t.id"
         with self.connect() as conn:
             return [_tracker_row(r) for r in conn.execute(sql, (user_id,))]
 
@@ -367,6 +390,32 @@ class Database:
         with self.connect() as conn:
             current = self.get_tracker(user_id, tracker_id, conn)
             sets: dict[str, Any] = {}
+            kind = changes.get("kind", current["kind"])
+            if kind != current["kind"]:
+                # Past answers were recorded differently, so a new type starts afresh.
+                if kind not in DEFAULT_FREQUENCY:
+                    raise ValidationError(f"Unknown tracker kind '{kind}'")
+                sets["kind"] = kind
+                sets["config"] = json.dumps(normalise_config(kind, changes.get("config")))
+                sets["frequency"] = changes.get("frequency") if changes.get("frequency") in FREQUENCIES else DEFAULT_FREQUENCY[kind]
+                conn.execute("DELETE FROM entries WHERE tracker_id = ? AND user_id = ?", (tracker_id, user_id))
+                conn.execute("DELETE FROM doses WHERE tracker_id = ?", (tracker_id,))
+                conn.execute("DELETE FROM schedules WHERE tracker_id = ?", (tracker_id,))
+                changes = {k: v for k, v in changes.items() if k not in ("kind", "config", "frequency")}
+            elif "config" in changes and current["kind"] == "rating":
+                new = normalise_config("rating", changes["config"])
+                old = current["config"]
+                if (new["min"], new["max"]) != (old["min"], old["max"]):
+                    # Keep past answers in the same place on the new scale.
+                    conn.execute(
+                        """
+                        UPDATE entries SET value_num = CAST(
+                            (? + (value_num - ?) * (? - ?) * 1.0 / (? - ?)) + 0.5 AS INTEGER)
+                        WHERE tracker_id = ? AND user_id = ?
+                        """,
+                        (new["min"], old["min"], new["max"], new["min"], old["max"], old["min"],
+                         tracker_id, user_id),
+                    )
             if "name" in changes:
                 name = str(changes["name"] or "").strip()[:60]
                 if not name:

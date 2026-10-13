@@ -157,10 +157,32 @@ const state = {
 
 const SCALE_VARS = ["--r1", "--r2", "--r3", "--r4", "--r5"];
 
+// Blends smoothly between the five colours, so 1–5 and 1–10 scales both run dusk to sun.
 function scaleColor(cfg, value) {
   const span = cfg.max - cfg.min;
-  const idx = span === 0 ? 2 : Math.round(((value - cfg.min) / span) * 4);
-  return `var(${SCALE_VARS[Math.max(0, Math.min(4, idx))]})`;
+  const pos = span === 0 ? 0.5 : Math.max(0, Math.min(1, (value - cfg.min) / span));
+  const x = pos * 4;
+  const i = Math.min(3, Math.floor(x));
+  const f = Math.round((x - i) * 100);
+  if (f === 0) return `var(${SCALE_VARS[i]})`;
+  if (f === 100) return `var(${SCALE_VARS[i + 1]})`;
+  return `color-mix(in oklab, var(${SCALE_VARS[i + 1]}) ${f}%, var(${SCALE_VARS[i]}))`;
+}
+
+function fmtNum(n) {
+  const v = Number(n);
+  return Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100);
+}
+
+// "30 mg", or "2 × 30 mg (60 mg)"
+function doseText(t, e) {
+  const c = t.config;
+  const n = e && e.value_num != null ? e.value_num : 1;
+  const strength = e && e.value_json && e.value_json.dose != null ? e.value_json.dose : c.dose;
+  const unit = c.unit || "";
+  if (strength == null || strength === "") return n === 1 ? "1 dose" : `${fmtNum(n)} doses`;
+  const one = `${fmtNum(strength)} ${unit}`.trim();
+  return n === 1 ? one : `${fmtNum(n)} × ${one} (${fmtNum(n * Number(strength))} ${unit})`.replace(" )", ")");
 }
 
 function ratingLabel(cfg, v) {
@@ -174,14 +196,10 @@ function formatValue(t, e) {
     case "rating": return ratingLabel(c, e.value_num);
     case "tags": return (e.value_json || []).join(", ");
     case "symptom": return state.meta.severity_labels[e.value_num] || String(e.value_num);
-    case "medication": {
-      const dose = [c.dose, c.unit].filter(Boolean).join(" ");
-      const times = e.value_num !== 1 ? `${e.value_num} doses` : "Taken";
-      return dose ? `${times}, ${dose}` : times;
-    }
+    case "medication": return doseText(t, e);
     case "factor":
       if (c.mode === "bool") return e.value_num ? "Yes" : "No";
-      return `${e.value_num}${c.unit ? " " + c.unit : ""}`;
+      return `${fmtNum(e.value_num)}${c.unit ? " " + c.unit : ""}`;
     case "sleep": {
       const s = e.value_json || {};
       const parts = [];
@@ -350,7 +368,11 @@ function dueCard(view) {
         el("div", { class: "row-name" }, d.name, d.amount ? el("span", { class: "due-amount" }, ` ${d.amount}`) : null),
         el("div", { class: "row-sub" }, status)),
       el("div", { class: "due-actions" },
-        el("button", { type: "button", class: "primary small", onclick: () => act(d, "taken") }, "Taken"),
+        el("button", { type: "button", class: "primary small", onclick: () => act(d, "taken") }, "Taken now"),
+        el("button", { type: "button", class: "secondary small", onclick: () => {
+          const t = state.trackers.find((x) => x.id === d.tracker_id);
+          if (t) openDoseSheet(t, view);
+        } }, "Taken at…"),
         d.last_call ? null : el("button", { type: "button", class: "secondary small", onclick: () => act(d, "snooze") }, "Snooze"),
         el("button", { type: "button", class: "secondary small", onclick: () => act(d, "skip") }, "Skip")),
     );
@@ -399,6 +421,107 @@ function manyTodayNote(t) {
 
 function redraw(view) { drawCheckin(view); }
 
+function goalAside(c, current) {
+  if (!c.goal) return null;
+  const done = Number(current) >= Number(c.goal);
+  return el("span", { class: `row-aside${done ? " set" : ""}` },
+    `${fmtNum(current)} of ${fmtNum(c.goal)}${c.unit ? " " + c.unit : ""}${done ? " ✓" : ""}`);
+}
+
+async function takenNow(t, view) {
+  const recent = entriesFor(t.id).find((e) => Date.now() - new Date(e.logged_at).getTime() < 60 * 60 * 1000);
+  if (recent && !confirm(`${t.name} was logged at ${timeOf(recent.logged_at)}. Log another dose now?`)) return;
+  try {
+    await api("POST", "api/checkin", { logged_at: localISO(new Date()), items: [{ tracker_id: t.id, value_num: 1 }] });
+    await loadDay();
+    toast(`${t.name} logged at ${timeOf(localISO(new Date()))}`);
+    drawCheckin(view);
+  } catch (err) { toast(err.message); }
+}
+
+// Log a dose at a chosen time, or change or delete one already logged.
+function openDoseSheet(t, view, entry = null) {
+  const sheet = document.getElementById("sheet");
+  const c = t.config;
+  const day = entry ? entry.day : state.day;
+  const now = new Date();
+  const startTime = entry ? /T(\d{2}:\d{2})/.exec(entry.logged_at)[1] : `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  const timeInput = el("input", { type: "time", value: startTime, required: true, "aria-label": "Time taken" });
+  let count = entry ? entry.value_num : 1;
+  const countOut = el("output", { "aria-live": "polite" }, fmtNum(count));
+  const stepCount = (d) => { count = Math.max(0.5, Math.round((count + d) * 2) / 2); countOut.textContent = fmtNum(count); drawTotal(); };
+  const strength = el("input", { type: "number", min: "0", step: "any", inputmode: "decimal",
+    value: entry && entry.value_json && entry.value_json.dose != null ? entry.value_json.dose : (c.dose ?? ""),
+    "aria-label": "Dose", style: "width:7em", placeholder: "30" });
+  const total = el("p", { class: "hint" });
+  const drawTotal = () => {
+    const sv = Number(strength.value);
+    total.textContent = strength.value !== "" && sv > 0 && count !== 1
+      ? `Total ${fmtNum(count * sv)} ${c.unit || ""}`.trim() : "";
+  };
+  strength.addEventListener("input", drawTotal);
+  drawTotal();
+  const note = el("input", { type: "text", maxlength: "500", value: entry && entry.note ? entry.note : "", placeholder: "Optional" });
+  const err = el("p", { class: "form-error", hidden: true });
+
+  const form = el("form", { method: "dialog" },
+    el("h2", {}, entry ? `Change ${t.name} dose` : `Log ${t.name}`),
+    el("p", { class: "row-sub", style: "margin:-8px 0 14px" }, longDate(day)),
+    err,
+    field("Time taken", timeInput),
+    el("div", { class: "field" }, el("span", {}, "Number of doses"),
+      el("div", { class: "stepper" },
+        el("button", { type: "button", class: "iconbtn", "aria-label": "Fewer doses", onclick: () => stepCount(-0.5) }, svgIcon(ICONS.minus)),
+        countOut,
+        el("button", { type: "button", class: "iconbtn", "aria-label": "More doses", onclick: () => stepCount(0.5) }, svgIcon(ICONS.plus))),
+      el("span", { class: "hint" }, "For example 2 tablets, or half a tablet.")),
+    el("div", { class: "field" }, el("span", {}, "Dose"),
+      el("div", { class: "inline-field" }, strength, el("span", {}, c.unit || "")),
+      el("span", { class: "hint" }, "Change it if this dose was a different strength."), total),
+    field("Note", note),
+    el("div", { class: "actions" },
+      el("button", { type: "submit", class: "primary" }, entry ? "Save changes" : "Log it"),
+      entry ? el("button", { type: "button", class: "secondary danger", onclick: async () => {
+        if (!confirm(`Delete the ${t.name} dose at ${timeOf(entry.logged_at)}?`)) return;
+        try {
+          await api("DELETE", `api/entries/${entry.id}`);
+          sheet.close();
+          await loadDay();
+          toast("Dose deleted");
+          drawCheckin(view);
+        } catch (e) { toast(e.message); }
+      } }, "Delete") : null,
+      el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Cancel")));
+
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    err.hidden = true;
+    const [h, m] = timeInput.value.split(":").map(Number);
+    const when = dayToDate(day);
+    when.setHours(h, m, 0, 0);
+    if (when > new Date()) { err.textContent = "That time hasn't happened yet."; err.hidden = false; return; }
+    const value_json = strength.value !== "" ? { dose: Number(strength.value) } : null;
+    try {
+      if (entry) {
+        await api("PATCH", `api/entries/${entry.id}`, { logged_at: localISO(when), value_num: count, value_json, note: note.value });
+      } else {
+        await api("POST", "api/checkin", { logged_at: localISO(when),
+          items: [{ tracker_id: t.id, value_num: count, value_json, note: note.value || null }] });
+      }
+      sheet.close();
+      await loadDay();
+      toast(entry ? "Dose changed" : `${t.name} logged at ${niceTime(timeInput.value)}`);
+      if (currentTab() === "checkin") drawCheckin(view);
+    } catch (e) {
+      err.textContent = e.message;
+      err.hidden = false;
+    }
+  });
+
+  sheet.replaceChildren(form);
+  sheet.showModal();
+}
+
 function trackerRow(t, view) {
   const shown = shownValue(t);
   const c = t.config;
@@ -418,7 +541,8 @@ function trackerRow(t, view) {
       }, v));
     }
     const aside = el("span", { class: `row-aside${val != null ? " set" : ""}` }, val != null ? ratingLabel(c, val) : "");
-    return rowShell(t, aside, el("div", { class: "scale", style: `--n:${n}` }, buttons),
+    const cols = n > 7 ? Math.ceil(n / 2) : n;
+    return rowShell(t, aside, el("div", { class: "scale", style: `--n:${cols}` }, buttons),
       t.frequency === "many" ? manyTodayNote(t) : null);
   }
 
@@ -470,11 +594,11 @@ function trackerRow(t, view) {
       };
       const stepper = el("div", { class: "stepper" },
         el("button", { type: "button", class: "iconbtn", "aria-label": `Fewer ${t.name}`, disabled: current <= 0, onclick: () => step(-1) }, svgIcon(ICONS.minus)),
-        el("output", { "aria-live": "polite" }, String(current)),
+        el("output", { "aria-live": "polite" }, fmtNum(current)),
         el("button", { type: "button", class: "iconbtn", "aria-label": `More ${t.name}`, onclick: () => step(1) }, svgIcon(ICONS.plus)),
         c.unit ? el("span", { class: "row-sub" }, c.unit) : null,
       );
-      return rowShell(t, null, stepper);
+      return rowShell(t, goalAside(c, current), stepper);
     }
     const input = el("input", {
       type: "number", inputmode: "decimal", min: "0", step: "any",
@@ -485,29 +609,26 @@ function trackerRow(t, view) {
         redraw(view);
       },
     });
-    return rowShell(t, null, el("div", { class: "inline-field" }, input, c.unit ? el("span", {}, c.unit) : null));
+    return rowShell(t, goalAside(c, val ?? 0), el("div", { class: "inline-field" }, input, c.unit ? el("span", {}, c.unit) : null));
   }
 
   if (t.kind === "medication") {
-    const taken = entriesFor(t.id);
-    const marked = state.pending.has(t.id);
-    const dose = [c.dose, c.unit].filter(Boolean).join(" ");
+    const taken = entriesFor(t.id).slice().reverse(); // earliest first
+    const usual = c.dose != null && c.dose !== "" ? `Usual dose ${fmtNum(c.dose)} ${c.unit || ""}`.trim() : null;
     const nextDose = state.doses.find((d) => d.tracker_id === t.id && d.status === "scheduled" && d.local_day === state.day);
-    const sub = [dose, c.notes, nextDose ? `Next reminder ${niceTime(nextDose.time)}` : null].filter(Boolean).join(". ");
-    const takenText = taken.length ? `Taken at ${taken.map((e) => timeOf(e.logged_at)).reverse().join(", ")}` : "Not taken yet";
-    const btn = el("button", {
-      type: "button", class: "med-taken", "aria-pressed": String(marked),
-      onclick: () => {
-        if (marked) state.pending.delete(t.id);
-        else {
-          if (taken.length && !confirm(`${t.name} is already logged ${dayLabel(state.day).toLowerCase()}. Log another dose?`)) return;
-          state.pending.set(t.id, { tracker_id: t.id, value_num: 1 });
-        }
-        updateSaveBar();
-        redraw(view);
-      },
-    }, marked ? "Marked as taken" : "Mark as taken");
-    return rowShell(t, el("span", { class: "row-aside" }, takenText), btn, sub || null);
+    const sub = [usual, c.notes, nextDose ? `Next reminder ${niceTime(nextDose.time)}` : null].filter(Boolean).join(". ");
+    const isToday = state.day === isoDay(new Date());
+    const asideText = taken.length ? (taken.length === 1 ? "Taken once" : `Taken ${taken.length} times`) : "Not taken yet";
+    const chips = taken.length ? el("div", { class: "dose-chips" }, taken.map((e) => el("button", {
+      type: "button", class: "dose-chip", "aria-label": `${t.name} at ${timeOf(e.logged_at)}, ${doseText(t, e)}. Change or delete`,
+      onclick: () => openDoseSheet(t, view, e),
+    }, el("strong", {}, timeOf(e.logged_at)), el("span", {}, doseText(t, e))))) : null;
+    const actions = el("div", { class: "due-actions" },
+      isToday ? el("button", { type: "button", class: "med-taken", onclick: () => takenNow(t, view) }, "Taken now") : null,
+      el("button", { type: "button", class: "secondary small", onclick: () => openDoseSheet(t, view) }, isToday ? "Taken at…" : "Log a dose…"));
+    return rowShell(t, el("span", { class: "row-aside" }, asideText),
+      el("div", { class: "med-controls" }, chips, chips ? el("p", { class: "hint" }, "Tap a time to change or delete it.") : null, actions),
+      sub || null);
   }
 
   if (t.kind === "sleep") {
@@ -685,7 +806,7 @@ function openEntrySheet(e, t) {
 /* ================= settings ================= */
 
 const KIND_INFO = {
-  rating: "Rating (1 to 5)",
+  rating: "Rating (1 to 5 or 1 to 10)",
   tags: "Pick from a list",
   symptom: "Symptom (none to severe)",
   medication: "Medication",
@@ -784,7 +905,12 @@ async function renderSettings(view) {
         "Change", () => openPersonSheet(view)),
       settingRow("Check-in reminders",
         ci && ci.enabled ? `At ${joinNames(ci.times.map(niceTime))}, ${describeDays(ci.days)}` : "Off",
-        "Change", () => openCheckinSheet(view))),
+        "Change", () => openCheckinSheet(view)),
+      settingRow("Water reminders",
+        person && person.hydration.enabled
+          ? `If you haven't had water for ${niceGap(person.hydration.every)}, ${niceTime(person.hydration.start)} to ${niceTime(person.hydration.end)}`
+          : "Off",
+        "Change", () => openWaterSheet(view))),
   );
 
   const groups = new Map();
@@ -962,9 +1088,14 @@ function openTrackerSheet(t, view) {
     el("option", { value: "daily" }, "Once a day (a new answer replaces the old one)"));
   freq.value = t.frequency || (["symptom", "factor", "sleep", "note"].includes(kind) ? "daily" : "many");
 
-  const kindSelect = el("select", { name: "kind" },
-    ["rating", "symptom", "factor", "tags", "note"].map((k) => el("option", { value: k }, KIND_INFO[k])));
+  const kinds = ["rating", "symptom", "factor", "tags", "note", "medication"];
+  if (kind === "sleep") kinds.push("sleep");
+  const kindSelect = el("select", { name: "kind" }, kinds.map((k) => el("option", { value: k }, KIND_INFO[k])));
   kindSelect.value = kind;
+  const logged = t.entry_count || 0;
+  const kindHint = !isNew && logged
+    ? `Changing the type clears the ${logged === 1 ? "1 thing" : logged + " things"} already logged for it, because they were recorded differently.`
+    : null;
 
   const extra = el("div", {});
   const err = el("p", { class: "form-error", hidden: true });
@@ -974,8 +1105,21 @@ function openTrackerSheet(t, view) {
   function drawExtra() {
     extra.replaceChildren();
     if (kind === "rating") {
-      inputs.labels = el("input", { type: "text", value: (c.labels || []).join(", "), placeholder: "Awful, Bad, Okay, Good, Great" });
-      extra.append(field("Words for 1 to 5", inputs.labels, "Optional. Five words, lowest first, separated by commas."));
+      const startMax = kind === t.kind && c.max ? c.max : 10;
+      inputs.scale = selectOf([[5, "1 to 5"], [10, "1 to 10"]], startMax);
+      const labelsField = el("div", {});
+      const drawLabels = () => {
+        const max = Number(inputs.scale.value);
+        const keep = kind === t.kind && (c.labels || []).length === max ? c.labels : [];
+        inputs.labels = el("input", { type: "text", value: keep.join(", "),
+          placeholder: max === 10 ? "Awful, Very bad, Bad, Poor, Meh, Okay, Fine, Good, Very good, Great" : "Awful, Bad, Okay, Good, Great" });
+        labelsField.replaceChildren(field(`Words for 1 to ${max}`, inputs.labels,
+          `Optional. ${max} words, lowest first, separated by commas.`));
+      };
+      inputs.scale.addEventListener("change", drawLabels);
+      drawLabels();
+      extra.append(field("Scale", inputs.scale, !isNew && kind === t.kind && logged
+        ? "Changing the scale moves past answers to the same place on the new one." : null), labelsField);
     } else if (kind === "tags") {
       inputs.options = el("textarea", { placeholder: "Happy\nCalm\nAnxious" });
       inputs.options.value = (c.options || []).join("\n");
@@ -987,17 +1131,21 @@ function openTrackerSheet(t, view) {
         el("option", { value: "amount" }, "An amount (minutes, km…)"));
       inputs.mode.value = c.mode || "bool";
       inputs.unit = el("input", { type: "text", maxlength: "20", value: c.unit || "", placeholder: "cups" });
+      inputs.goal = el("input", { type: "number", min: "0", step: "any", inputmode: "decimal", value: c.goal ?? "", placeholder: "None", style: "width:8em" });
       const unitField = field("Unit", inputs.unit, "Shown next to the number, for example cups.");
-      const drawUnit = () => { unitField.hidden = inputs.mode.value === "bool"; };
+      const goalField = field("Daily goal", inputs.goal, "Optional. Shows your progress, like 3 of 8. Water reminders stop once it's reached.");
+      const drawUnit = () => { unitField.hidden = goalField.hidden = inputs.mode.value === "bool"; };
       inputs.mode.addEventListener("change", drawUnit);
       drawUnit();
-      extra.append(field("Answer type", inputs.mode), unitField);
+      extra.append(field("Answer type", inputs.mode), unitField, goalField);
     } else if (kind === "medication") {
-      inputs.dose = el("input", { type: "text", maxlength: "40", value: c.dose || "", placeholder: "30" });
-      inputs.unit = el("input", { type: "text", maxlength: "20", value: c.unit || "", placeholder: "mg" });
+      inputs.dose = el("input", { type: "number", min: "0", step: "any", inputmode: "decimal", value: c.dose ?? "", placeholder: "30" });
+      inputs.unit = el("input", { type: "text", maxlength: "20", value: c.unit || "", placeholder: "mg", list: "dose-units" });
       inputs.notes = el("input", { type: "text", maxlength: "200", value: c.notes || "", placeholder: "With breakfast" });
       extra.append(...[
-        el("div", { class: "field-pair" }, field("Dose", inputs.dose), field("Unit", inputs.unit)),
+        el("div", { class: "field-pair" }, field("Usual dose", inputs.dose), field("Measured in", inputs.unit)),
+        el("datalist", { id: "dose-units" }, ["mg", "mcg", "g", "ml", "IU", "tablets", "capsules", "drops", "puffs"].map((u) => el("option", { value: u }))),
+        el("p", { class: "hint", style: "margin:-6px 0 14px" }, "When you log a dose you can change the number of doses and the strength."),
         field("Instructions", inputs.notes, "Optional. Shown on the reminder."),
         t.id ? el("button", { type: "button", class: "secondary", onclick: () => openScheduleSheet(t, view) }, "Set up reminders") : null,
       ].filter(Boolean));
@@ -1010,27 +1158,36 @@ function openTrackerSheet(t, view) {
     drawExtra();
   });
 
+  const groupFieldNode = field("Show it under", group, "The heading it appears under on Check-in.");
+  const freqFieldNode = field("How often will you answer it?", freq);
+  const drawKindFields = () => {
+    groupFieldNode.hidden = kind === "medication";
+    freqFieldNode.hidden = ["sleep", "medication"].includes(kind);
+  };
+  kindSelect.addEventListener("change", drawKindFields);
+  drawKindFields();
+
   function readConfig() {
     if (kind === "rating") {
       const labels = inputs.labels.value.split(",").map((s) => s.trim()).filter(Boolean);
-      return { min: c.min || 1, max: c.max || 5, labels };
+      return { min: 1, max: Number(inputs.scale.value), labels };
     }
     if (kind === "tags") return { options: inputs.options.value.split("\n").map((s) => s.trim()).filter(Boolean) };
-    if (kind === "factor") return { mode: inputs.mode.value, unit: inputs.unit.value.trim() };
-    if (kind === "medication") return { dose: inputs.dose.value.trim(), unit: inputs.unit.value.trim(), notes: inputs.notes.value.trim() };
+    if (kind === "factor") return { mode: inputs.mode.value, unit: inputs.unit.value.trim(), goal: inputs.goal.value === "" ? null : inputs.goal.value };
+    if (kind === "medication") return { dose: inputs.dose.value === "" ? null : inputs.dose.value, unit: inputs.unit.value.trim(), notes: inputs.notes.value.trim() };
     return {};
   }
 
   const form = el("form", { method: "dialog" },
-    el("h2", {}, isNew ? (kind === "medication" ? "Add medication" : "Add something to track") : `Edit ${t.name}`),
+    el("h2", {}, isNew ? (t.kind === "medication" ? "Add medication" : "Add something to track") : `Edit ${t.name}`),
     err,
-    isNew && kind !== "medication" ? field("What kind?", kindSelect) : null,
+    isNew && kind === "medication" ? null : field("What kind?", kindSelect, kindHint),
     field("Name", name),
     el("div", { class: "field" }, el("span", {}, "Icon"), icon.node),
-    kind === "medication" ? null : field("Show it under", group, "The heading it appears under on Check-in."),
+    groupFieldNode,
     groupList,
     extra,
-    ["sleep", "medication"].includes(kind) ? null : field("How often will you answer it?", freq),
+    freqFieldNode,
     el("div", { class: "actions" },
       el("button", { type: "submit", class: "primary" }, isNew ? "Add" : "Save changes"),
       !isNew ? el("button", { type: "button", class: "secondary", onclick: async () => {
@@ -1062,6 +1219,11 @@ function openTrackerSheet(t, view) {
     };
     if (kind !== "medication") payload.group_name = group.value.trim();
     if (!["sleep", "medication"].includes(kind)) payload.frequency = freq.value;
+    if (!isNew && kind !== t.kind) {
+      if (logged && !confirm(`Change ${t.name} to ${KIND_INFO[kind].toLowerCase()}? This clears the ${logged === 1 ? "1 thing" : logged + " things"} already logged for it.`)) return;
+      payload.kind = kind;
+      if (kind === "medication") payload.group_name = "Medications";
+    }
     try {
       const saved = isNew
         ? await api("POST", "api/trackers", { kind, ...payload })
@@ -1425,6 +1587,85 @@ async function openCheckinSheet(view) {
   if (!sheet.open) sheet.showModal();
 }
 
+/* ---------- water reminders ---------- */
+
+async function openWaterSheet(view) {
+  const sheet = document.getElementById("sheet");
+  let person;
+  try { person = await api("GET", "api/reminders/settings"); }
+  catch (err) { toast(err.message); return; }
+  const h = person.hydration;
+  const err = el("p", { class: "form-error", hidden: true });
+  const counts = state.trackers.filter((x) => x.kind === "factor" && ["count", "amount"].includes(x.config.mode));
+  const waterDefault = counts.find((x) => x.key === "water");
+
+  const enabled = switchField("Remind me to drink water", h.enabled, "A nudge when you haven't logged any water for a while.");
+  const tracker = selectOf(counts.map((x) => [x.id, `${x.name}${x.config.unit ? " (" + x.config.unit + ")" : ""}`]),
+    h.tracker_id ?? (waterDefault ? waterDefault.id : ""));
+  const every = selectOf([[60, "1 hour"], [90, "1.5 hours"], [120, "2 hours"], [180, "3 hours"], [240, "4 hours"]], h.every);
+  const start = el("input", { type: "time", value: h.start, "aria-label": "From" });
+  const end = el("input", { type: "time", value: h.end, "aria-label": "Until" });
+  const days = daysEditor(h.days);
+  const amount = el("input", { type: "number", min: "1", max: "5000", value: h.amount, inputmode: "numeric", style: "width:7em", "aria-label": "One drink" });
+  const amountField = field("One drink is", el("div", { class: "inline-field" }, amount, el("span", {}, "ml or your unit")),
+    "Used when water is measured as an amount. The reminder offers one or two drinks.");
+  const drawAmount = () => {
+    const t = counts.find((x) => String(x.id) === tracker.value);
+    amountField.hidden = !t || t.config.mode !== "amount";
+  };
+  tracker.addEventListener("change", drawAmount);
+  drawAmount();
+  const chosen = counts.find((x) => String(x.id) === tracker.value);
+  const goalNote = chosen && chosen.config.goal
+    ? `Stops once you reach your daily goal of ${fmtNum(chosen.config.goal)} ${chosen.config.unit || ""}.`.replace(" .", ".")
+    : "Tip: give it a daily goal in Settings so reminders stop once you reach it.";
+
+  const body = el("div", { class: "sched-body" },
+    counts.length ? field("Count it in", tracker, goalNote)
+      : notice("Add something to track measured as a count or amount, like Water, first."),
+    field("Remind me if I haven't logged any for", every),
+    field("Between", el("div", { class: "inline-field" }, start, el("span", {}, "and"), end)),
+    field("Days", days.node),
+    amountField,
+  );
+  const drawEnabled = () => { body.classList.toggle("dimmed", !enabled.input.checked); };
+  enabled.input.addEventListener("change", drawEnabled);
+  drawEnabled();
+
+  const form = el("form", { method: "dialog" },
+    el("h2", {}, "Water reminders"),
+    el("p", { class: "row-sub", style: "margin:-8px 0 14px" }, "The notification has buttons to log a drink straight away."),
+    err, noPhoneNotice(person, view), enabled.node, body,
+    el("div", { class: "actions" },
+      el("button", { type: "submit", class: "primary" }, "Save"),
+      el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Cancel")));
+
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    err.hidden = true;
+    try {
+      await api("PUT", "api/reminders/settings", { hydration: {
+        enabled: enabled.input.checked,
+        tracker_id: tracker.value ? Number(tracker.value) : null,
+        every: Number(every.value),
+        start: start.value,
+        end: end.value,
+        days: days.read(),
+        amount: Number(amount.value),
+      } });
+      sheet.close();
+      toast(enabled.input.checked ? "Water reminders saved" : "Water reminders turned off");
+      if (currentTab() === "settings") await renderSettings(view);
+    } catch (e) {
+      err.textContent = e.message;
+      err.hidden = false;
+    }
+  });
+
+  sheet.replaceChildren(form);
+  if (!sheet.open) sheet.showModal();
+}
+
 /* ---------- phones and alerts ---------- */
 
 async function openPersonSheet(view) {
@@ -1523,6 +1764,88 @@ async function openPersonSheet(view) {
   sheet.replaceChildren(form);
   if (!sheet.open) sheet.showModal();
 }
+
+/* ================= theme ================= */
+
+// The app opens inside Home Assistant on the same address, so it can read the
+// colours of whichever theme Home Assistant is showing (light, dark or a custom
+// theme) and use them. Outside Home Assistant it follows the system setting.
+const HA_THEME_VARS = {
+  "--base": ["--primary-background-color"],
+  "--surface": ["--card-background-color", "--ha-card-background"],
+  "--sunken": ["--secondary-background-color"],
+  "--ink": ["--primary-text-color"],
+  "--muted": ["--secondary-text-color"],
+  "--line": ["--divider-color"],
+  "--accent": ["--primary-color"],
+  "--accent-ink": ["--text-primary-color"],
+  "--danger": ["--error-color"],
+};
+
+function haThemeSource() {
+  try {
+    if (window.parent && window.parent !== window && window.parent.document) {
+      return window.parent.document.documentElement;
+    }
+  } catch { /* not inside Home Assistant */ }
+  return null;
+}
+
+function isDarkColour(colour) {
+  const probe = document.createElement("span");
+  probe.style.color = colour;
+  probe.style.display = "none";
+  document.documentElement.append(probe);
+  const rgb = getComputedStyle(probe).color.match(/[\d.]+/g) || [255, 255, 255];
+  probe.remove();
+  const [r, g, b] = rgb.slice(0, 3).map((v) => Number(v) / 255);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.45;
+}
+
+function applyTheme() {
+  const root = document.documentElement;
+  const host = haThemeSource();
+  const found = {};
+  if (host) {
+    try {
+      const cs = window.parent.getComputedStyle(host);
+      for (const [ours, theirs] of Object.entries(HA_THEME_VARS)) {
+        for (const name of theirs) {
+          const value = cs.getPropertyValue(name).trim();
+          if (value) { found[ours] = value; break; }
+        }
+      }
+    } catch { /* ignore */ }
+  }
+  let dark;
+  if (found["--base"]) {
+    dark = isDarkColour(found["--base"]);
+    for (const name of Object.keys(HA_THEME_VARS)) {
+      if (found[name]) root.style.setProperty(name, found[name]);
+      else root.style.removeProperty(name);
+    }
+  } else {
+    dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    for (const name of Object.keys(HA_THEME_VARS)) root.style.removeProperty(name);
+  }
+  root.dataset.theme = dark ? "dark" : "light";
+}
+
+function watchTheme() {
+  applyTheme();
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
+  const host = haThemeSource();
+  if (host) {
+    try {
+      new MutationObserver(applyTheme).observe(host, { attributes: true, attributeFilter: ["style", "class"] });
+      const head = host.querySelector("head");
+      if (head) new MutationObserver(applyTheme).observe(head, { childList: true, subtree: true, characterData: true });
+    } catch { /* ignore */ }
+  }
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) applyTheme(); });
+}
+
+watchTheme();
 
 /* ================= start ================= */
 

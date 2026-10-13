@@ -195,10 +195,14 @@ def build_router(current_user) -> APIRouter:
         }
 
     @router.patch("/entries/{entry_id}")
-    def update_entry(
-        entry_id: int, payload: dict = Body(...), user: dict = Depends(current_user), d: Database = Depends(db)
+    async def update_entry(
+        request: Request, entry_id: int, payload: dict = Body(...), user: dict = Depends(current_user),
+        d: Database = Depends(db),
     ) -> dict:
-        return d.update_entry(user["id"], entry_id, payload)
+        entry = d.update_entry(user["id"], entry_id, payload)
+        if "logged_at" in payload:
+            await request.app.state.engine.entry_changed(user["id"], entry_id)
+        return entry
 
     @router.delete("/entries/{entry_id}")
     def delete_entry(entry_id: int, user: dict = Depends(current_user), d: Database = Depends(db)) -> dict:

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0
+
+- **Matches Home Assistant's theme.** Colours, dark and light mode, and custom themes come from Home Assistant, and change when it does.
+- **Medications work like Bearable.** Each has a usual dose and unit; each log records the time, the number of doses and the strength, with the total worked out ("2 × 30 mg (60 mg)").
+- **Taken now and Taken at…** on the Check-in screen and the Due now card.
+- **Change or delete logged doses** by tapping their time on the Check-in screen. Reminders timed from that dose move with it.
+- **Mood and Energy are now 1 to 10.** Earlier answers were moved to the same place on the new scale (for example 3 of 5 became 6 of 10). Any rating can use a 1 to 5 or 1 to 10 scale.
+- **Edit everything.** Existing items use the same form as new ones, including changing their type (which clears what was logged for them, with a warning first).
+- **Water.** Counts and amounts can have a daily goal (Water starts at 8 glasses) shown as "3 of 8 glasses", plus optional **water reminders** with buttons to log a drink from the notification.
+
 ## 0.4.0
 
 - **Check-in reminders.** Settings → Notifications → Check-in reminders: choose times and days, answer your mood straight from the notification (Good, Okay, Bad) or use Snooze and Not now, skip the reminder if you've checked in recently, and let unanswered ones tidy themselves away.

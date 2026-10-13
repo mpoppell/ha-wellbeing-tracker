@@ -746,10 +746,10 @@ def test_checkin_reminder_with_quick_mood_buttons(env):
 
     ha.reset()
     clock.advance(2)
-    run(engine.handle_event("mobile_app_notification_action", {"action": f"WBT_MOOD_4_{rid}"}))
+    run(engine.handle_event("mobile_app_notification_action", {"action": f"WBT_MOOD_8_{rid}"}))
     [entry] = db.list_entries("u1", "2026-10-14", "2026-10-14")
     mood = [t for t in db.list_trackers("u1") if t["key"] == "mood"][0]
-    assert entry["tracker_id"] == mood["id"] and entry["value_num"] == 4 and entry["source"] == "notification"
+    assert entry["tracker_id"] == mood["id"] and entry["value_num"] == 8 and entry["source"] == "notification"
     assert checkin_rows(db)[0]["status"] == "done"
     assert ha.clears() == [f"wbt-reminder-{rid}"]
     [undo] = ha.notifications()
@@ -846,3 +846,120 @@ def test_checkin_validation(env):
     for bad in ({"times": []}, {"buttons": "lots"}, {"expire_after": 5}, {"days": {"mode": "weekdays", "weekdays": []}}):
         with pytest.raises(ValidationError):
             engine.save_person("u1", {"checkins": bad})
+
+
+# ----- water reminders -----
+
+def water_on(engine, **h):
+    return engine.save_person("u1", {"hydration": {"enabled": True, **h}})
+
+
+def water(db):
+    return [t for t in db.list_trackers("u1") if t["key"] == "water"][0]
+
+
+def test_water_reminder_after_two_hours_without_a_drink(env):
+    db, ha, clock, engine, med = env
+    water_on(engine, every=120, start="09:00", end="21:00")
+    clock.set("2026-10-14T10:59")
+    run(engine.tick())
+    assert ha.notifications() == []
+    clock.set("2026-10-14T11:00")
+    run(engine.tick())
+    [n] = ha.notifications()
+    assert n["title"] == "Time for some water"
+    assert n["message"] == "0 of 8 glasses so far today. Tap how much you've just had."
+    assert [a["title"] for a in n["data"]["actions"]] == ["+1 glass", "+2 glasses", "Snooze 15 min"]
+    rid = int(n["data"]["tag"].rsplit("-", 1)[1])
+
+    ha.reset()
+    run(engine.handle_event("mobile_app_notification_action", {"action": f"WBT_WATER_2_{rid}"}))
+    [entry] = db.list_entries("u1", "2026-10-14", "2026-10-14")
+    assert entry["tracker_id"] == water(db)["id"] and entry["value_num"] == 2
+    [undo] = ha.notifications()
+    assert undo["title"] == "Logged 2 glasses" and undo["message"].startswith("2 of 8 glasses today.")
+    run(engine.answer_reminder(rid, "UNDO"))
+    assert db.list_entries("u1", "2026-10-14", "2026-10-14") == []
+
+
+def test_water_adds_to_todays_count(env):
+    db, ha, clock, engine, med = env
+    water_on(engine, every=60)
+    clock.set("2026-10-14T09:30")
+    db.save_checkin("u1", "2026-10-14T09:30:00+11:00", [{"tracker_id": water(db)["id"], "value_num": 3}])
+    clock.set("2026-10-14T10:30")
+    run(engine.tick())
+    rid = int(ha.notifications()[0]["data"]["tag"].rsplit("-", 1)[1])
+    assert ha.notifications()[0]["message"].startswith("3 of 8 glasses")
+    run(engine.answer_reminder(rid, "WATER_1"))
+    assert db.list_entries("u1", "2026-10-14", "2026-10-14")[0]["value_num"] == 4
+    run(engine.answer_reminder(rid, "UNDO"))
+    assert db.list_entries("u1", "2026-10-14", "2026-10-14")[0]["value_num"] == 3
+
+
+def test_drinking_resets_the_clock_and_clears_the_reminder(env):
+    db, ha, clock, engine, med = env
+    water_on(engine, every=120)
+    clock.set("2026-10-14T11:00")
+    run(engine.tick())
+    assert len(ha.notifications()) == 1
+    ha.reset()
+    clock.set("2026-10-14T11:10")
+    db.save_checkin("u1", "2026-10-14T11:10:00+11:00", [{"tracker_id": water(db)["id"], "value_num": 1}])
+    with db.connect() as conn:  # stamp it with the test clock, as the real clock would
+        conn.execute("UPDATE entries SET created_at = ?, updated_at = ?", ("2026-10-14T00:10:00+00:00",) * 2)
+    run(engine.tick())
+    assert len(ha.clears()) == 1
+    clock.set("2026-10-14T13:09")
+    run(engine.tick())
+    assert ha.notifications() == []
+    clock.set("2026-10-14T13:10")
+    run(engine.tick())
+    assert len(ha.notifications()) == 1
+
+
+def test_no_water_reminders_outside_hours_or_once_goal_met(env):
+    db, ha, clock, engine, med = env
+    water_on(engine, every=60, start="09:00", end="12:00")
+    clock.set("2026-10-14T08:59")
+    run(engine.tick())
+    clock.set("2026-10-14T13:00")
+    run(engine.tick())
+    assert ha.notifications() == []
+    clock.set("2026-10-14T10:00")
+    db.save_checkin("u1", "2026-10-14T09:10:00+11:00", [{"tracker_id": water(db)["id"], "value_num": 8}])
+    clock.set("2026-10-14T11:30")
+    run(engine.tick())
+    assert ha.notifications() == []
+
+
+def test_water_in_ml(env):
+    db, ha, clock, engine, med = env
+    t = db.create_tracker("u1", {"kind": "factor", "name": "Fluids", "config": {"mode": "amount", "unit": "ml", "goal": 2000}})
+    water_on(engine, tracker_id=t["id"], amount=300, every=60)
+    clock.set("2026-10-14T10:00")
+    run(engine.tick())
+    n = ha.notifications()[0]
+    assert [a["title"] for a in n["data"]["actions"]][:2] == ["+300 ml", "+600 ml"]
+    assert n["message"].startswith("0 of 2000 ml")
+
+
+def test_water_validation(env):
+    db, ha, clock, engine, med = env
+    for bad in ({"every": 5}, {"start": "21:00", "end": "09:00"}, {"amount": 0}):
+        with pytest.raises(ValidationError):
+            engine.save_person("u1", {"hydration": bad})
+
+
+# ----- editing a logged dose -----
+
+def test_editing_dose_time_moves_the_follow_up(env):
+    db, ha, clock, engine, med = env
+    v, d = chain_env(env)
+    clock.set("2026-10-14T07:30")
+    saved = db.save_checkin("u1", "2026-10-14T07:00:00+11:00", [{"tracker_id": v["id"]}])["saved"][0]
+    run(engine.tick())
+    assert dose_rows(db, d["id"])[0]["local_time"] == "14:00"
+    db.update_entry("u1", saved["id"], {"logged_at": "2026-10-14T06:30:00+11:00"})
+    run(engine.entry_changed("u1", saved["id"]))
+    assert [r["local_time"] for r in dose_rows(db, d["id"])] == ["13:30"]

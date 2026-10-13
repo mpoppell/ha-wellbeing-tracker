@@ -33,6 +33,7 @@ from .schedule import (
     due_times,
     in_quiet_hours,
     nag_params,
+    runs_on,
     normalise_person_settings,
     normalise_schedule,
     person_settings,
@@ -94,8 +95,9 @@ class Engine:
         """Save person settings. Anything not included keeps its current value."""
         current = self.get_person(user_id)
         merged = {**current, **data}
-        if isinstance(data.get("checkins"), dict):
-            merged["checkins"] = {**current["checkins"], **data["checkins"]}
+        for group in ("checkins", "hydration"):
+            if isinstance(data.get(group), dict):
+                merged[group] = {**current[group], **data[group]}
         clean = normalise_person_settings(merged)
         clean["checkins_from"] = current.get("checkins_from")
         if clean["checkins"] != current["checkins"] or (clean["checkins"]["enabled"] and not clean["checkins_from"]):
@@ -188,6 +190,7 @@ class Engine:
                 self._generate_checkins(conn, now)
                 self._activate_checkins(conn, now, out)
                 self._expire_checkins(conn, now, out)
+                self._hydration(conn, now, out)
             await self._flush(out)
             await self._send_due(now)
 
@@ -449,6 +452,9 @@ class Engine:
         if r["kind"] == "checkin":
             self._send_checkin(conn, r, now, out)
             return
+        if r["kind"] == "hydration":
+            self._send_hydration(conn, r, now, out)
+            return
         doses = self._due_doses(conn, rid)
         if not doses:
             self._close(conn, r, now, out)
@@ -526,7 +532,7 @@ class Engine:
     def _dose_info(self, conn, dose) -> dict:
         t = conn.execute("SELECT name, emoji, config FROM trackers WHERE id = ?", (dose["tracker_id"],)).fetchone()
         cfg = json.loads(t["config"]) if t else {}
-        amount = " ".join(x for x in (cfg.get("dose"), cfg.get("unit")) if x)
+        amount = " ".join(str(x) for x in (cfg.get("dose"), cfg.get("unit")) if x not in (None, ""))
         because = None
         if dose["anchor_entry_id"]:
             a = conn.execute(
@@ -642,6 +648,8 @@ class Engine:
                     out.add("clear", r["user_id"], self._tag(rid))  # already handled elsewhere
                 elif r["kind"] == "checkin":
                     self._answer_checkin(conn, r, verb, now, source, out)
+                elif r["kind"] == "hydration":
+                    self._answer_hydration(conn, r, verb, now, out)
                 elif verb == "SNOOZE" and r["kind"] == "dose":
                     person = self._person_for(conn, r["user_id"])
                     until = now + timedelta(minutes=person["snooze_minutes"])
@@ -717,6 +725,9 @@ class Engine:
             return
         if r["kind"] == "checkin":
             self._undo_checkin(conn, r, now, out)
+            return
+        if r["kind"] == "hydration":
+            self._undo_hydration(conn, r, now, out)
             return
         doses = conn.execute(
             "SELECT * FROM doses WHERE reminder_id = ? AND status IN ('taken', 'skipped') AND resolved_at >= ?",
@@ -962,7 +973,8 @@ class Engine:
         """Three quick answers that fit Android's three buttons: good, middle, bad."""
         cfg = mood["config"]
         lo, hi = cfg["min"], cfg["max"]
-        values = [hi - 1, round((lo + hi) / 2), lo + 1] if hi - lo >= 4 else [hi, round((lo + hi) / 2), lo]
+        # roughly three-quarters, half and a quarter of the way up the scale
+        values = [int(lo + (hi - lo) * f + 0.5) for f in (0.75, 0.5, 0.25)]
         labels = cfg.get("labels") or []
         out = []
         for v in dict.fromkeys(values):
@@ -1105,6 +1117,212 @@ class Engine:
                 (user_id, self._local_today(now).isoformat()),
             ).fetchone()
         return row["local_time"] if row else None
+
+    # ================= water reminders =================
+
+    def _water_tracker(self, conn, user_id: str, h: dict):
+        if h["tracker_id"]:
+            row = conn.execute(
+                "SELECT * FROM trackers WHERE id = ? AND user_id = ? AND hidden = 0", (h["tracker_id"], user_id)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM trackers WHERE user_id = ? AND key = 'water' AND hidden = 0", (user_id,)
+            ).fetchone()
+        if not row or row["kind"] != "factor":
+            return None
+        t = dict(row, config=json.loads(row["config"]))
+        return t if t["config"].get("mode") in ("count", "amount") else None
+
+    @staticmethod
+    def _water_total(conn, tracker: dict, day: str) -> float:
+        total = conn.execute(
+            "SELECT COALESCE(SUM(value_num), 0) FROM entries WHERE tracker_id = ? AND day = ?", (tracker["id"], day)
+        ).fetchone()[0]
+        return int(total) if total == int(total) else total
+
+    def _hydration(self, conn, now: datetime, out: Outbox) -> None:
+        local = now.astimezone(self.tz)
+        today = local.date()
+        hhmm = local.strftime("%H:%M")
+        for row in conn.execute("SELECT user_id, settings FROM person_settings").fetchall():
+            user_id = row["user_id"]
+            h = person_settings(json.loads(row["settings"]))["hydration"]
+            active = conn.execute(
+                "SELECT * FROM reminders WHERE user_id = ? AND kind = 'hydration' AND status IN ('active', 'snoozed') "
+                "ORDER BY id DESC LIMIT 1",
+                (user_id,),
+            ).fetchone()
+            tracker = self._water_tracker(conn, user_id, h) if h["enabled"] else None
+            in_window = bool(tracker) and runs_on(h, today) and h["start"] <= hhmm < h["end"]
+            goal = tracker["config"].get("goal") if tracker else None
+            total = self._water_total(conn, tracker, today.isoformat()) if tracker else 0
+            if not in_window or (goal and total >= goal):
+                if active:
+                    self._close(conn, active, now, out)
+                continue
+            last_drink = conn.execute(
+                "SELECT MAX(updated_at) FROM entries WHERE tracker_id = ? AND day = ?",
+                (tracker["id"], today.isoformat()),
+            ).fetchone()[0]
+            if active:
+                if last_drink and last_drink > active["created_at"]:
+                    self._close(conn, active, now, out)  # had a drink since: no need to ask
+                continue
+            h_, m_ = map(int, h["start"].split(":"))
+            window_start = iso(datetime.combine(today, time(h_, m_), self.tz))
+            last_reminder = conn.execute(
+                "SELECT MAX(created_at) FROM reminders WHERE user_id = ? AND kind = 'hydration'", (user_id,)
+            ).fetchone()[0]
+            since = max(window_start, last_drink or "", last_reminder or "")
+            if parse(since) + timedelta(minutes=h["every"]) <= now:
+                conn.execute(
+                    "INSERT INTO reminders (user_id, kind, due_at, status, next_at, created_at, updated_at) "
+                    "VALUES (?, 'hydration', ?, 'active', ?, ?, ?)",
+                    (user_id, iso(now), iso(now), iso(now), iso(now)),
+                )
+
+    @staticmethod
+    def _unit_for(n, unit: str) -> str:
+        if not unit:
+            return ""
+        if n == 1:
+            if unit.endswith("sses"):
+                return unit[:-2]
+            if unit.endswith("s") and len(unit) > 3:
+                return unit[:-1]
+        return unit
+
+    def _water_steps(self, tracker: dict, h: dict) -> list[tuple[float, str]]:
+        unit = tracker["config"].get("unit", "")
+        if tracker["config"]["mode"] == "amount":
+            a = h["amount"]
+            return [(a, f"+{a} {unit}".strip()), (a * 2, f"+{a * 2} {unit}".strip())]
+        return [(1, f"+1 {self._unit_for(1, unit)}".strip()), (2, f"+2 {unit}".strip())]
+
+    def _send_hydration(self, conn, r, now: datetime, out: Outbox) -> None:
+        person = self._person_for(conn, r["user_id"])
+        h = person["hydration"]
+        tracker = self._water_tracker(conn, r["user_id"], h)
+        if not tracker:
+            self._close(conn, r, now, out)
+            return
+        rid = r["id"]
+        local_day = now.astimezone(self.tz).date().isoformat()
+        total = self._water_total(conn, tracker, local_day)
+        unit = tracker["config"].get("unit", "")
+        goal = tracker["config"].get("goal")
+        so_far = f"{total} of {goal} {unit}" if goal else f"{total} {unit}"
+        data = {
+            "tag": self._tag(rid),
+            "group": "wellbeing-water",
+            "channel": "Water reminders",
+            "importance": "default",
+            "notification_icon": "mdi:cup-water",
+            "color": "#2c5d86",
+            "actions": [{"action": f"{ACTION_PREFIX}WATER_{v}_{rid}", "title": label}
+                        for v, label in self._water_steps(tracker, h)]
+                       + [{"action": f"{ACTION_PREFIX}SNOOZE_{rid}", "title": f"Snooze {person['snooze_minutes']} min"}],
+        }
+        if self.panel_path:
+            data["clickAction"] = self.panel_path
+        out.add("notify", r["user_id"], {
+            "title": "Time for some water",
+            "message": f"{so_far.strip()} so far today. Tap how much you've just had.",
+            "data": data,
+        })
+        out.add("event", r["user_id"], rid, "sent", [], "hydration")
+        conn.execute(
+            "UPDATE reminders SET sends = sends + 1, status = 'active', next_at = NULL, updated_at = ? WHERE id = ?",
+            (iso(now), rid),
+        )
+
+    def _answer_hydration(self, conn, r, verb: str, now: datetime, out: Outbox) -> None:
+        person = self._person_for(conn, r["user_id"])
+        if verb == "SNOOZE":
+            until = now + timedelta(minutes=person["snooze_minutes"])
+            conn.execute(
+                "UPDATE reminders SET status = 'snoozed', next_at = ?, updated_at = ? WHERE id = ?",
+                (iso(until), iso(now), r["id"]),
+            )
+            out.add("clear", r["user_id"], self._tag(r["id"]))
+            out.add("event", r["user_id"], r["id"], "snoozed", [], "hydration")
+            return
+        if not verb.startswith("WATER_"):
+            return
+        tracker = self._water_tracker(conn, r["user_id"], person["hydration"])
+        try:
+            add = float(verb[len("WATER_"):])
+        except ValueError:
+            return
+        if not tracker or not 0 < add <= 5000:
+            return
+        add = int(add) if add == int(add) else add
+        local = now.astimezone(self.tz)
+        day = local.date().isoformat()
+        existing = None
+        if tracker["frequency"] == "daily":
+            existing = conn.execute(
+                "SELECT id, value_num FROM entries WHERE tracker_id = ? AND day = ?", (tracker["id"], day)
+            ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE entries SET value_num = value_num + ?, logged_at = ?, updated_at = ? WHERE id = ?",
+                (add, local.isoformat(timespec="seconds"), iso(now), existing["id"]),
+            )
+            payload = {"entry_id": existing["id"], "before": existing["value_num"], "added": add}
+        else:
+            cur = conn.execute(
+                "INSERT INTO entries (user_id, tracker_id, day, logged_at, value_num, source, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, 'notification', ?, ?)",
+                (r["user_id"], tracker["id"], day, local.isoformat(timespec="seconds"), add, iso(now), iso(now)),
+            )
+            payload = {"entry_id": cur.lastrowid, "before": None, "added": add}
+        conn.execute("UPDATE reminders SET answered_at = ?, payload = ? WHERE id = ?",
+                     (iso(now), json.dumps(payload), r["id"]))
+        self._close(conn, r, now, out)
+        out.add("event", r["user_id"], r["id"], "logged", [], "hydration")
+        if person["undo"]:
+            unit = tracker["config"].get("unit", "")
+            total = self._water_total(conn, tracker, day)
+            goal = tracker["config"].get("goal")
+            out.add("notify", r["user_id"], {
+                "title": f"Logged {add} {self._unit_for(add, unit)}".strip(),
+                "message": (f"{total} of {goal} {unit} today." if goal else f"{total} {unit} today.") + " Tap Undo if that was a mistake.",
+                "data": {
+                    "tag": f"wbt-undo-{r['id']}",
+                    "group": "wellbeing-water",
+                    "channel": "Water reminders",
+                    "importance": "low",
+                    "timeout": 60,
+                    "notification_icon": "mdi:check",
+                    "actions": [{"action": f"{ACTION_PREFIX}UNDO_{r['id']}", "title": "Undo"}],
+                },
+            })
+
+    def _undo_hydration(self, conn, r, now: datetime, out: Outbox) -> None:
+        if not r["payload"]:
+            return
+        p = json.loads(r["payload"])
+        if p.get("before") is None:
+            conn.execute("DELETE FROM entries WHERE id = ?", (p["entry_id"],))
+        else:
+            conn.execute("UPDATE entries SET value_num = ?, updated_at = ? WHERE id = ?",
+                         (p["before"], iso(now), p["entry_id"]))
+        conn.execute("UPDATE reminders SET payload = NULL, answered_at = NULL WHERE id = ?", (r["id"],))
+        out.add("event", r["user_id"], r["id"], "undone", [], "hydration")
+
+    # ================= editing logged doses =================
+
+    async def entry_changed(self, user_id: str, entry_id: int) -> None:
+        """A logged dose's time changed: reminders timed from it are worked out again."""
+        async with self.lock:
+            with self.db.connect() as conn:
+                conn.execute(
+                    "DELETE FROM doses WHERE user_id = ? AND anchor_entry_id = ? AND status = 'scheduled'",
+                    (user_id, entry_id),
+                )
+        await self.tick()
 
     # ================= Home Assistant side effects =================
 

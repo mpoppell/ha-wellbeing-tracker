@@ -8,6 +8,7 @@ Kinds and how values are stored on an entry:
   tags        value_json list of strings (e.g. emotions)
   symptom     value_num  0 none, 1 mild, 2 moderate, 3 severe
   medication  value_num  number of doses taken (usually 1)
+              value_json {"dose": strength} when this dose differed from the usual strength
   factor      value_num  bool (0/1), count (int) or amount (float), per config.mode
   sleep       value_json {"hours": float|None, "quality": 1-5|None}
   note        note       free text
@@ -22,6 +23,9 @@ from __future__ import annotations
 from typing import Any
 
 KINDS = ("rating", "tags", "symptom", "medication", "factor", "sleep", "note")
+
+MOOD_LABELS = ["Awful", "Very bad", "Bad", "Poor", "Meh", "Okay", "Fine", "Good", "Very good", "Great"]
+ENERGY_LABELS = ["Exhausted", "Drained", "Very low", "Low", "Flat", "Okay", "Fair", "Good", "High", "Buzzing"]
 FREQUENCIES = ("many", "daily")
 FACTOR_MODES = ("bool", "count", "amount")
 SEVERITY_LABELS = ["None", "Mild", "Moderate", "Severe"]
@@ -48,12 +52,12 @@ def default_trackers() -> list[dict[str, Any]]:
     life = "Lifestyle"
     items: list[dict[str, Any]] = [
         dict(key="mood", kind="rating", name="Mood", emoji="🙂", group_name=feel,
-             config={"min": 1, "max": 5, "labels": ["Awful", "Bad", "Okay", "Good", "Great"]}),
+             config={"min": 1, "max": 10, "labels": MOOD_LABELS}),
         dict(key="emotions", kind="tags", name="Emotions", emoji="💭", group_name=feel,
              config={"options": ["Happy", "Calm", "Grateful", "Motivated", "Anxious",
                                  "Irritable", "Sad", "Overwhelmed", "Lonely", "Tired"]}),
         dict(key="energy", kind="rating", name="Energy", emoji="⚡", group_name=feel,
-             config={"min": 1, "max": 5, "labels": ["Drained", "Low", "Okay", "Good", "High"]}),
+             config={"min": 1, "max": 10, "labels": ENERGY_LABELS}),
         dict(key="headache", kind="symptom", name="Headache", emoji="🤕", group_name=sym, config={}),
         dict(key="fatigue", kind="symptom", name="Fatigue", emoji="🥱", group_name=sym, config={}),
         dict(key="brain_fog", kind="symptom", name="Brain fog", emoji="🌫️", group_name=sym, config={}),
@@ -65,7 +69,7 @@ def default_trackers() -> list[dict[str, Any]]:
         dict(key="alcohol", kind="factor", name="Alcohol", emoji="🍷", group_name=life,
              config={"mode": "count", "unit": "drinks"}),
         dict(key="water", kind="factor", name="Water", emoji="💧", group_name=life,
-             config={"mode": "count", "unit": "glasses"}),
+             config={"mode": "count", "unit": "glasses", "goal": 8}),
         dict(key="exercise", kind="factor", name="Exercise", emoji="🏃", group_name=life, config={"mode": "bool"}),
         dict(key="outdoors", kind="factor", name="Time outdoors", emoji="🌳", group_name=life, config={"mode": "bool"}),
         dict(key="socialised", kind="factor", name="Socialised", emoji="👥", group_name=life, config={"mode": "bool"}),
@@ -105,14 +109,28 @@ def normalise_config(kind: str, config: dict | None) -> dict:
         out = {"mode": mode}
         if mode != "bool" and config.get("unit"):
             out["unit"] = str(config["unit"])[:20]
+        if mode != "bool" and config.get("goal") not in (None, "", 0):
+            out["goal"] = _positive(config["goal"], "Daily goal")
         return out
     if kind == "medication":
         out = {}
-        for field, limit in (("dose", 40), ("unit", 20), ("notes", 200)):
+        if config.get("dose") not in (None, ""):
+            out["dose"] = _positive(config["dose"], "Dose strength")
+        for field, limit in (("unit", 20), ("notes", 200)):
             if config.get(field) not in (None, ""):
-                out[field] = str(config[field])[:limit]
+                out[field] = str(config[field]).strip()[:limit]
         return out
     return {}
+
+
+def _positive(value, label: str) -> float | int:
+    try:
+        v = float(str(value).strip())
+    except (TypeError, ValueError):
+        raise ValidationError(f"{label} must be a number") from None
+    if not 0 < v <= 100000:
+        raise ValidationError(f"{label} must be more than 0")
+    return int(v) if v == int(v) else round(v, 3)
 
 
 def validate_value(tracker: dict, item: dict) -> dict:
@@ -145,8 +163,13 @@ def validate_value(tracker: dict, item: dict) -> dict:
     if kind == "medication":
         v = 1.0 if num is None else need_number()
         if not 0 < v <= 100:
-            raise ValidationError(f"{tracker['name']}: doses must be more than 0")
-        return {"value_num": v, "value_json": None, "note": note}
+            raise ValidationError(f"{tracker['name']}: number of doses must be more than 0")
+        dose = None
+        if isinstance(js, dict) and js.get("dose") not in (None, ""):
+            dose = _positive(js["dose"], f"{tracker['name']}: dose")
+            if dose == cfg.get("dose"):
+                dose = None  # the usual strength doesn't need storing
+        return {"value_num": v, "value_json": {"dose": dose} if dose is not None else None, "note": note}
     if kind == "factor":
         v = need_number()
         mode = cfg.get("mode", "bool")
