@@ -157,18 +157,6 @@ const state = {
 
 const SCALE_VARS = ["--r1", "--r2", "--r3", "--r4", "--r5"];
 
-// Blends smoothly between the five colours, so 1–5 and 1–10 scales both run dusk to sun.
-function scaleColor(cfg, value) {
-  const span = cfg.max - cfg.min;
-  const pos = span === 0 ? 0.5 : Math.max(0, Math.min(1, (value - cfg.min) / span));
-  const x = pos * 4;
-  const i = Math.min(3, Math.floor(x));
-  const f = Math.round((x - i) * 100);
-  if (f === 0) return `var(${SCALE_VARS[i]})`;
-  if (f === 100) return `var(${SCALE_VARS[i + 1]})`;
-  return `color-mix(in oklab, var(${SCALE_VARS[i + 1]}) ${f}%, var(${SCALE_VARS[i]}))`;
-}
-
 function fmtNum(n) {
   const v = Number(n);
   return Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100);
@@ -257,31 +245,8 @@ function dailyEntry(t) {
   return t.frequency === "daily" ? entriesFor(t.id)[0] || null : null;
 }
 
-// The value currently shown for a tracker: unsaved change first, then today's saved daily answer.
-function shownValue(t) {
-  const p = state.pending.get(t.id);
-  if (p) return p.clear ? null : p;
-  return dailyEntry(t);
-}
-
-function setPending(t, item) {
-  const existing = dailyEntry(t);
-  if (item === null) {
-    // un-select: clear a saved daily answer, or just drop the unsaved change
-    if (existing) state.pending.set(t.id, { tracker_id: t.id, clear: true });
-    else state.pending.delete(t.id);
-  } else {
-    state.pending.set(t.id, { tracker_id: t.id, ...item });
-  }
-  updateSaveBar();
-}
-
-function updateSaveBar() {
-  const bar = document.getElementById("savebar");
-  const n = state.pending.size;
-  bar.hidden = currentTab() !== "checkin" || n === 0;
-  document.getElementById("save").textContent = n === 1 ? "Save 1 answer" : `Save ${n} answers`;
-}
+// Everything on Check-in saves the moment you tap, like Bearable.
+function updateSaveBar() { /* no save bar any more */ }
 
 async function loadDay() {
   const isToday = state.day === isoDay(new Date());
@@ -299,6 +264,138 @@ async function renderCheckin(view) {
   await loadDay();
   drawCheckin(view);
 }
+
+const viewEl = () => document.getElementById("view");
+
+async function quickSave(items, when) {
+  try {
+    await api("POST", "api/checkin", { logged_at: when || loggedAtFor(state.day), items });
+    await loadDay();
+    drawCheckin(viewEl());
+  } catch (err) { toast(err.message); }
+}
+
+async function removeEntry(entry) {
+  try {
+    await api("DELETE", `api/entries/${entry.id}`);
+    await loadDay();
+    drawCheckin(viewEl());
+  } catch (err) { toast(err.message); }
+}
+
+/* ---------- drawing helpers ---------- */
+
+const SECTION_ICONS = [
+  [/feel|mood|emotion/, "M12 20s-7-4.5-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.5-7 10-7 10zM5 12h3l2-3 2 5 2-3h5"],
+  [/symptom|pain|side effect/, "M14 14.8V5a2 2 0 0 0-4 0v9.8a4 4 0 1 0 4 0zM12 17v-5"],
+  [/sleep|rest/, "M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"],
+  [/medic|meds|supplement/, "M10.5 20.5l10-10a5 5 0 0 0-7-7l-10 10a5 5 0 0 0 7 7zM8.5 8.5l7 7"],
+  [/life|habit|activ|exercise|social/, "M5 19c0-8 5-13 14-14 0 9-5 14-13 14zM5 19l7-7"],
+  [/note|journal|diary/, "M4 20h4L19 9l-4-4L4 16v4z"],
+  [/water|drink|food|nutrition|diet/, "M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11z"],
+];
+const DEFAULT_SECTION_ICON = "M4 6h16M4 12h16M4 18h10";
+
+function sectionIcon(name) {
+  const n = name.toLowerCase();
+  const hit = SECTION_ICONS.find(([re]) => re.test(n));
+  return svgIcon(hit ? hit[1] : DEFAULT_SECTION_ICON);
+}
+
+// Five faces, very sad to very happy, drawn as line icons.
+const FACE_MOUTHS = ["M8 17q4-4.5 8 0", "M8.5 16.3q3.5-2.3 7 0", "M8.5 15.5h7", "M8.5 14.5q3.5 2.5 7 0", "M7.8 13.8q4.2 5 8.4 0"];
+function faceIcon(level) {
+  const ns = "http://www.w3.org/2000/svg";
+  const s = document.createElementNS(ns, "svg");
+  s.setAttribute("viewBox", "0 0 24 24");
+  s.setAttribute("aria-hidden", "true");
+  s.setAttribute("class", "face");
+  for (const [tag, attrs] of [
+    ["circle", { cx: 12, cy: 12, r: 9.5 }],
+    ["circle", { cx: 9, cy: 10, r: 0.9, class: "eye" }],
+    ["circle", { cx: 15, cy: 10, r: 0.9, class: "eye" }],
+    ["path", { d: FACE_MOUTHS[level] }],
+  ]) {
+    const n = document.createElementNS(ns, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    s.append(n);
+  }
+  return s;
+}
+
+// Signal bars for levels: 0 = none, 3 = severe.
+function barsIcon(level) {
+  const ns = "http://www.w3.org/2000/svg";
+  const s = document.createElementNS(ns, "svg");
+  s.setAttribute("viewBox", "0 0 24 24");
+  s.setAttribute("aria-hidden", "true");
+  s.setAttribute("class", "bars");
+  [[5, 14, 3, 5], [10.5, 10, 3, 9], [16, 6, 3, 13]].forEach(([x, y, w, h], i) => {
+    const r = document.createElementNS(ns, "rect");
+    Object.entries({ x, y, width: w, height: h, rx: 1.2 }).forEach(([k, v]) => r.setAttribute(k, v));
+    r.setAttribute("class", i < level ? "on" : "off");
+    s.append(r);
+  });
+  if (level === 0) {
+    const l = document.createElementNS(ns, "path");
+    l.setAttribute("d", "M4 20L20 4");
+    l.setAttribute("class", "slash");
+    s.append(l);
+  }
+  return s;
+}
+
+const SEVERITY_COLOURS = ["var(--sev0)", "var(--sev1)", "var(--sev2)", "var(--sev3)"];
+
+let collapsed = new Set();
+try { collapsed = new Set(JSON.parse(localStorage.getItem("wbt-collapsed") || "[]")); } catch { /* private mode */ }
+function toggleSection(name) {
+  if (collapsed.has(name)) collapsed.delete(name); else collapsed.add(name);
+  try { localStorage.setItem("wbt-collapsed", JSON.stringify([...collapsed])); } catch { /* ignore */ }
+  drawCheckin(viewEl());
+}
+
+function answered(t) {
+  return entriesFor(t.id).length > 0;
+}
+
+function section(name, trackers, body, extraCount = null) {
+  const count = extraCount ?? trackers.filter(answered).length;
+  const isCollapsed = collapsed.has(name);
+  return el("section", { class: `bsection${isCollapsed ? " collapsed" : ""}` },
+    el("button", { type: "button", class: "bsection-head", "aria-expanded": String(!isCollapsed), onclick: () => toggleSection(name) },
+      el("span", { class: "bsection-icon" }, sectionIcon(name)),
+      el("span", { class: "bsection-title" }, name),
+      count ? el("span", { class: "bsection-count", "aria-label": `${count} answered` }, String(count)) : null,
+      el("span", { class: "bsection-chevron" }, svgIcon(isCollapsed ? ICONS.down : ICONS.up))),
+    isCollapsed ? null : el("div", { class: "bsection-body" }, body));
+}
+
+function rowName(t) {
+  return el("span", { class: "brow-name" }, t.emoji ? el("span", { class: "emoji", "aria-hidden": "true" }, t.emoji) : null, t.name);
+}
+
+// The coloured line under a name, with ⊖ to clear it.
+function levelLine(text, colour, onClear) {
+  if (!text) return null;
+  return el("span", { class: "brow-level", style: colour ? `--lc:${colour}` : "" },
+    onClear ? el("button", { type: "button", class: "clear", "aria-label": "Clear", onclick: onClear }, "−") : null,
+    el("span", {}, text));
+}
+
+function brow(t, levelNode, right, below) {
+  return el("div", { class: "brow" },
+    el("div", { class: "brow-main" },
+      el("div", { class: "brow-text" }, rowName(t), levelNode),
+      right ? el("div", { class: "brow-right" }, right) : null),
+    below || null);
+}
+
+function tile(content, attrs = {}) {
+  return el("button", { type: "button", class: "tile", ...attrs }, content);
+}
+
+/* ---------- the screen ---------- */
 
 function drawCheckin(view) {
   const today = isoDay(new Date());
@@ -318,17 +415,26 @@ function drawCheckin(view) {
 
   const groups = new Map();
   for (const t of state.trackers) {
-    const g = t.group_name || "Other";
+    const g = t.kind === "medication" ? "Medications" : (t.group_name || "Other");
     if (!groups.has(g)) groups.set(g, []);
     groups.get(g).push(t);
   }
 
   const sections = [];
   for (const [g, list] of groups) {
-    sections.push(el("section", { class: "group" },
-      el("h2", {}, g),
-      el("div", { class: "panel" }, list.map((t) => trackerRow(t, view))),
-    ));
+    const rows = [];
+    const chips = [];
+    for (const t of list) {
+      if (t.kind === "factor" && t.config.mode === "bool") chips.push(t);
+      else rows.push(trackerRow(t, view));
+    }
+    const chipBlock = chips.length || list.every((t) => t.kind === "factor")
+      ? el("div", { class: "bchips" },
+          chips.map((t) => factorChip(t)),
+          el("button", { type: "button", class: "tile chip-add", "aria-label": `Add something to ${g}`,
+            onclick: () => openTrackerSheet({ kind: "factor", group_name: g, config: { mode: "bool" } }, view) }, svgIcon(ICONS.plus)))
+      : null;
+    sections.push(section(g, list, [...rows, chipBlock].filter(Boolean)));
   }
 
   if (!state.trackers.length) {
@@ -339,6 +445,15 @@ function drawCheckin(view) {
   }
   view.replaceChildren(...[head, isToday ? dueCard(view) : null, ...sections].filter(Boolean));
 }
+
+async function changeDay(delta) {
+  const next = addDays(state.day, delta);
+  if (next > isoDay(new Date())) return;
+  state.day = next;
+  await renderCheckin(viewEl());
+}
+
+/* ---------- due now ---------- */
 
 function dueCard(view) {
   const due = state.doses.filter((d) => d.status === "due");
@@ -363,80 +478,294 @@ function dueCard(view) {
     const status = d.snoozed_until ? `Snoozed until ${niceTime(d.snoozed_until)}`
       : d.last_call ? `Past ${niceTime(d.latest)}. Skip today, or take it anyway?`
       : `Due since ${niceTime(d.time)}`;
-    return el("div", { class: "due-row" },
-      el("div", {},
-        el("div", { class: "row-name" }, d.name, d.amount ? el("span", { class: "due-amount" }, ` ${d.amount}`) : null),
-        el("div", { class: "row-sub" }, status)),
+    return el("div", { class: "brow" },
+      el("div", { class: "brow-text" },
+        el("span", { class: "brow-name" }, d.name, d.amount ? el("span", { class: "due-amount" }, ` ${d.amount}`) : null),
+        el("span", { class: "brow-level", style: "--lc:var(--accent)" }, el("span", {}, status))),
       el("div", { class: "due-actions" },
-        el("button", { type: "button", class: "primary small", onclick: () => act(d, "taken") }, "Taken now"),
-        el("button", { type: "button", class: "secondary small", onclick: () => {
+        tile("Taken now", { class: "tile tile-text on", onclick: () => act(d, "taken") }),
+        tile("Taken at…", { class: "tile tile-text", onclick: () => {
           const t = state.trackers.find((x) => x.id === d.tracker_id);
           if (t) openDoseSheet(t, view);
-        } }, "Taken at…"),
-        d.last_call ? null : el("button", { type: "button", class: "secondary small", onclick: () => act(d, "snooze") }, "Snooze"),
-        el("button", { type: "button", class: "secondary small", onclick: () => act(d, "skip") }, "Skip")),
+        } }),
+        d.last_call ? null : tile("Snooze", { class: "tile tile-text", onclick: () => act(d, "snooze") }),
+        tile("Skip", { class: "tile tile-text", onclick: () => act(d, "skip") })),
     );
   });
   const laterText = later.length
     ? `Later today: ${joinNames(later.map((d) => `${d.name} at ${niceTime(d.time)}`))}` : null;
-  return el("section", { class: "due", "aria-label": "Medications due" },
-    due.length ? el("h2", {}, due.length === 1 ? "Due now" : `${due.length} due now`) : null,
-    rows,
-    laterText ? el("p", { class: "row-sub due-later" }, laterText) : null,
+  return el("section", { class: "bsection due-section", "aria-label": "Medications due" },
+    el("div", { class: "bsection-head static" },
+      el("span", { class: "bsection-icon" }, svgIcon(ICONS.bell)),
+      el("span", { class: "bsection-title" }, due.length ? "Due now" : "Coming up"),
+      due.length ? el("span", { class: "bsection-count" }, String(due.length)) : null),
+    el("div", { class: "bsection-body" }, rows,
+      laterText ? el("p", { class: "row-sub due-later" }, laterText) : null),
   );
 }
 
-async function changeDay(delta) {
-  const next = addDays(state.day, delta);
-  if (next > isoDay(new Date())) return;
-  if (state.pending.size && !confirm("You have unsaved answers. Switch day without saving?")) return;
-  state.pending.clear();
-  state.day = next;
-  updateSaveBar();
-  await renderCheckin(document.getElementById("view"));
-}
+/* ---------- each kind of row ---------- */
 
-function rowShell(t, aside, controls, sub) {
-  const pending = state.pending.has(t.id);
-  return el("div", { class: "row" },
-    el("div", { class: "row-head" },
-      el("span", { class: `row-name${pending ? " pending-dot" : ""}` },
-        t.emoji ? el("span", { class: "emoji", "aria-hidden": "true" }, t.emoji) : null, t.name),
-      aside,
-    ),
-    sub ? el("div", { class: "row-sub" }, sub) : null,
-    el("div", { class: "controls" }, controls),
-  );
+function factorChip(t) {
+  const on = entriesFor(t.id).some((e) => e.value_num);
+  return el("button", {
+    type: "button", class: `tile chip${on ? " on" : ""}`, "aria-pressed": String(on),
+    onclick: () => quickSave([on ? { tracker_id: t.id, clear: true } : { tracker_id: t.id, value_num: 1 }]),
+  }, t.emoji ? el("span", { "aria-hidden": "true" }, t.emoji) : null, t.name);
 }
-
-function manyTodayNote(t) {
-  const list = entriesFor(t.id);
-  if (!list.length) return null;
-  const last = list[0];
-  const val = formatValue(t, last);
-  const when = timeOf(last.logged_at);
-  const count = list.length > 1 ? `${list.length} times, last ` : "";
-  return `Logged ${count}${val ? val.toLowerCase() + " " : ""}at ${when}`;
-}
-
-function redraw(view) { drawCheckin(view); }
 
 function goalAside(c, current) {
   if (!c.goal) return null;
   const done = Number(current) >= Number(c.goal);
-  return el("span", { class: `row-aside${done ? " set" : ""}` },
-    `${fmtNum(current)} of ${fmtNum(c.goal)}${c.unit ? " " + c.unit : ""}${done ? " ✓" : ""}`);
+  return `${fmtNum(current)} of ${fmtNum(c.goal)}${c.unit ? " " + c.unit : ""}${done ? " ✓" : ""}`;
 }
+
+function scaleBin(cfg, v) {
+  const n = cfg.max - cfg.min + 1;
+  return Math.min(4, Math.floor(((v - cfg.min) * 5) / n));
+}
+
+function scaleColor(cfg, v) {
+  return `var(${SCALE_VARS[scaleBin(cfg, v)]})`;
+}
+
+function ratingText(c, v) {
+  const label = (c.labels || [])[v - c.min];
+  return label ? `${label} (${v})` : `${v} of ${c.max}`;
+}
+
+function trackerRow(t, view) {
+  const c = t.config;
+  const entries = entriesFor(t.id);
+  const latest = entries[0] || null;
+
+  if (t.kind === "rating") {
+    const level = latest ? levelLine(ratingText(c, latest.value_num), scaleColor(c, latest.value_num),
+      t.frequency === "daily" ? () => removeEntry(latest) : null) : levelLine("Not logged yet", "var(--muted)");
+    const chips = t.frequency === "many" && entries.length
+      ? el("div", { class: "bchips small" }, entries.slice().reverse().map((e) => el("button", {
+          type: "button", class: "tile chip", style: `--lc:${scaleColor(c, e.value_num)}`,
+          "aria-label": `${t.name} ${ratingText(c, e.value_num)} at ${timeOf(e.logged_at)}. Change or delete`,
+          onclick: () => openRatingDialog(t, e),
+        }, el("strong", { class: "chip-num" }, String(e.value_num)), timeOf(e.logged_at))))
+      : null;
+    const add = t.frequency === "daily" && latest
+      ? tile(el("span", { class: "tile-num", style: `color:${scaleColor(c, latest.value_num)}` }, String(latest.value_num)),
+          { class: "tile tile-square", "aria-label": `Change ${t.name}`, onclick: () => openRatingDialog(t, latest) })
+      : tile(svgIcon(ICONS.plus), { class: "tile tile-square", "aria-label": `Log ${t.name}`, onclick: () => openRatingDialog(t) });
+    return brow(t, level, add, chips);
+  }
+
+  if (t.kind === "symptom") {
+    const val = latest ? latest.value_num : null;
+    const labels = state.meta.severity_labels;
+    const level = val != null ? levelLine(labels[val], SEVERITY_COLOURS[val], () => quickSave([{ tracker_id: t.id, clear: true }])) : null;
+    const tiles = el("div", { class: "level-tiles", role: "group", "aria-label": `${t.name} severity` },
+      labels.map((label, i) => tile(barsIcon(i), {
+        class: `tile tile-square${val === i ? " on" : ""}`, style: `--c:${SEVERITY_COLOURS[i]}`,
+        "aria-pressed": String(val === i), "aria-label": label, title: label,
+        onclick: () => quickSave([val === i ? { tracker_id: t.id, clear: true } : { tracker_id: t.id, value_num: i }]),
+      })));
+    return brow(t, level, tiles);
+  }
+
+  if (t.kind === "tags") {
+    // "As often as you like": taps within an hour add to the same entry.
+    const current = t.frequency === "daily" ? latest
+      : entries.find((e) => Date.now() - new Date(e.logged_at).getTime() < 60 * 60 * 1000) || null;
+    const selected = new Set(current ? current.value_json || [] : []);
+    const save = async (next) => {
+      try {
+        if (!next.length) {
+          if (current) await removeEntry(current);
+          return;
+        }
+        if (current && t.frequency === "many") {
+          await api("PATCH", `api/entries/${current.id}`, { value_json: next });
+          await loadDay();
+          drawCheckin(viewEl());
+        } else {
+          await quickSave([{ tracker_id: t.id, value_json: next }]);
+        }
+      } catch (err) { toast(err.message); }
+    };
+    const chips = el("div", { class: "bchips" },
+      (c.options || []).map((opt) => el("button", {
+        type: "button", class: `tile chip${selected.has(opt) ? " on" : ""}`, "aria-pressed": String(selected.has(opt)),
+        onclick: () => {
+          if (selected.has(opt)) selected.delete(opt); else selected.add(opt);
+          save([...selected]);
+        },
+      }, opt)),
+      el("button", { type: "button", class: "tile chip-add", "aria-label": `Add a choice to ${t.name}`, onclick: async () => {
+        const opt = (prompt(`Add a choice to ${t.name}`) || "").trim();
+        if (!opt) return;
+        try {
+          await api("PATCH", `api/trackers/${t.id}`, { config: { options: [...(c.options || []), opt] } });
+          await refreshTrackers();
+          selected.add(opt);
+          await save([...selected]);
+        } catch (err) { toast(err.message); }
+      } }, svgIcon(ICONS.plus)));
+    const others = t.frequency === "many" ? entries.filter((e) => e !== current) : [];
+    const level = others.length ? levelLine(`Earlier: ${others.map((e) => `${(e.value_json || []).join(", ")} at ${timeOf(e.logged_at)}`).join("; ")}`, "var(--muted)") : null;
+    return brow(t, level, null, chips);
+  }
+
+  if (t.kind === "factor") {
+    const val = latest ? latest.value_num : null;
+    if (c.mode === "count") {
+      const current = val ?? 0;
+      const step = (d) => {
+        const next = Math.max(0, current + d);
+        quickSave([next === 0 && latest ? { tracker_id: t.id, clear: true } : { tracker_id: t.id, value_num: next }]);
+      };
+      const stepper = el("div", { class: "level-tiles" },
+        tile(svgIcon(ICONS.minus), { class: "tile tile-square", "aria-label": `Fewer ${t.name}`, disabled: current <= 0, onclick: () => step(-1) }),
+        el("output", { class: "tile-num", "aria-live": "polite" }, fmtNum(current)),
+        tile(svgIcon(ICONS.plus), { class: "tile tile-square", "aria-label": `More ${t.name}`, onclick: () => step(1) }));
+      const text = goalAside(c, current) || (current ? `${fmtNum(current)} ${c.unit || ""}`.trim() : null);
+      return brow(t, levelLine(text, current ? "var(--accent)" : "var(--muted)"), stepper);
+    }
+    const input = el("input", {
+      type: "number", inputmode: "decimal", min: "0", step: "any", class: "tile-input",
+      value: val ?? "", "aria-label": t.name, placeholder: "0",
+      onchange: (ev) => {
+        const v = ev.target.value;
+        quickSave([v === "" ? { tracker_id: t.id, clear: true } : { tracker_id: t.id, value_num: Number(v) }]);
+      },
+    });
+    const text = goalAside(c, val ?? 0);
+    return brow(t, levelLine(text, "var(--accent)"), el("div", { class: "level-tiles" }, input, c.unit ? el("span", { class: "row-sub" }, c.unit) : null));
+  }
+
+  if (t.kind === "medication") {
+    const taken = entries.slice().reverse(); // earliest first
+    const usual = c.dose != null && c.dose !== "" ? `Usual dose ${fmtNum(c.dose)} ${c.unit || ""}`.trim() : null;
+    const nextDose = state.doses.find((d) => d.tracker_id === t.id && d.status === "scheduled" && d.local_day === state.day);
+    const isToday = state.day === isoDay(new Date());
+    const status = taken.length ? (taken.length === 1 ? "Taken once" : `Taken ${taken.length} times`) : "Not taken yet";
+    const sub = [status, usual, nextDose ? `next reminder ${niceTime(nextDose.time)}` : null].filter(Boolean).join(". ");
+    const chips = taken.length ? el("div", { class: "bchips small" }, taken.map((e) => el("button", {
+      type: "button", class: "tile chip", "aria-label": `${t.name} at ${timeOf(e.logged_at)}, ${doseText(t, e)}. Change or delete`,
+      onclick: () => openDoseSheet(t, view, e),
+    }, el("strong", {}, timeOf(e.logged_at)), el("span", { class: "chip-sub" }, doseText(t, e))))) : null;
+    const actions = el("div", { class: "level-tiles" },
+      isToday ? tile("Taken now", { class: "tile tile-text on", onclick: () => takenNow(t, view) }) : null,
+      tile(isToday ? "Taken at…" : "Log a dose…", { class: "tile tile-text", onclick: () => openDoseSheet(t, view) }));
+    return brow(t, levelLine(sub, taken.length ? "var(--accent)" : "var(--muted)"), null,
+      el("div", { class: "brow-below" }, chips, actions));
+  }
+
+  if (t.kind === "sleep") {
+    const s = latest ? latest.value_json || {} : {};
+    const hours = s.hours ?? null;
+    const quality = s.quality ?? null;
+    const save = (h, q) => quickSave([h == null && q == null ? { tracker_id: t.id, clear: true } : { tracker_id: t.id, value_json: { hours: h, quality: q } }]);
+    const shownHours = hours ?? 7.5;
+    const qcfg = { min: 1, max: 5, labels: ["Awful", "Poor", "Okay", "Good", "Great"] };
+    const stepper = el("div", { class: "level-tiles" },
+      tile(svgIcon(ICONS.minus), { class: "tile tile-square", "aria-label": "Less sleep", onclick: () => save(Math.max(0, shownHours - 0.5), quality) }),
+      el("output", { class: "tile-num" }, hours == null ? "–" : `${fmtNum(hours)}h`),
+      tile(svgIcon(ICONS.plus), { class: "tile tile-square", "aria-label": "More sleep", onclick: () => save(Math.min(24, hours == null ? shownHours : hours + 0.5), quality) }));
+    const qualityTiles = el("div", { class: "rating-grid one-row" }, [1, 2, 3, 4, 5].map((v) => el("div", { class: "rating-col", style: `--c:${scaleColor(qcfg, v)}` },
+      faceIcon(v - 1),
+      tile(String(v), { class: `tile tile-rating${quality === v ? " on" : ""}`, "aria-pressed": String(quality === v),
+        "aria-label": `Sleep quality ${qcfg.labels[v - 1]}`, onclick: () => save(hours, quality === v ? null : v) }))));
+    const text = [hours != null ? `${fmtNum(hours)} hours` : null, quality ? `${qcfg.labels[quality - 1]} sleep` : null].filter(Boolean).join(", ");
+    return brow(t, levelLine(text || "Not logged yet", quality ? scaleColor(qcfg, quality) : "var(--muted)",
+      latest ? () => removeEntry(latest) : null), stepper, el("div", { class: "brow-below" }, el("span", { class: "row-sub" }, "How well did you sleep?"), qualityTiles));
+  }
+
+  if (t.kind === "note") {
+    const area = el("textarea", { "aria-label": t.name, placeholder: "Anything worth remembering about today?" });
+    area.value = latest ? latest.note || "" : "";
+    const saveBtn = tile("Save note", { class: "tile tile-text on", hidden: true, onclick: () => {
+      const v = area.value.trim();
+      if (!v && latest) removeEntry(latest);
+      else if (v) quickSave([{ tracker_id: t.id, note: v }]).then(() => toast("Note saved"));
+    } });
+    area.addEventListener("input", () => { saveBtn.hidden = area.value === (latest ? latest.note || "" : ""); });
+    return brow(t, null, null, el("div", { class: "brow-below" }, area, saveBtn));
+  }
+
+  return brow(t, levelLine("This type isn't supported yet.", "var(--muted)"));
+}
+
+/* ---------- rating dialog, like Bearable's "Mood at 8:39pm" ---------- */
+
+function openRatingDialog(t, entry = null) {
+  const sheet = document.getElementById("sheet");
+  const c = t.config;
+  const now = new Date();
+  let time = entry ? /T(\d{2}:\d{2})/.exec(entry.logged_at)[1] : `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  const day = entry ? entry.day : state.day;
+  const n = c.max - c.min + 1;
+
+  const timeBtn = el("button", { type: "button", class: "time-edit" });
+  const timeInput = el("input", { type: "time", value: time, hidden: true, "aria-label": "Time" });
+  const drawTime = () => {
+    timeBtn.replaceChildren(el("span", {}, niceTime(time)), svgIcon(ICONS.edit));
+  };
+  timeBtn.addEventListener("click", () => { timeBtn.hidden = true; timeInput.hidden = false; timeInput.focus(); });
+  timeInput.addEventListener("change", () => { time = timeInput.value || time; drawTime(); timeInput.hidden = true; timeBtn.hidden = false; });
+  drawTime();
+
+  const choose = async (v) => {
+    const [h, m] = time.split(":").map(Number);
+    const when = dayToDate(day);
+    when.setHours(h, m, 0, 0);
+    if (when > new Date()) { toast("That time hasn't happened yet"); return; }
+    try {
+      if (entry) await api("PATCH", `api/entries/${entry.id}`, { value_num: v, logged_at: localISO(when) });
+      else await api("POST", "api/checkin", { logged_at: localISO(when), items: [{ tracker_id: t.id, value_num: v }] });
+      sheet.close();
+      await loadDay();
+      drawCheckin(viewEl());
+      toast(`${t.name}: ${ratingText(c, v)}`);
+    } catch (err) { toast(err.message); }
+  };
+
+  // Columns of two for long scales (1 and 2, 3 and 4…), one row for short ones.
+  const perCol = n > 5 ? Math.ceil(n / 5) : 1;
+  const cols = [];
+  for (let start = c.min; start <= c.max; start += perCol) {
+    const values = [];
+    for (let v = start; v < start + perCol && v <= c.max; v++) values.push(v);
+    cols.push(el("div", { class: "rating-col", style: `--c:${scaleColor(c, start)}` },
+      faceIcon(scaleBin(c, start)),
+      values.map((v) => tile(String(v), {
+        class: `tile tile-rating${entry && entry.value_num === v ? " on" : ""}`,
+        "aria-label": ratingText(c, v), title: (c.labels || [])[v - c.min] || "",
+        onclick: () => choose(v),
+      }))));
+  }
+
+  const body = el("div", { class: "rating-dialog" },
+    el("div", { class: "rating-head" },
+      el("h2", {}, `${t.name} at `, timeBtn, timeInput),
+      el("button", { type: "button", class: "iconbtn close", "aria-label": "Close", onclick: () => sheet.close() }, svgIcon(ICONS.close))),
+    el("div", { class: `rating-grid${perCol === 1 ? " one-row" : ""}`, style: `--cols:${cols.length}` }, cols),
+    entry ? el("div", { class: "actions center" },
+      el("button", { type: "button", class: "link danger", onclick: async () => {
+        if (!confirm(`Delete this ${t.name} entry?`)) return;
+        sheet.close();
+        await removeEntry(entry);
+      } }, "Delete this entry")) : null);
+
+  sheet.classList.add("center");
+  sheet.addEventListener("close", () => sheet.classList.remove("center"), { once: true });
+  sheet.replaceChildren(body);
+  sheet.showModal();
+}
+
+/* ---------- medication doses ---------- */
 
 async function takenNow(t, view) {
   const recent = entriesFor(t.id).find((e) => Date.now() - new Date(e.logged_at).getTime() < 60 * 60 * 1000);
   if (recent && !confirm(`${t.name} was logged at ${timeOf(recent.logged_at)}. Log another dose now?`)) return;
-  try {
-    await api("POST", "api/checkin", { logged_at: localISO(new Date()), items: [{ tracker_id: t.id, value_num: 1 }] });
-    await loadDay();
-    toast(`${t.name} logged at ${timeOf(localISO(new Date()))}`);
-    drawCheckin(view);
-  } catch (err) { toast(err.message); }
+  await quickSave([{ tracker_id: t.id, value_num: 1 }], localISO(new Date()));
+  toast(`${t.name} logged at ${timeOf(localISO(new Date()))}`);
 }
 
 // Log a dose at a chosen time, or change or delete one already logged.
@@ -520,182 +849,6 @@ function openDoseSheet(t, view, entry = null) {
 
   sheet.replaceChildren(form);
   sheet.showModal();
-}
-
-function trackerRow(t, view) {
-  const shown = shownValue(t);
-  const c = t.config;
-
-  if (t.kind === "rating") {
-    const n = c.max - c.min + 1;
-    const val = shown ? shown.value_num : null;
-    const buttons = [];
-    for (let v = c.min; v <= c.max; v++) {
-      buttons.push(el("button", {
-        type: "button",
-        "aria-pressed": String(val === v),
-        "aria-label": ratingLabel(c, v),
-        title: ratingLabel(c, v),
-        style: `--c:${scaleColor(c, v)}`,
-        onclick: () => { setPending(t, val === v ? null : { value_num: v }); redraw(view); },
-      }, v));
-    }
-    const aside = el("span", { class: `row-aside${val != null ? " set" : ""}` }, val != null ? ratingLabel(c, val) : "");
-    const cols = n > 7 ? Math.ceil(n / 2) : n;
-    return rowShell(t, aside, el("div", { class: "scale", style: `--n:${cols}` }, buttons),
-      t.frequency === "many" ? manyTodayNote(t) : null);
-  }
-
-  if (t.kind === "symptom") {
-    const val = shown ? shown.value_num : null;
-    const labels = state.meta.severity_labels;
-    const seg = el("div", { class: "seg severity", role: "group", "aria-label": `${t.name} severity` },
-      labels.map((label, i) => el("button", {
-        type: "button",
-        "aria-pressed": String(val === i),
-        style: `--sev:var(--sev${i})`,
-        onclick: () => { setPending(t, val === i ? null : { value_num: i }); redraw(view); },
-      }, label)));
-    return rowShell(t, null, seg);
-  }
-
-  if (t.kind === "tags") {
-    const selected = new Set(shown ? shown.value_json || [] : []);
-    const chips = el("div", { class: "chips" }, (c.options || []).map((opt) => el("button", {
-      type: "button",
-      class: "chip",
-      "aria-pressed": String(selected.has(opt)),
-      onclick: () => {
-        if (selected.has(opt)) selected.delete(opt); else selected.add(opt);
-        setPending(t, selected.size ? { value_json: [...selected] } : null);
-        redraw(view);
-      },
-    }, opt)));
-    return rowShell(t, null, chips, t.frequency === "many" ? manyTodayNote(t) : null);
-  }
-
-  if (t.kind === "factor") {
-    const val = shown ? shown.value_num : null;
-    if (c.mode === "bool") {
-      const seg = el("div", { class: "seg", role: "group", "aria-label": t.name },
-        [["No", 0], ["Yes", 1]].map(([label, v]) => el("button", {
-          type: "button",
-          "aria-pressed": String(val === v),
-          onclick: () => { setPending(t, val === v ? null : { value_num: v }); redraw(view); },
-        }, label)));
-      return rowShell(t, null, seg);
-    }
-    if (c.mode === "count") {
-      const current = val ?? 0;
-      const step = (d) => {
-        const next = Math.max(0, current + d);
-        setPending(t, { value_num: next });
-        redraw(view);
-      };
-      const stepper = el("div", { class: "stepper" },
-        el("button", { type: "button", class: "iconbtn", "aria-label": `Fewer ${t.name}`, disabled: current <= 0, onclick: () => step(-1) }, svgIcon(ICONS.minus)),
-        el("output", { "aria-live": "polite" }, fmtNum(current)),
-        el("button", { type: "button", class: "iconbtn", "aria-label": `More ${t.name}`, onclick: () => step(1) }, svgIcon(ICONS.plus)),
-        c.unit ? el("span", { class: "row-sub" }, c.unit) : null,
-      );
-      return rowShell(t, goalAside(c, current), stepper);
-    }
-    const input = el("input", {
-      type: "number", inputmode: "decimal", min: "0", step: "any",
-      value: val ?? "", "aria-label": t.name, placeholder: c.unit || "Amount",
-      onchange: (ev) => {
-        const v = ev.target.value;
-        setPending(t, v === "" ? null : { value_num: Number(v) });
-        redraw(view);
-      },
-    });
-    return rowShell(t, goalAside(c, val ?? 0), el("div", { class: "inline-field" }, input, c.unit ? el("span", {}, c.unit) : null));
-  }
-
-  if (t.kind === "medication") {
-    const taken = entriesFor(t.id).slice().reverse(); // earliest first
-    const usual = c.dose != null && c.dose !== "" ? `Usual dose ${fmtNum(c.dose)} ${c.unit || ""}`.trim() : null;
-    const nextDose = state.doses.find((d) => d.tracker_id === t.id && d.status === "scheduled" && d.local_day === state.day);
-    const sub = [usual, c.notes, nextDose ? `Next reminder ${niceTime(nextDose.time)}` : null].filter(Boolean).join(". ");
-    const isToday = state.day === isoDay(new Date());
-    const asideText = taken.length ? (taken.length === 1 ? "Taken once" : `Taken ${taken.length} times`) : "Not taken yet";
-    const chips = taken.length ? el("div", { class: "dose-chips" }, taken.map((e) => el("button", {
-      type: "button", class: "dose-chip", "aria-label": `${t.name} at ${timeOf(e.logged_at)}, ${doseText(t, e)}. Change or delete`,
-      onclick: () => openDoseSheet(t, view, e),
-    }, el("strong", {}, timeOf(e.logged_at)), el("span", {}, doseText(t, e))))) : null;
-    const actions = el("div", { class: "due-actions" },
-      isToday ? el("button", { type: "button", class: "med-taken", onclick: () => takenNow(t, view) }, "Taken now") : null,
-      el("button", { type: "button", class: "secondary small", onclick: () => openDoseSheet(t, view) }, isToday ? "Taken at…" : "Log a dose…"));
-    return rowShell(t, el("span", { class: "row-aside" }, asideText),
-      el("div", { class: "med-controls" }, chips, chips ? el("p", { class: "hint" }, "Tap a time to change or delete it.") : null, actions),
-      sub || null);
-  }
-
-  if (t.kind === "sleep") {
-    const s = shown ? shown.value_json || {} : {};
-    const hours = s.hours ?? null;
-    const quality = s.quality ?? null;
-    const update = (h, q) => {
-      setPending(t, h == null && q == null ? null : { value_json: { hours: h, quality: q } });
-      redraw(view);
-    };
-    const shownHours = hours ?? 7.5;
-    const stepper = el("div", { class: "stepper" },
-      el("button", { type: "button", class: "iconbtn", "aria-label": "Less sleep", onclick: () => update(Math.max(0, shownHours - 0.5), quality) }, svgIcon(ICONS.minus)),
-      el("output", {}, hours == null ? "–" : `${hours} h`),
-      el("button", { type: "button", class: "iconbtn", "aria-label": "More sleep", onclick: () => update(Math.min(24, hours == null ? shownHours : hours + 0.5), quality) }, svgIcon(ICONS.plus)),
-    );
-    const qcfg = { min: 1, max: 5, labels: ["Awful", "Poor", "Okay", "Good", "Great"] };
-    const scale = el("div", { class: "scale", style: "--n:5;flex:1" }, [1, 2, 3, 4, 5].map((v) => el("button", {
-      type: "button", "aria-pressed": String(quality === v), "aria-label": `Sleep quality ${qcfg.labels[v - 1]}`,
-      title: qcfg.labels[v - 1], style: `--c:${scaleColor(qcfg, v)}`,
-      onclick: () => update(hours, quality === v ? null : v),
-    }, v)));
-    const aside = el("span", { class: `row-aside${quality ? " set" : ""}` }, quality ? qcfg.labels[quality - 1] : "");
-    return rowShell(t, aside, el("div", {},
-      el("div", { class: "inline-field" }, el("span", {}, "Hours"), stepper),
-      el("div", { class: "inline-field" }, el("span", {}, "Quality"), scale),
-    ));
-  }
-
-  if (t.kind === "note") {
-    const p = state.pending.get(t.id);
-    const saved = dailyEntry(t);
-    const text = p ? (p.clear ? "" : p.note) : saved ? saved.note : "";
-    const area = el("textarea", {
-      "aria-label": t.name, placeholder: "Anything worth remembering about today?",
-      oninput: (ev) => {
-        const v = ev.target.value;
-        if (v.trim()) state.pending.set(t.id, { tracker_id: t.id, note: v });
-        else if (saved) state.pending.set(t.id, { tracker_id: t.id, clear: true });
-        else state.pending.delete(t.id);
-        updateSaveBar();
-      },
-    });
-    area.value = text || "";
-    return rowShell(t, null, area);
-  }
-
-  return rowShell(t, null, el("span", { class: "row-sub" }, "This tracker type isn't supported yet."));
-}
-
-async function saveCheckin() {
-  if (!state.pending.size) return;
-  const btn = document.getElementById("save");
-  btn.disabled = true;
-  try {
-    const items = [...state.pending.values()];
-    await api("POST", "api/checkin", { logged_at: loggedAtFor(state.day), items });
-    state.pending.clear();
-    await loadDay();
-    toast("Check-in saved");
-    updateSaveBar();
-    drawCheckin(document.getElementById("view"));
-  } catch (err) {
-    toast(`Not saved: ${err.message}`);
-  } finally {
-    btn.disabled = false;
-  }
 }
 
 /* ================= history ================= */
@@ -1854,12 +2007,6 @@ async function refreshTrackers() {
 }
 
 async function start() {
-  document.getElementById("save").addEventListener("click", saveCheckin);
-  document.getElementById("discard").addEventListener("click", () => {
-    state.pending.clear();
-    updateSaveBar();
-    drawCheckin(document.getElementById("view"));
-  });
   document.getElementById("sheet").addEventListener("click", (ev) => {
     if (ev.target.id === "sheet") ev.target.close(); // tap outside closes
   });

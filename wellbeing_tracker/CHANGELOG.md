@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.0
+
+- **Check-in looks and works like Bearable.**
+  - Sections with an icon, a heading, a count of what you've answered, and a collapse arrow.
+  - Raised tiles throughout.
+  - Ratings open a "Mood at 8:39pm" picker: faces above red-to-teal columns of numbers, with the time editable.
+  - Symptoms use signal-bar level tiles with the level shown under the name and ⊖ to clear it.
+  - Yes/no habits are chips you tap, with **+** to add one to a section.
+- **Saves as you tap.** There's no Save button any more.
+- **Bearable's colours and typeface:** ratings run red, orange, yellow, green, teal, and text uses Montserrat (bundled, so nothing is loaded from outside your home).
+
 ## 0.5.0
 
 - **Matches Home Assistant's theme.** Colours, dark and light mode, and custom themes come from Home Assistant, and change when it does.

@@ -6,6 +6,13 @@ Track mood, energy, symptoms, medications, sleep and other factors for everyone 
 
 Open **Wellbeing** in the Home Assistant sidebar (or the Companion app menu). Each person sees only their own log, based on the Home Assistant user they're signed in as.
 
+The Check-in screen is laid out like Bearable: sections you can collapse, each showing how many things you've answered. Everything saves the moment you tap it.
+
+- **Mood, Energy and other ratings**: tap **+** to pick a number, at the time shown (tap the time to change it). Tap a logged one to change or delete it.
+- **Symptoms**: tap a level. Tap ⊖ under the name to clear it.
+- **Habits and factors**: tap a chip to say you did it today, or **+** to add a new one to that section.
+- **Counts like Water**: use − and +.
+
 ## Logging medications
 
 Each medication has a **usual dose** and what it's **measured in** (for example 30 mg). On the Check-in screen:
