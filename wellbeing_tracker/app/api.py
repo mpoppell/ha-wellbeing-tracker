@@ -51,6 +51,19 @@ def build_router(current_user) -> APIRouter:
         d.reorder_trackers(user["id"], ids)
         return {"ok": True}
 
+    @router.post("/sections/rename")
+    def rename_section(
+        request: Request, payload: dict = Body(...), user: dict = Depends(current_user), d: Database = Depends(db)
+    ) -> dict:
+        old = str(payload.get("from") or "")
+        new = str(payload.get("to") or "").strip()[:40]
+        moved = d.rename_group(user["id"], old, new)
+        e = request.app.state.engine
+        dash = e.get_person(user["id"])["dashboard"]
+        sections = [{**sec, "name": new} if sec["name"] == old else sec for sec in dash["sections"]]
+        e.save_person(user["id"], {"dashboard": {"sections": sections}})
+        return {"moved": moved, "name": new}
+
     @router.delete("/trackers/{tracker_id}")
     def delete_tracker(tracker_id: int, user: dict = Depends(current_user), d: Database = Depends(db)) -> dict:
         d.delete_tracker(user["id"], tracker_id)

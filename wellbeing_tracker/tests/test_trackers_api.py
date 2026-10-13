@@ -139,7 +139,7 @@ def test_add_medication_and_log_it(matt):
     assert resp.status_code == 201, resp.text
     med = resp.json()
     assert med["key"] == "vyvanse"
-    assert med["group_name"] == "Medications"
+    assert med["group_name"] == "Meds/Supplements"
     assert med["frequency"] == "many"
     saved = matt.post("/api/checkin", json={"logged_at": TODAY, "items": [
         {"tracker_id": med["id"]}]}).json()["saved"][0]
@@ -297,3 +297,41 @@ def test_daily_goal_on_counts(matt):
     t = matt.post("/api/trackers", json={"kind": "factor", "name": "Steps walked", "config": {"mode": "count", "goal": "8000"}}).json()
     assert t["config"]["goal"] == 8000
     assert matt.post("/api/trackers", json={"kind": "factor", "name": "X", "config": {"mode": "count", "goal": -1}}).status_code == 422
+
+
+def test_medication_usual_number_and_name(matt):
+    med = matt.post("/api/trackers", json={"kind": "medication", "name": "Watermelon frost",
+                                           "config": {"quantity": "1", "counted_as": "application"}}).json()
+    assert med["config"] == {"quantity": 1, "counted_as": "application"}
+    assert matt.post("/api/trackers", json={"kind": "medication", "name": "X", "config": {"quantity": 0}}).status_code == 422
+
+
+def test_dashboard_layout_and_rename_section(matt):
+    r = matt.put("/api/reminders/settings", json={"dashboard": {"sections": [
+        {"name": "Symptoms"}, {"name": "How you feel", "hidden": True}, {"name": "Symptoms"}, {"name": ""}]}})
+    assert r.status_code == 200
+    assert r.json()["dashboard"]["sections"] == [
+        {"name": "Symptoms", "hidden": False}, {"name": "How you feel", "hidden": True}]
+    out = matt.post("/api/sections/rename", json={"from": "Symptoms", "to": "Body"}).json()
+    assert out == {"moved": 5, "name": "Body"}
+    assert trackers_by_key(matt)["headache"]["group_name"] == "Body"
+    sections = matt.get("/api/reminders/settings").json()["dashboard"]["sections"]
+    assert sections[0] == {"name": "Body", "hidden": False}
+    assert matt.post("/api/sections/rename", json={"from": "Body", "to": "  "}).status_code == 422
+
+
+def test_medication_groups(matt, kayla):
+    a = matt.post("/api/trackers", json={"kind": "medication", "name": "Magnesium"}).json()
+    b = matt.post("/api/trackers", json={"kind": "medication", "name": "Restavit"}).json()
+    r = matt.put("/api/reminders/settings", json={"med_groups": [
+        {"name": "Sleep", "items": [{"tracker_id": a["id"], "quantity": 1}, {"tracker_id": b["id"], "quantity": 0.5}]}]})
+    assert r.status_code == 200
+    [g] = r.json()["med_groups"]
+    assert g["name"] == "Sleep" and len(g["id"]) == 8 and g["items"][1]["quantity"] == 0.5
+    # can't include someone else's or a non-medication
+    mood = trackers_by_key(matt)["mood"]
+    assert matt.put("/api/reminders/settings", json={"med_groups": [
+        {"name": "Bad", "items": [{"tracker_id": mood["id"]}]}]}).status_code == 422
+    assert kayla.put("/api/reminders/settings", json={"med_groups": [
+        {"name": "Theirs", "items": [{"tracker_id": a["id"]}]}]}).status_code == 404
+    assert matt.put("/api/reminders/settings", json={"med_groups": [{"name": "Empty", "items": []}]}).status_code == 422

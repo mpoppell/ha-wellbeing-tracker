@@ -134,12 +134,20 @@ function longDate(day) {
 }
 
 let toastTimer;
-function toast(msg) {
+function toast(msg, actionLabel, onAction) {
   const t = document.getElementById("toast");
-  t.textContent = msg;
+  const parts = [el("span", {}, msg)];
+  if (actionLabel) {
+    parts.push(el("button", { type: "button", class: "toast-action", onclick: async () => {
+      t.classList.remove("show");
+      await onAction();
+    } }, actionLabel));
+  }
+  t.replaceChildren(...parts);
+  t.classList.toggle("has-action", !!actionLabel);
   t.classList.add("show");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
+  toastTimer = setTimeout(() => t.classList.remove("show"), actionLabel ? 6000 : 2200);
 }
 
 /* ================= state ================= */
@@ -152,10 +160,11 @@ const state = {
   dayEntries: [],
   pending: new Map(), // tracker_id -> item to send
   doses: [], // today's medication doses from the reminder engine
+  allTrackers: [],
+  person: null,
+  editing: false,
   historyDays: 14,
 };
-
-const SCALE_VARS = ["--r1", "--r2", "--r3", "--r4", "--r5"];
 
 function fmtNum(n) {
   const v = Number(n);
@@ -235,7 +244,7 @@ async function route() {
   }
 }
 
-/* ================= check-in ================= */
+/* ================= check-in dashboard ================= */
 
 function entriesFor(trackerId) {
   return state.dayEntries.filter((e) => e.tracker_id === trackerId);
@@ -245,17 +254,22 @@ function dailyEntry(t) {
   return t.frequency === "daily" ? entriesFor(t.id)[0] || null : null;
 }
 
-// Everything on Check-in saves the moment you tap, like Bearable.
-function updateSaveBar() { /* no save bar any more */ }
+// Everything on Check-in saves the moment you tap it.
+function updateSaveBar() { /* no save bar */ }
 
 async function loadDay() {
   const isToday = state.day === isoDay(new Date());
-  const [entries, doses] = await Promise.all([
+  const [entries, doses, person, all] = await Promise.all([
     api("GET", `api/entries?from=${state.day}&to=${state.day}`),
     isToday ? api("GET", "api/doses/today").catch(() => []) : Promise.resolve([]),
+    api("GET", "api/reminders/settings").catch(() => state.person),
+    api("GET", "api/trackers?include_hidden=true"),
   ]);
   state.dayEntries = entries;
   state.doses = doses;
+  state.person = person;
+  state.allTrackers = all;
+  state.trackers = all.filter((t) => !t.hidden);
   state.nextCheckin = isToday ? (await api("GET", "api/checkins/next").catch(() => ({}))).time : null;
 }
 
@@ -267,42 +281,52 @@ async function renderCheckin(view) {
 
 const viewEl = () => document.getElementById("view");
 
+async function refreshCheckin() {
+  await loadDay();
+  drawCheckin(viewEl());
+}
+
 async function quickSave(items, when) {
   try {
-    await api("POST", "api/checkin", { logged_at: when || loggedAtFor(state.day), items });
-    await loadDay();
-    drawCheckin(viewEl());
-  } catch (err) { toast(err.message); }
+    const res = await api("POST", "api/checkin", { logged_at: when || loggedAtFor(state.day), items });
+    await refreshCheckin();
+    return res;
+  } catch (err) { toast(err.message); return null; }
 }
 
 async function removeEntry(entry) {
   try {
     await api("DELETE", `api/entries/${entry.id}`);
-    await loadDay();
-    drawCheckin(viewEl());
+    await refreshCheckin();
   } catch (err) { toast(err.message); }
 }
 
-/* ---------- drawing helpers ---------- */
+/* ---------- icons ---------- */
+
+Object.assign(ICONS, {
+  eye: "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z",
+  eyeOff: "M3 3l18 18M10.6 5.1A10 10 0 0 1 12 5c6 0 10 7 10 7a17 17 0 0 1-3.2 3.9M6.6 6.6C3.9 8.4 2 12 2 12s4 7 10 7a9.6 9.6 0 0 0 4.4-1.1",
+  dots: "M5 12h.01M12 12h.01M19 12h.01",
+  trash: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13",
+  pill: "M10.5 20.5l10-10a5 5 0 0 0-7-7l-10 10a5 5 0 0 0 7 7zM8.5 8.5l7 7",
+  move: "M7 7l-4 4 4 4M17 7l4 4-4 4M3 11h18",
+  copy: "M8 8h11v11H8zM5 16V5h11",
+});
 
 const SECTION_ICONS = [
   [/feel|mood|emotion/, "M12 20s-7-4.5-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.5-7 10-7 10zM5 12h3l2-3 2 5 2-3h5"],
-  [/symptom|pain|side effect/, "M14 14.8V5a2 2 0 0 0-4 0v9.8a4 4 0 1 0 4 0zM12 17v-5"],
+  [/symptom|pain|side effect|body/, "M14 14.8V5a2 2 0 0 0-4 0v9.8a4 4 0 1 0 4 0zM12 17v-5"],
   [/sleep|rest/, "M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"],
-  [/medic|meds|supplement/, "M10.5 20.5l10-10a5 5 0 0 0-7-7l-10 10a5 5 0 0 0 7 7zM8.5 8.5l7 7"],
+  [/medic|meds|supplement/, ICONS.pill],
   [/life|habit|activ|exercise|social/, "M5 19c0-8 5-13 14-14 0 9-5 14-13 14zM5 19l7-7"],
   [/note|journal|diary/, "M4 20h4L19 9l-4-4L4 16v4z"],
   [/water|drink|food|nutrition|diet/, "M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11z"],
 ];
-const DEFAULT_SECTION_ICON = "M4 6h16M4 12h16M4 18h10";
-
 function sectionIcon(name) {
-  const n = name.toLowerCase();
-  const hit = SECTION_ICONS.find(([re]) => re.test(n));
-  return svgIcon(hit ? hit[1] : DEFAULT_SECTION_ICON);
+  const hit = SECTION_ICONS.find(([re]) => re.test(name.toLowerCase()));
+  return svgIcon(hit ? hit[1] : "M4 6h16M4 12h16M4 18h10");
 }
 
-// Five faces, very sad to very happy, drawn as line icons.
 const FACE_MOUTHS = ["M8 17q4-4.5 8 0", "M8.5 16.3q3.5-2.3 7 0", "M8.5 15.5h7", "M8.5 14.5q3.5 2.5 7 0", "M7.8 13.8q4.2 5 8.4 0"];
 function faceIcon(level) {
   const ns = "http://www.w3.org/2000/svg";
@@ -323,7 +347,6 @@ function faceIcon(level) {
   return s;
 }
 
-// Signal bars for levels: 0 = none, 3 = severe.
 function barsIcon(level) {
   const ns = "http://www.w3.org/2000/svg";
   const s = document.createElementNS(ns, "svg");
@@ -346,40 +369,73 @@ function barsIcon(level) {
 }
 
 const SEVERITY_COLOURS = ["var(--sev0)", "var(--sev1)", "var(--sev2)", "var(--sev3)"];
+const SCALE_VARS = ["--r1", "--r2", "--r3", "--r4", "--r5"];
+
+function scaleBin(cfg, v) {
+  const n = cfg.max - cfg.min + 1;
+  return Math.min(4, Math.floor(((v - cfg.min) * 5) / n));
+}
+
+function scaleColor(cfg, v) {
+  return `var(${SCALE_VARS[scaleBin(cfg, v)]})`;
+}
+
+function ratingText(c, v) {
+  const label = (c.labels || [])[v - c.min];
+  return label ? `${label} (${v})` : `${v} of ${c.max}`;
+}
+
+/* ---------- layout: which sections, in what order ---------- */
+
+const isMeds = (t) => t.kind === "medication";
+
+function sectionName(t) {
+  return t.group_name || (isMeds(t) ? "Meds/Supplements" : "Other");
+}
+
+// Sections in the saved order, then any new ones in the order their items appear.
+function dashboardSections(includeHidden) {
+  const saved = (state.person && state.person.dashboard && state.person.dashboard.sections) || [];
+  const trackers = includeHidden ? state.allTrackers : state.trackers;
+  const byName = new Map();
+  for (const t of trackers) {
+    const n = sectionName(t);
+    if (!byName.has(n)) byName.set(n, []);
+    byName.get(n).push(t);
+  }
+  const out = [];
+  for (const s of saved) out.push({ name: s.name, hidden: s.hidden, items: byName.get(s.name) || [] });
+  for (const [name, items] of byName) {
+    if (!saved.some((s) => s.name === name)) out.push({ name, hidden: false, items });
+  }
+  // Meds/Supplements first by default, like Bearable, unless you've arranged them yourself
+  if (!saved.length) out.sort((a, b) => Number(b.items.some(isMeds)) - Number(a.items.some(isMeds)));
+  return out;
+}
+
+async function saveLayout(sections) {
+  state.person = await api("PUT", "api/reminders/settings",
+    { dashboard: { sections: sections.map((s) => ({ name: s.name, hidden: !!s.hidden })) } });
+}
 
 let collapsed = new Set();
 try { collapsed = new Set(JSON.parse(localStorage.getItem("wbt-collapsed") || "[]")); } catch { /* private mode */ }
-function toggleSection(name) {
-  if (collapsed.has(name)) collapsed.delete(name); else collapsed.add(name);
+function toggleCollapsed(key) {
+  if (collapsed.has(key)) collapsed.delete(key); else collapsed.add(key);
   try { localStorage.setItem("wbt-collapsed", JSON.stringify([...collapsed])); } catch { /* ignore */ }
   drawCheckin(viewEl());
 }
 
-function answered(t) {
-  return entriesFor(t.id).length > 0;
-}
-
-function section(name, trackers, body, extraCount = null) {
-  const count = extraCount ?? trackers.filter(answered).length;
-  const isCollapsed = collapsed.has(name);
-  return el("section", { class: `bsection${isCollapsed ? " collapsed" : ""}` },
-    el("button", { type: "button", class: "bsection-head", "aria-expanded": String(!isCollapsed), onclick: () => toggleSection(name) },
-      el("span", { class: "bsection-icon" }, sectionIcon(name)),
-      el("span", { class: "bsection-title" }, name),
-      count ? el("span", { class: "bsection-count", "aria-label": `${count} answered` }, String(count)) : null,
-      el("span", { class: "bsection-chevron" }, svgIcon(isCollapsed ? ICONS.down : ICONS.up))),
-    isCollapsed ? null : el("div", { class: "bsection-body" }, body));
-}
+/* ---------- small building blocks ---------- */
 
 function rowName(t) {
   return el("span", { class: "brow-name" }, t.emoji ? el("span", { class: "emoji", "aria-hidden": "true" }, t.emoji) : null, t.name);
 }
 
-// The coloured line under a name, with ⊖ to clear it.
 function levelLine(text, colour, onClear) {
   if (!text) return null;
   return el("span", { class: "brow-level", style: colour ? `--lc:${colour}` : "" },
-    onClear ? el("button", { type: "button", class: "clear", "aria-label": "Clear", onclick: onClear }, "−") : null,
+    onClear ? el("button", { type: "button", class: "clear", "aria-label": "Clear", title: "Clear", onclick: onClear }, svgIcon(ICONS.minus)) : null,
     el("span", {}, text));
 }
 
@@ -401,49 +457,37 @@ function drawCheckin(view) {
   const today = isoDay(new Date());
   const name = (state.me.display_name || state.me.username || "").split(" ")[0];
   const isToday = state.day === today;
+  const editing = !!state.editing;
 
-  const head = el("header", { class: "head" },
-    el("h1", {}, isToday ? (name ? `How are you, ${name}?` : "How are you?")
-      : `Check-in for ${state.day === addDays(today, -1) ? "yesterday" : dayLabel(state.day)}`),
-    el("div", { class: "dayswitch" },
-      el("button", { type: "button", class: "iconbtn", "aria-label": "Previous day", onclick: () => changeDay(-1) }, svgIcon(ICONS.left)),
-      el("span", { class: "day-label" }, longDate(state.day)),
-      el("button", { type: "button", class: "iconbtn", "aria-label": "Next day", disabled: isToday, onclick: () => changeDay(1) }, svgIcon(ICONS.right)),
-    ),
-    isToday && state.nextCheckin ? el("p", { class: "row-sub" }, `Next check-in reminder at ${niceTime(state.nextCheckin)}`) : null,
+  const head = el("header", { class: "head head-row" },
+    el("div", {},
+      el("h1", {}, editing ? "Edit your dashboard" : isToday ? (name ? `How are you, ${name}?` : "How are you?")
+        : `Check-in for ${state.day === addDays(today, -1) ? "yesterday" : dayLabel(state.day)}`),
+      editing ? el("p", {}, "Reorder, rename or hide sections, and edit, move or hide anything in them.")
+        : el("div", { class: "dayswitch" },
+            el("button", { type: "button", class: "iconbtn", "aria-label": "Previous day", onclick: () => changeDay(-1) }, svgIcon(ICONS.left)),
+            el("span", { class: "day-label" }, longDate(state.day)),
+            el("button", { type: "button", class: "iconbtn", "aria-label": "Next day", disabled: isToday, onclick: () => changeDay(1) }, svgIcon(ICONS.right))),
+      !editing && isToday && state.nextCheckin ? el("p", { class: "row-sub" }, `Next check-in reminder at ${niceTime(state.nextCheckin)}`) : null),
+    editing
+      ? el("button", { type: "button", class: "primary small", onclick: () => { state.editing = false; drawCheckin(view); } }, "Done")
+      : el("button", { type: "button", class: "iconbtn", "aria-label": "Edit dashboard", title: "Edit dashboard",
+          onclick: () => { state.editing = true; drawCheckin(view); } }, svgIcon(ICONS.edit)),
   );
 
-  const groups = new Map();
-  for (const t of state.trackers) {
-    const g = t.kind === "medication" ? "Medications" : (t.group_name || "Other");
-    if (!groups.has(g)) groups.set(g, []);
-    groups.get(g).push(t);
-  }
+  const sections = dashboardSections(editing).filter((s) => editing || (!s.hidden && s.items.length));
+  const cards = sections.map((s, i) => editing ? editSectionCard(s, i, sections, view) : sectionCard(s, view));
 
-  const sections = [];
-  for (const [g, list] of groups) {
-    const rows = [];
-    const chips = [];
-    for (const t of list) {
-      if (t.kind === "factor" && t.config.mode === "bool") chips.push(t);
-      else rows.push(trackerRow(t, view));
-    }
-    const chipBlock = chips.length || list.every((t) => t.kind === "factor")
-      ? el("div", { class: "bchips" },
-          chips.map((t) => factorChip(t)),
-          el("button", { type: "button", class: "tile chip-add", "aria-label": `Add something to ${g}`,
-            onclick: () => openTrackerSheet({ kind: "factor", group_name: g, config: { mode: "bool" } }, view) }, svgIcon(ICONS.plus)))
-      : null;
-    sections.push(section(g, list, [...rows, chipBlock].filter(Boolean)));
-  }
-
-  if (!state.trackers.length) {
-    sections.push(el("div", { class: "empty" },
+  const extra = [];
+  if (editing) {
+    extra.push(el("div", { class: "actions" },
+      el("button", { type: "button", class: "secondary", onclick: () => addSection(sections) }, "+ Add section")));
+  } else if (!state.trackers.length) {
+    extra.push(el("div", { class: "empty" },
       el("p", {}, "You're not tracking anything yet."),
-      el("a", { class: "primary", href: "#/settings", style: "display:inline-block;text-decoration:none" }, "Choose what to track"),
-    ));
+      el("button", { type: "button", class: "primary", onclick: () => { state.editing = true; drawCheckin(view); } }, "Set up your dashboard")));
   }
-  view.replaceChildren(...[head, isToday ? dueCard(view) : null, ...sections].filter(Boolean));
+  view.replaceChildren(...[head, !editing && isToday ? dueCard(view) : null, ...cards, ...extra].filter(Boolean));
 }
 
 async function changeDay(delta) {
@@ -451,6 +495,159 @@ async function changeDay(delta) {
   if (next > isoDay(new Date())) return;
   state.day = next;
   await renderCheckin(viewEl());
+}
+
+/* ---------- a section card (accordion) ---------- */
+
+function answeredCount(items) {
+  if (items.some(isMeds)) return new Set(state.dayEntries.filter((e) => items.some((t) => t.id === e.tracker_id)).map((e) => e.tracker_id)).size;
+  return items.filter((t) => entriesFor(t.id).length).length;
+}
+
+function sectionCard(s, view) {
+  const key = `section:${s.name}`;
+  const open = !collapsed.has(key);
+  const meds = s.items.some(isMeds);
+  const count = answeredCount(s.items);
+  const header = el("div", { class: "card-head" },
+    el("button", { type: "button", class: "card-toggle", "aria-expanded": String(open), onclick: () => toggleCollapsed(key) },
+      el("span", { class: "card-icon" }, sectionIcon(s.name)),
+      el("span", { class: "card-title" }, s.name),
+      count ? el("span", { class: "card-count", "aria-label": `${count} logged today` }, String(count)) : null,
+      el("span", { class: "card-chevron" }, svgIcon(open ? ICONS.up : ICONS.down))),
+    el("button", { type: "button", class: "iconbtn plain", "aria-label": `${s.name} options`, title: "Options",
+      onclick: () => openSectionMenu(s, view) }, svgIcon(ICONS.dots)));
+
+  let body = null;
+  if (open) {
+    if (meds) body = medsBody(s, view);
+    else {
+      const rows = [];
+      const chips = [];
+      for (const t of s.items) {
+        if (t.kind === "factor" && t.config.mode === "bool") chips.push(t);
+        else rows.push(trackerRow(t, view));
+      }
+      body = [...rows, chips.length ? el("div", { class: "bchips" }, chips.map(factorChip),
+        el("button", { type: "button", class: "chip chip-add", "aria-label": `Add something to ${s.name}`,
+          onclick: () => openTrackerSheet({ kind: "factor", group_name: s.name, config: { mode: "bool" } }, view) }, svgIcon(ICONS.plus))) : null];
+    }
+  }
+  return el("section", { class: `card${open ? "" : " closed"}` }, header, open ? el("div", { class: "card-body" }, body) : null);
+}
+
+function openSectionMenu(s, view) {
+  const sheet = document.getElementById("sheet");
+  const meds = s.items.some(isMeds);
+  const item = (label, fn) => el("button", { type: "button", class: "menu-item", onclick: () => { sheet.close(); fn(); } }, label);
+  sheet.replaceChildren(el("div", { class: "sheet-body" },
+    el("h2", {}, s.name),
+    el("div", { class: "menu" },
+      meds ? item("Add a medication", () => openTrackerSheet({ kind: "medication", group_name: s.name }, view))
+        : item(`Add something to ${s.name}`, () => openTrackerSheet({ kind: "rating", group_name: s.name }, view)),
+      meds ? item("Create a group", () => openGroupSheet(null, view)) : null,
+      meds ? item("Reminders and phones", () => { location.hash = "#/settings"; }) : null,
+      item("Edit dashboard", () => { state.editing = true; drawCheckin(view); })),
+    el("div", { class: "actions" }, el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Close"))));
+  sheet.showModal();
+}
+
+/* ---------- edit mode ---------- */
+
+function editSectionCard(s, i, sections, view) {
+  const move = async (d) => {
+    const order = sections.slice();
+    const j = i + d;
+    if (j < 0 || j >= order.length) return;
+    [order[i], order[j]] = [order[j], order[i]];
+    await saveLayout(order);
+    drawCheckin(view);
+  };
+  const toggleHidden = async () => {
+    const order = sections.map((x) => x.name === s.name ? { ...x, hidden: !x.hidden } : x);
+    await saveLayout(order);
+    drawCheckin(view);
+  };
+  const rename = async () => {
+    const to = (prompt("Rename section", s.name) || "").trim();
+    if (!to || to === s.name) return;
+    try {
+      await api("POST", "api/sections/rename", { from: s.name, to });
+      if (!s.items.length) await saveLayout(sections.map((x) => x.name === s.name ? { ...x, name: to } : x));
+      await refreshCheckin();
+    } catch (err) { toast(err.message); }
+  };
+  const header = el("div", { class: "card-head edit" },
+    el("span", { class: "card-icon" }, sectionIcon(s.name)),
+    el("span", { class: "card-title" }, s.name, s.hidden ? el("span", { class: "muted-tag" }, " Hidden") : null),
+    el("div", { class: "edit-tools" },
+      el("button", { type: "button", class: "iconbtn plain", "aria-label": `Move ${s.name} up`, disabled: i === 0, onclick: () => move(-1) }, svgIcon(ICONS.up)),
+      el("button", { type: "button", class: "iconbtn plain", "aria-label": `Move ${s.name} down`, disabled: i === sections.length - 1, onclick: () => move(1) }, svgIcon(ICONS.down)),
+      el("button", { type: "button", class: "iconbtn plain", "aria-label": `Rename ${s.name}`, onclick: rename }, svgIcon(ICONS.edit)),
+      el("button", { type: "button", class: "iconbtn plain", "aria-label": s.hidden ? `Show ${s.name}` : `Hide ${s.name}`,
+        title: s.hidden ? "Show section" : "Hide section", onclick: toggleHidden }, svgIcon(s.hidden ? ICONS.eye : ICONS.eyeOff))));
+
+  const meds = s.items.some(isMeds) || /med|supplement/i.test(s.name);
+  const rows = s.items.map((t, j) => editItemRow(t, j, s, sections, view));
+  const add = el("button", { type: "button", class: "secondary small add-in-section",
+    onclick: () => openTrackerSheet(meds ? { kind: "medication", group_name: s.name } : { kind: "rating", group_name: s.name }, view) },
+    `+ Add to ${s.name}`);
+  const groups = meds && state.person ? el("div", { class: "edit-groups" },
+    el("span", { class: "row-sub" }, "Groups"),
+    el("div", { class: "bchips small" },
+      state.person.med_groups.map((g) => el("button", { type: "button", class: "chip", onclick: () => openGroupSheet(g, view) }, g.name, svgIcon(ICONS.edit))),
+      el("button", { type: "button", class: "chip", onclick: () => openGroupSheet(null, view) }, "+ New group"))) : null;
+  return el("section", { class: `card editing${s.hidden ? " dim" : ""}` }, header,
+    el("div", { class: "card-body" }, rows.length ? rows : el("p", { class: "row-sub" }, "Nothing here yet."), groups, add));
+}
+
+function editItemRow(t, j, s, sections, view) {
+  const siblings = s.items;
+  const move = async (d) => {
+    const other = siblings[j + d];
+    if (!other) return;
+    const order = state.allTrackers.map((x) => x.id);
+    const a = order.indexOf(t.id);
+    const b = order.indexOf(other.id);
+    [order[a], order[b]] = [order[b], order[a]];
+    await api("POST", "api/trackers/order", { ids: order });
+    await refreshCheckin();
+  };
+  const toggleHidden = async () => {
+    await api("PATCH", `api/trackers/${t.id}`, { hidden: !t.hidden });
+    await refreshCheckin();
+  };
+  const moveTo = () => {
+    const sheet = document.getElementById("sheet");
+    const pick = async (name) => {
+      sheet.close();
+      await api("PATCH", `api/trackers/${t.id}`, { group_name: name });
+      await refreshCheckin();
+    };
+    sheet.replaceChildren(el("div", { class: "sheet-body" },
+      el("h2", {}, `Move ${t.name} to`),
+      el("div", { class: "menu" }, sections.filter((x) => x.name !== s.name).map((x) =>
+        el("button", { type: "button", class: "menu-item", onclick: () => pick(x.name) }, x.name))),
+      el("div", { class: "actions" }, el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Cancel"))));
+    sheet.showModal();
+  };
+  return el("div", { class: `edit-row${t.hidden ? " dim" : ""}` },
+    el("div", { class: "brow-text" }, rowName(t), el("span", { class: "row-sub" }, t.hidden ? "Hidden" : describeTracker(t))),
+    el("div", { class: "edit-tools" },
+      el("button", { type: "button", class: "iconbtn plain", "aria-label": `Move ${t.name} up`, disabled: j === 0, onclick: () => move(-1) }, svgIcon(ICONS.up)),
+      el("button", { type: "button", class: "iconbtn plain", "aria-label": `Move ${t.name} down`, disabled: j === siblings.length - 1, onclick: () => move(1) }, svgIcon(ICONS.down)),
+      el("button", { type: "button", class: "iconbtn plain", "aria-label": `Edit ${t.name}`, title: "Edit", onclick: () => openTrackerSheet(t, view) }, svgIcon(ICONS.edit)),
+      el("button", { type: "button", class: "iconbtn plain", "aria-label": `Move ${t.name} to another section`, title: "Move to another section", onclick: moveTo }, svgIcon(ICONS.move)),
+      el("button", { type: "button", class: "iconbtn plain", "aria-label": t.hidden ? `Show ${t.name}` : `Hide ${t.name}`,
+        title: t.hidden ? "Show" : "Hide", onclick: toggleHidden }, svgIcon(t.hidden ? ICONS.eye : ICONS.eyeOff))));
+}
+
+async function addSection(sections) {
+  const name = (prompt("Name the new section") || "").trim();
+  if (!name) return;
+  if (sections.some((s) => s.name === name)) { toast("There's already a section with that name"); return; }
+  await saveLayout([...sections, { name, hidden: false, items: [] }]);
+  drawCheckin(viewEl());
 }
 
 /* ---------- due now ---------- */
@@ -481,35 +678,269 @@ function dueCard(view) {
     return el("div", { class: "brow" },
       el("div", { class: "brow-text" },
         el("span", { class: "brow-name" }, d.name, d.amount ? el("span", { class: "due-amount" }, ` ${d.amount}`) : null),
-        el("span", { class: "brow-level", style: "--lc:var(--accent)" }, el("span", {}, status))),
+        el("span", { class: "row-sub" }, status)),
       el("div", { class: "due-actions" },
-        tile("Taken now", { class: "tile tile-text on", onclick: () => act(d, "taken") }),
-        tile("Taken at…", { class: "tile tile-text", onclick: () => {
+        el("button", { type: "button", class: "primary small", onclick: () => act(d, "taken") }, "Taken now"),
+        el("button", { type: "button", class: "secondary small", onclick: () => {
           const t = state.trackers.find((x) => x.id === d.tracker_id);
-          if (t) openDoseSheet(t, view);
-        } }),
-        d.last_call ? null : tile("Snooze", { class: "tile tile-text", onclick: () => act(d, "snooze") }),
-        tile("Skip", { class: "tile tile-text", onclick: () => act(d, "skip") })),
-    );
+          if (t) openDoseDialog(t, null);
+        } }, "Taken at…"),
+        d.last_call ? null : el("button", { type: "button", class: "secondary small", onclick: () => act(d, "snooze") }, "Snooze"),
+        el("button", { type: "button", class: "secondary small", onclick: () => act(d, "skip") }, "Skip")));
   });
-  const laterText = later.length
-    ? `Later today: ${joinNames(later.map((d) => `${d.name} at ${niceTime(d.time)}`))}` : null;
-  return el("section", { class: "bsection due-section", "aria-label": "Medications due" },
-    el("div", { class: "bsection-head static" },
-      el("span", { class: "bsection-icon" }, svgIcon(ICONS.bell)),
-      el("span", { class: "bsection-title" }, due.length ? "Due now" : "Coming up"),
-      due.length ? el("span", { class: "bsection-count" }, String(due.length)) : null),
-    el("div", { class: "bsection-body" }, rows,
-      laterText ? el("p", { class: "row-sub due-later" }, laterText) : null),
-  );
+  const laterText = later.length ? `Later today: ${joinNames(later.map((d) => `${d.name} at ${niceTime(d.time)}`))}` : null;
+  return el("section", { class: "card due-card", "aria-label": "Medications due" },
+    el("div", { class: "card-head" },
+      el("span", { class: "card-icon" }, svgIcon(ICONS.bell)),
+      el("span", { class: "card-title" }, due.length ? "Due now" : "Coming up"),
+      due.length ? el("span", { class: "card-count" }, String(due.length)) : null),
+    el("div", { class: "card-body" }, rows, laterText ? el("p", { class: "row-sub due-later" }, laterText) : null));
 }
 
-/* ---------- each kind of row ---------- */
+/* ---------- Meds/Supplements ---------- */
+
+function plural(word, n) {
+  if (!word) return "";
+  if (Number(n) === 1) return word;
+  if (/(s|x|ch|sh)$/.test(word)) return word + "es";
+  return word + "s";
+}
+
+function usualText(t) {
+  const c = t.config;
+  const q = c.quantity ?? 1;
+  return `${fmtNum(q)} ${plural(c.counted_as || "dose", q)}`;
+}
+
+function strengthText(t) {
+  const c = t.config;
+  return c.dose != null && c.dose !== "" ? `${fmtNum(c.dose)}${c.unit || ""}` : (c.unit || "");
+}
+
+function medsBody(s, view) {
+  const gkey = `groups:${s.name}`;
+  const groupsOpen = !collapsed.has(gkey);
+  const groups = (state.person && state.person.med_groups) || [];
+  const groupBlock = el("div", { class: "med-groups" },
+    el("div", { class: "med-groups-head" },
+      el("button", { type: "button", class: "sub-toggle", "aria-expanded": String(groupsOpen), onclick: () => toggleCollapsed(gkey) },
+        "Groups", svgIcon(groupsOpen ? ICONS.up : ICONS.down)),
+      el("button", { type: "button", class: "link inline-icon", onclick: () => copyLast(s) }, svgIcon(ICONS.copy), "Copy last")),
+    groupsOpen ? el("div", { class: "bchips small" },
+      groups.map((g) => el("button", { type: "button", class: "chip", title: `Log ${g.name}`, onclick: () => logGroup(g) }, g.name)),
+      el("button", { type: "button", class: "chip chip-ghost", onclick: () => openGroupSheet(null, view) }, "+ Create new group")) : null);
+  const rows = s.items.filter(isMeds).map((t) => medRow(t, view));
+  const others = s.items.filter((t) => !isMeds(t)).map((t) => trackerRow(t, view));
+  return [groupBlock, ...rows, ...others];
+}
+
+function medRow(t, view) {
+  const taken = entriesFor(t.id).slice().reverse(); // earliest first
+  const c = t.config;
+  const nextDose = state.doses.find((d) => d.tracker_id === t.id && d.status === "scheduled" && d.local_day === state.day);
+  const totalQty = taken.reduce((a, e) => a + Number(e.value_num || 1), 0);
+  const totalStrength = taken.reduce((a, e) => {
+    const strength = e.value_json && e.value_json.dose != null ? e.value_json.dose : c.dose;
+    return strength != null && strength !== "" ? a + Number(strength) * Number(e.value_num || 1) : a;
+  }, 0);
+  const add = el("button", { type: "button", class: "dose-add", "aria-label": `Log ${t.name}`, onclick: () => openDoseDialog(t, null) }, svgIcon(ICONS.plus));
+  const squares = taken.map((e) => el("div", { class: "dose-cell" },
+    el("button", { type: "button", class: "dose-square", "aria-label": `${t.name} at ${timeOf(e.logged_at)}, ${doseText(t, e)}. Change or delete`,
+      onclick: () => openDoseDialog(t, e) }, fmtNum(e.value_num ?? 1)),
+    el("span", { class: "dose-time" }, timeOf(e.logged_at))));
+  const strength = strengthText(t);
+  const title = el("div", { class: "brow-text" },
+    el("div", { class: "med-title" },
+      el("span", { class: "brow-name" }, t.emoji ? el("span", { class: "emoji", "aria-hidden": "true" }, t.emoji) : null, t.name),
+      strength ? el("span", { class: "med-strength" }, ` (${strength})`) : null),
+    el("div", { class: "row-sub" }, [usualText(t), nextDose ? `next reminder ${niceTime(nextDose.time)}` : null].filter(Boolean).join(", ")));
+  if (!taken.length) {
+    return el("div", { class: "med-row" }, el("div", { class: "brow-main" }, title, add));
+  }
+  return el("div", { class: "med-row" }, title,
+    el("div", { class: "med-main" },
+      el("div", { class: "dose-cells" }, squares, el("div", { class: "dose-cell" }, add)),
+      el("div", { class: "med-total", "aria-label": "Total today" },
+        el("strong", {}, `${fmtNum(totalQty)} ${plural(c.counted_as || "dose", totalQty)}`),
+        totalStrength ? el("span", {}, `${fmtNum(totalStrength)}${c.unit || ""}`) : null)));
+}
+
+// The dose dialog: ×N with −1/−0.5/+0.5/+1, strength, time, delete, Confirm.
+function openDoseDialog(t, entry) {
+  const sheet = document.getElementById("sheet");
+  const c = t.config;
+  const day = entry ? entry.day : state.day;
+  const now = new Date();
+  let time = entry ? /T(\d{2}:\d{2})/.exec(entry.logged_at)[1] : `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  let count = entry ? Number(entry.value_num ?? 1) : Number(c.quantity ?? 1);
+  let strength = entry && entry.value_json && entry.value_json.dose != null ? entry.value_json.dose : c.dose;
+
+  const countOut = el("span", { class: "dose-big", "aria-live": "polite" });
+  const drawCount = () => { countOut.textContent = `× ${fmtNum(count)}`; };
+  drawCount();
+  const step = (d) => { count = Math.max(0.5, Math.round((count + d) * 2) / 2); drawCount(); };
+
+  const strengthBtn = el("button", { type: "button", class: "strength-edit" });
+  const strengthInput = el("input", { type: "number", min: "0", step: "any", inputmode: "decimal", hidden: true, "aria-label": "Strength", style: "width:6em" });
+  const drawStrength = () => strengthBtn.replaceChildren(el("span", {}, strength != null && strength !== "" ? fmtNum(strength) : "Add"), svgIcon(ICONS.edit));
+  strengthBtn.addEventListener("click", () => { strengthBtn.hidden = true; strengthInput.hidden = false; strengthInput.value = strength ?? ""; strengthInput.focus(); });
+  strengthInput.addEventListener("change", () => { strength = strengthInput.value === "" ? null : Number(strengthInput.value); drawStrength(); strengthInput.hidden = true; strengthBtn.hidden = false; });
+  drawStrength();
+
+  const timeBtn = el("button", { type: "button", class: "time-pill" });
+  const timeInput = el("input", { type: "time", hidden: true, "aria-label": "Time taken" });
+  const drawTime = () => timeBtn.replaceChildren(niceTime(time));
+  timeBtn.addEventListener("click", () => { timeBtn.hidden = true; timeInput.hidden = false; timeInput.value = time; timeInput.focus(); });
+  timeInput.addEventListener("change", () => { time = timeInput.value || time; drawTime(); timeInput.hidden = true; timeBtn.hidden = false; });
+  drawTime();
+
+  const err = el("p", { class: "form-error", hidden: true });
+  const confirmIt = async () => {
+    const [h, m] = time.split(":").map(Number);
+    const when = dayToDate(day);
+    when.setHours(h, m, 0, 0);
+    if (when > new Date()) { err.textContent = "That time hasn't happened yet."; err.hidden = false; return; }
+    const value_json = strength != null && strength !== "" ? { dose: Number(strength) } : null;
+    try {
+      if (entry) await api("PATCH", `api/entries/${entry.id}`, { logged_at: localISO(when), value_num: count, value_json });
+      else await api("POST", "api/checkin", { logged_at: localISO(when), items: [{ tracker_id: t.id, value_num: count, value_json }] });
+      sheet.close();
+      await refreshCheckin();
+      toast(entry ? "Dose changed" : `${t.name} logged at ${niceTime(time)}`);
+    } catch (e) { err.textContent = e.message; err.hidden = false; }
+  };
+
+  const body = el("div", { class: "dose-dialog" },
+    el("div", { class: "dose-top" },
+      entry ? el("button", { type: "button", class: "iconbtn plain dose-delete", "aria-label": "Delete this dose", title: "Delete",
+        onclick: async () => {
+          if (!confirm(`Delete the ${t.name} dose at ${niceTime(time)}?`)) return;
+          sheet.close();
+          await removeEntry(entry);
+          toast("Dose deleted");
+        } }, svgIcon(ICONS.trash)) : null,
+      el("button", { type: "button", class: "iconbtn plain dose-close", "aria-label": "Close", onclick: () => sheet.close() }, svgIcon(ICONS.close)),
+      el("div", { class: "dose-count" }, svgIcon(ICONS.pill), countOut),
+      el("div", { class: "dose-steps" }, [-1, -0.5, 0.5, 1].map((d) =>
+        el("button", { type: "button", class: "round-step", "aria-label": `${d > 0 ? "Add" : "Take away"} ${Math.abs(d)}`, onclick: () => step(d) },
+          d > 0 ? `+${d}` : `${d}`)))),
+    el("div", { class: "dose-bottom" },
+      el("div", { class: "brow-name" }, t.name),
+      el("div", { class: "dose-meta" },
+        el("div", { class: "dose-strength" }, el("div", {}, strengthBtn, strengthInput), el("span", { class: "row-sub" }, c.unit || "strength")),
+        el("div", {}, timeBtn, timeInput)),
+      err),
+    el("button", { type: "button", class: "primary confirm", onclick: confirmIt }, entry ? "Save changes" : "Confirm"));
+  sheet.classList.add("center");
+  sheet.addEventListener("close", () => sheet.classList.remove("center"), { once: true });
+  sheet.replaceChildren(body);
+  sheet.showModal();
+}
+
+async function logGroup(g) {
+  const items = g.items.filter((it) => state.trackers.some((t) => t.id === it.tracker_id))
+    .map((it) => ({ tracker_id: it.tracker_id, value_num: it.quantity }));
+  if (!items.length) { toast(`${g.name} has no medications to log`); return; }
+  const res = await quickSave(items, loggedAtFor(state.day));
+  if (res) toast(`${g.name} logged (${items.length})`, "Undo", async () => {
+    for (const e of res.saved) await api("DELETE", `api/entries/${e.id}`).catch(() => {});
+    await refreshCheckin();
+  });
+}
+
+// Copy the doses from the last day you logged any, at the same times.
+async function copyLast(s) {
+  const medIds = new Set(s.items.filter(isMeds).map((t) => t.id));
+  const past = await api("GET", `api/entries?from=${addDays(state.day, -30)}&to=${addDays(state.day, -1)}`);
+  const meds = past.filter((e) => medIds.has(e.tracker_id));
+  if (!meds.length) { toast("Nothing logged in the last 30 days to copy"); return; }
+  const lastDay = meds.map((e) => e.day).sort().pop();
+  const fromDay = meds.filter((e) => e.day === lastDay);
+  const now = new Date();
+  const copies = fromDay.map((e) => {
+    const [h, m] = /T(\d{2}):(\d{2})/.exec(e.logged_at).slice(1).map(Number);
+    const when = dayToDate(state.day);
+    when.setHours(h, m, 0, 0);
+    return { e, when };
+  }).filter(({ when }) => when <= now);
+  if (!copies.length) { toast(`Nothing from ${dayLabel(lastDay)} has come round yet today`); return; }
+  const names = (id) => (state.trackers.find((t) => t.id === id) || {}).name;
+  const summary = copies.map(({ e, when }) => `${names(e.tracker_id)} at ${timeOf(localISO(when))}`).join(", ");
+  if (!confirm(`Copy from ${dayLabel(lastDay)}: ${summary}?`)) return;
+  const created = [];
+  try {
+    for (const { e, when } of copies.reverse()) {
+      const r = await api("POST", "api/checkin", { logged_at: localISO(when),
+        items: [{ tracker_id: e.tracker_id, value_num: e.value_num, value_json: e.value_json }] });
+      created.push(...r.saved);
+    }
+  } catch (err) { toast(err.message); }
+  await refreshCheckin();
+  toast(`Copied ${created.length} from ${dayLabel(lastDay)}`, "Undo", async () => {
+    for (const e of created) await api("DELETE", `api/entries/${e.id}`).catch(() => {});
+    await refreshCheckin();
+  });
+}
+
+function openGroupSheet(g, view) {
+  const sheet = document.getElementById("sheet");
+  const meds = state.trackers.filter(isMeds);
+  const name = el("input", { type: "text", maxlength: "30", value: g ? g.name : "", placeholder: "For example Morning", required: true });
+  const picks = meds.map((t) => {
+    const it = g ? g.items.find((x) => x.tracker_id === t.id) : null;
+    const box = el("input", { type: "checkbox" });
+    box.checked = !!it;
+    let qty = it ? it.quantity : Number(t.config.quantity ?? 1);
+    const out = el("output", {}, fmtNum(qty));
+    const step = (d) => { qty = Math.max(0.5, Math.round((qty + d) * 2) / 2); out.textContent = fmtNum(qty); box.checked = true; };
+    return { t, box, get qty() { return qty; }, node: el("div", { class: "group-pick" },
+      el("label", { class: "check" }, box, el("span", {}, t.name, el("span", { class: "row-sub" }, ` ${strengthText(t)}`))),
+      el("div", { class: "stepper" },
+        el("button", { type: "button", class: "iconbtn", "aria-label": `Less ${t.name}`, onclick: () => step(-0.5) }, svgIcon(ICONS.minus)),
+        out,
+        el("button", { type: "button", class: "iconbtn", "aria-label": `More ${t.name}`, onclick: () => step(0.5) }, svgIcon(ICONS.plus)))) };
+  });
+  const err = el("p", { class: "form-error", hidden: true });
+  const save = async (groups) => {
+    try {
+      state.person = await api("PUT", "api/reminders/settings", { med_groups: groups });
+      sheet.close();
+      drawCheckin(viewEl());
+    } catch (e) { err.textContent = e.message; err.hidden = false; }
+  };
+  const form = el("form", { method: "dialog" },
+    el("h2", {}, g ? `Edit ${g.name}` : "Create a group"),
+    el("p", { class: "row-sub", style: "margin:-8px 0 14px" }, "Tap a group to log everything in it at once."),
+    err,
+    field("Name", name),
+    meds.length ? el("div", { class: "field" }, el("span", {}, "Medications and how many"), picks.map((p) => p.node))
+      : notice("Add a medication first."),
+    el("div", { class: "actions" },
+      el("button", { type: "submit", class: "primary" }, g ? "Save group" : "Create group"),
+      g ? el("button", { type: "button", class: "secondary danger", onclick: () => {
+        if (!confirm(`Delete the ${g.name} group? Your medications stay.`)) return;
+        save(state.person.med_groups.filter((x) => x.id !== g.id));
+      } }, "Delete") : null,
+      el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Cancel")));
+  form.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    const items = picks.filter((p) => p.box.checked).map((p) => ({ tracker_id: p.t.id, quantity: p.qty }));
+    const updated = { id: g ? g.id : undefined, name: name.value, items };
+    const groups = (state.person.med_groups || []).filter((x) => !g || x.id !== g.id);
+    if (g) groups.splice(state.person.med_groups.findIndex((x) => x.id === g.id), 0, updated);
+    else groups.push(updated);
+    save(groups);
+  });
+  sheet.replaceChildren(form);
+  sheet.showModal();
+}
+
+/* ---------- other kinds of row ---------- */
 
 function factorChip(t) {
   const on = entriesFor(t.id).some((e) => e.value_num);
   return el("button", {
-    type: "button", class: `tile chip${on ? " on" : ""}`, "aria-pressed": String(on),
+    type: "button", class: "chip", "aria-pressed": String(on),
     onclick: () => quickSave([on ? { tracker_id: t.id, clear: true } : { tracker_id: t.id, value_num: 1 }]),
   }, t.emoji ? el("span", { "aria-hidden": "true" }, t.emoji) : null, t.name);
 }
@@ -518,20 +949,6 @@ function goalAside(c, current) {
   if (!c.goal) return null;
   const done = Number(current) >= Number(c.goal);
   return `${fmtNum(current)} of ${fmtNum(c.goal)}${c.unit ? " " + c.unit : ""}${done ? " ✓" : ""}`;
-}
-
-function scaleBin(cfg, v) {
-  const n = cfg.max - cfg.min + 1;
-  return Math.min(4, Math.floor(((v - cfg.min) * 5) / n));
-}
-
-function scaleColor(cfg, v) {
-  return `var(${SCALE_VARS[scaleBin(cfg, v)]})`;
-}
-
-function ratingText(c, v) {
-  const label = (c.labels || [])[v - c.min];
-  return label ? `${label} (${v})` : `${v} of ${c.max}`;
 }
 
 function trackerRow(t, view) {
@@ -544,7 +961,7 @@ function trackerRow(t, view) {
       t.frequency === "daily" ? () => removeEntry(latest) : null) : levelLine("Not logged yet", "var(--muted)");
     const chips = t.frequency === "many" && entries.length
       ? el("div", { class: "bchips small" }, entries.slice().reverse().map((e) => el("button", {
-          type: "button", class: "tile chip", style: `--lc:${scaleColor(c, e.value_num)}`,
+          type: "button", class: "chip", style: `--lc:${scaleColor(c, e.value_num)}`,
           "aria-label": `${t.name} ${ratingText(c, e.value_num)} at ${timeOf(e.logged_at)}. Change or delete`,
           onclick: () => openRatingDialog(t, e),
         }, el("strong", { class: "chip-num" }, String(e.value_num)), timeOf(e.logged_at))))
@@ -570,20 +987,15 @@ function trackerRow(t, view) {
   }
 
   if (t.kind === "tags") {
-    // "As often as you like": taps within an hour add to the same entry.
     const current = t.frequency === "daily" ? latest
       : entries.find((e) => Date.now() - new Date(e.logged_at).getTime() < 60 * 60 * 1000) || null;
     const selected = new Set(current ? current.value_json || [] : []);
     const save = async (next) => {
       try {
-        if (!next.length) {
-          if (current) await removeEntry(current);
-          return;
-        }
+        if (!next.length) { if (current) await removeEntry(current); return; }
         if (current && t.frequency === "many") {
           await api("PATCH", `api/entries/${current.id}`, { value_json: next });
-          await loadDay();
-          drawCheckin(viewEl());
+          await refreshCheckin();
         } else {
           await quickSave([{ tracker_id: t.id, value_json: next }]);
         }
@@ -591,18 +1003,14 @@ function trackerRow(t, view) {
     };
     const chips = el("div", { class: "bchips" },
       (c.options || []).map((opt) => el("button", {
-        type: "button", class: `tile chip${selected.has(opt) ? " on" : ""}`, "aria-pressed": String(selected.has(opt)),
-        onclick: () => {
-          if (selected.has(opt)) selected.delete(opt); else selected.add(opt);
-          save([...selected]);
-        },
+        type: "button", class: "chip", "aria-pressed": String(selected.has(opt)),
+        onclick: () => { if (selected.has(opt)) selected.delete(opt); else selected.add(opt); save([...selected]); },
       }, opt)),
-      el("button", { type: "button", class: "tile chip-add", "aria-label": `Add a choice to ${t.name}`, onclick: async () => {
+      el("button", { type: "button", class: "chip chip-add", "aria-label": `Add a choice to ${t.name}`, onclick: async () => {
         const opt = (prompt(`Add a choice to ${t.name}`) || "").trim();
         if (!opt) return;
         try {
           await api("PATCH", `api/trackers/${t.id}`, { config: { options: [...(c.options || []), opt] } });
-          await refreshTrackers();
           selected.add(opt);
           await save([...selected]);
         } catch (err) { toast(err.message); }
@@ -635,27 +1043,11 @@ function trackerRow(t, view) {
         quickSave([v === "" ? { tracker_id: t.id, clear: true } : { tracker_id: t.id, value_num: Number(v) }]);
       },
     });
-    const text = goalAside(c, val ?? 0);
-    return brow(t, levelLine(text, "var(--accent)"), el("div", { class: "level-tiles" }, input, c.unit ? el("span", { class: "row-sub" }, c.unit) : null));
+    return brow(t, levelLine(goalAside(c, val ?? 0), "var(--accent)"),
+      el("div", { class: "level-tiles" }, input, c.unit ? el("span", { class: "row-sub" }, c.unit) : null));
   }
 
-  if (t.kind === "medication") {
-    const taken = entries.slice().reverse(); // earliest first
-    const usual = c.dose != null && c.dose !== "" ? `Usual dose ${fmtNum(c.dose)} ${c.unit || ""}`.trim() : null;
-    const nextDose = state.doses.find((d) => d.tracker_id === t.id && d.status === "scheduled" && d.local_day === state.day);
-    const isToday = state.day === isoDay(new Date());
-    const status = taken.length ? (taken.length === 1 ? "Taken once" : `Taken ${taken.length} times`) : "Not taken yet";
-    const sub = [status, usual, nextDose ? `next reminder ${niceTime(nextDose.time)}` : null].filter(Boolean).join(". ");
-    const chips = taken.length ? el("div", { class: "bchips small" }, taken.map((e) => el("button", {
-      type: "button", class: "tile chip", "aria-label": `${t.name} at ${timeOf(e.logged_at)}, ${doseText(t, e)}. Change or delete`,
-      onclick: () => openDoseSheet(t, view, e),
-    }, el("strong", {}, timeOf(e.logged_at)), el("span", { class: "chip-sub" }, doseText(t, e))))) : null;
-    const actions = el("div", { class: "level-tiles" },
-      isToday ? tile("Taken now", { class: "tile tile-text on", onclick: () => takenNow(t, view) }) : null,
-      tile(isToday ? "Taken at…" : "Log a dose…", { class: "tile tile-text", onclick: () => openDoseSheet(t, view) }));
-    return brow(t, levelLine(sub, taken.length ? "var(--accent)" : "var(--muted)"), null,
-      el("div", { class: "brow-below" }, chips, actions));
-  }
+  if (t.kind === "medication") return medRow(t, view);
 
   if (t.kind === "sleep") {
     const s = latest ? latest.value_json || {} : {};
@@ -674,17 +1066,18 @@ function trackerRow(t, view) {
         "aria-label": `Sleep quality ${qcfg.labels[v - 1]}`, onclick: () => save(hours, quality === v ? null : v) }))));
     const text = [hours != null ? `${fmtNum(hours)} hours` : null, quality ? `${qcfg.labels[quality - 1]} sleep` : null].filter(Boolean).join(", ");
     return brow(t, levelLine(text || "Not logged yet", quality ? scaleColor(qcfg, quality) : "var(--muted)",
-      latest ? () => removeEntry(latest) : null), stepper, el("div", { class: "brow-below" }, el("span", { class: "row-sub" }, "How well did you sleep?"), qualityTiles));
+      latest ? () => removeEntry(latest) : null), stepper,
+      el("div", { class: "brow-below" }, el("span", { class: "row-sub" }, "How well did you sleep?"), qualityTiles));
   }
 
   if (t.kind === "note") {
     const area = el("textarea", { "aria-label": t.name, placeholder: "Anything worth remembering about today?" });
     area.value = latest ? latest.note || "" : "";
-    const saveBtn = tile("Save note", { class: "tile tile-text on", hidden: true, onclick: () => {
+    const saveBtn = el("button", { type: "button", class: "primary small", hidden: true, onclick: () => {
       const v = area.value.trim();
       if (!v && latest) removeEntry(latest);
       else if (v) quickSave([{ tracker_id: t.id, note: v }]).then(() => toast("Note saved"));
-    } });
+    } }, "Save note");
     area.addEventListener("input", () => { saveBtn.hidden = area.value === (latest ? latest.note || "" : ""); });
     return brow(t, null, null, el("div", { class: "brow-below" }, area, saveBtn));
   }
@@ -692,7 +1085,7 @@ function trackerRow(t, view) {
   return brow(t, levelLine("This type isn't supported yet.", "var(--muted)"));
 }
 
-/* ---------- rating dialog, like Bearable's "Mood at 8:39pm" ---------- */
+/* ---------- rating dialog: "Mood at 8:39pm" ---------- */
 
 function openRatingDialog(t, entry = null) {
   const sheet = document.getElementById("sheet");
@@ -704,9 +1097,7 @@ function openRatingDialog(t, entry = null) {
 
   const timeBtn = el("button", { type: "button", class: "time-edit" });
   const timeInput = el("input", { type: "time", value: time, hidden: true, "aria-label": "Time" });
-  const drawTime = () => {
-    timeBtn.replaceChildren(el("span", {}, niceTime(time)), svgIcon(ICONS.edit));
-  };
+  const drawTime = () => timeBtn.replaceChildren(el("span", {}, niceTime(time)), svgIcon(ICONS.edit));
   timeBtn.addEventListener("click", () => { timeBtn.hidden = true; timeInput.hidden = false; timeInput.focus(); });
   timeInput.addEventListener("change", () => { time = timeInput.value || time; drawTime(); timeInput.hidden = true; timeBtn.hidden = false; });
   drawTime();
@@ -720,13 +1111,11 @@ function openRatingDialog(t, entry = null) {
       if (entry) await api("PATCH", `api/entries/${entry.id}`, { value_num: v, logged_at: localISO(when) });
       else await api("POST", "api/checkin", { logged_at: localISO(when), items: [{ tracker_id: t.id, value_num: v }] });
       sheet.close();
-      await loadDay();
-      drawCheckin(viewEl());
+      await refreshCheckin();
       toast(`${t.name}: ${ratingText(c, v)}`);
     } catch (err) { toast(err.message); }
   };
 
-  // Columns of two for long scales (1 and 2, 3 and 4…), one row for short ones.
   const perCol = n > 5 ? Math.ceil(n / 5) : 1;
   const cols = [];
   for (let start = c.min; start <= c.max; start += perCol) {
@@ -744,7 +1133,7 @@ function openRatingDialog(t, entry = null) {
   const body = el("div", { class: "rating-dialog" },
     el("div", { class: "rating-head" },
       el("h2", {}, `${t.name} at `, timeBtn, timeInput),
-      el("button", { type: "button", class: "iconbtn close", "aria-label": "Close", onclick: () => sheet.close() }, svgIcon(ICONS.close))),
+      el("button", { type: "button", class: "iconbtn plain close", "aria-label": "Close", onclick: () => sheet.close() }, svgIcon(ICONS.close))),
     el("div", { class: `rating-grid${perCol === 1 ? " one-row" : ""}`, style: `--cols:${cols.length}` }, cols),
     entry ? el("div", { class: "actions center" },
       el("button", { type: "button", class: "link danger", onclick: async () => {
@@ -759,97 +1148,15 @@ function openRatingDialog(t, entry = null) {
   sheet.showModal();
 }
 
-/* ---------- medication doses ---------- */
+/* ---------- quick actions ---------- */
 
-async function takenNow(t, view) {
-  const recent = entriesFor(t.id).find((e) => Date.now() - new Date(e.logged_at).getTime() < 60 * 60 * 1000);
-  if (recent && !confirm(`${t.name} was logged at ${timeOf(recent.logged_at)}. Log another dose now?`)) return;
-  await quickSave([{ tracker_id: t.id, value_num: 1 }], localISO(new Date()));
+async function takenNow(t) {
+  await quickSave([{ tracker_id: t.id, value_num: Number(t.config.quantity ?? 1) }], localISO(new Date()));
   toast(`${t.name} logged at ${timeOf(localISO(new Date()))}`);
 }
 
-// Log a dose at a chosen time, or change or delete one already logged.
-function openDoseSheet(t, view, entry = null) {
-  const sheet = document.getElementById("sheet");
-  const c = t.config;
-  const day = entry ? entry.day : state.day;
-  const now = new Date();
-  const startTime = entry ? /T(\d{2}:\d{2})/.exec(entry.logged_at)[1] : `${pad(now.getHours())}:${pad(now.getMinutes())}`;
-  const timeInput = el("input", { type: "time", value: startTime, required: true, "aria-label": "Time taken" });
-  let count = entry ? entry.value_num : 1;
-  const countOut = el("output", { "aria-live": "polite" }, fmtNum(count));
-  const stepCount = (d) => { count = Math.max(0.5, Math.round((count + d) * 2) / 2); countOut.textContent = fmtNum(count); drawTotal(); };
-  const strength = el("input", { type: "number", min: "0", step: "any", inputmode: "decimal",
-    value: entry && entry.value_json && entry.value_json.dose != null ? entry.value_json.dose : (c.dose ?? ""),
-    "aria-label": "Dose", style: "width:7em", placeholder: "30" });
-  const total = el("p", { class: "hint" });
-  const drawTotal = () => {
-    const sv = Number(strength.value);
-    total.textContent = strength.value !== "" && sv > 0 && count !== 1
-      ? `Total ${fmtNum(count * sv)} ${c.unit || ""}`.trim() : "";
-  };
-  strength.addEventListener("input", drawTotal);
-  drawTotal();
-  const note = el("input", { type: "text", maxlength: "500", value: entry && entry.note ? entry.note : "", placeholder: "Optional" });
-  const err = el("p", { class: "form-error", hidden: true });
-
-  const form = el("form", { method: "dialog" },
-    el("h2", {}, entry ? `Change ${t.name} dose` : `Log ${t.name}`),
-    el("p", { class: "row-sub", style: "margin:-8px 0 14px" }, longDate(day)),
-    err,
-    field("Time taken", timeInput),
-    el("div", { class: "field" }, el("span", {}, "Number of doses"),
-      el("div", { class: "stepper" },
-        el("button", { type: "button", class: "iconbtn", "aria-label": "Fewer doses", onclick: () => stepCount(-0.5) }, svgIcon(ICONS.minus)),
-        countOut,
-        el("button", { type: "button", class: "iconbtn", "aria-label": "More doses", onclick: () => stepCount(0.5) }, svgIcon(ICONS.plus))),
-      el("span", { class: "hint" }, "For example 2 tablets, or half a tablet.")),
-    el("div", { class: "field" }, el("span", {}, "Dose"),
-      el("div", { class: "inline-field" }, strength, el("span", {}, c.unit || "")),
-      el("span", { class: "hint" }, "Change it if this dose was a different strength."), total),
-    field("Note", note),
-    el("div", { class: "actions" },
-      el("button", { type: "submit", class: "primary" }, entry ? "Save changes" : "Log it"),
-      entry ? el("button", { type: "button", class: "secondary danger", onclick: async () => {
-        if (!confirm(`Delete the ${t.name} dose at ${timeOf(entry.logged_at)}?`)) return;
-        try {
-          await api("DELETE", `api/entries/${entry.id}`);
-          sheet.close();
-          await loadDay();
-          toast("Dose deleted");
-          drawCheckin(view);
-        } catch (e) { toast(e.message); }
-      } }, "Delete") : null,
-      el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Cancel")));
-
-  form.addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    err.hidden = true;
-    const [h, m] = timeInput.value.split(":").map(Number);
-    const when = dayToDate(day);
-    when.setHours(h, m, 0, 0);
-    if (when > new Date()) { err.textContent = "That time hasn't happened yet."; err.hidden = false; return; }
-    const value_json = strength.value !== "" ? { dose: Number(strength.value) } : null;
-    try {
-      if (entry) {
-        await api("PATCH", `api/entries/${entry.id}`, { logged_at: localISO(when), value_num: count, value_json, note: note.value });
-      } else {
-        await api("POST", "api/checkin", { logged_at: localISO(when),
-          items: [{ tracker_id: t.id, value_num: count, value_json, note: note.value || null }] });
-      }
-      sheet.close();
-      await loadDay();
-      toast(entry ? "Dose changed" : `${t.name} logged at ${niceTime(timeInput.value)}`);
-      if (currentTab() === "checkin") drawCheckin(view);
-    } catch (e) {
-      err.textContent = e.message;
-      err.hidden = false;
-    }
-  });
-
-  sheet.replaceChildren(form);
-  sheet.showModal();
-}
+// Kept for other screens that open the dose editor
+function openDoseSheet(t, view, entry = null) { openDoseDialog(t, entry); }
 
 /* ================= history ================= */
 
@@ -1040,7 +1347,7 @@ async function renderSettings(view) {
   meds.forEach((m, i) => { m._schedule = schedules[i]; });
 
   const medSection = el("section", { class: "group" },
-    el("h2", {}, "Medications"),
+    el("h2", {}, "Meds/Supplements"),
     meds.length
       ? el("div", { class: "panel" }, meds.map((t) => settingsRow(t, all, view)))
       : el("div", { class: "empty", style: "margin-top:0" }, el("p", {}, "No medications yet. Add one to log doses and get reminders.")),
@@ -1295,10 +1602,14 @@ function openTrackerSheet(t, view) {
       inputs.dose = el("input", { type: "number", min: "0", step: "any", inputmode: "decimal", value: c.dose ?? "", placeholder: "30" });
       inputs.unit = el("input", { type: "text", maxlength: "20", value: c.unit || "", placeholder: "mg", list: "dose-units" });
       inputs.notes = el("input", { type: "text", maxlength: "200", value: c.notes || "", placeholder: "With breakfast" });
+      inputs.quantity = el("input", { type: "number", min: "0.5", step: "0.5", inputmode: "decimal", value: c.quantity ?? 1 });
+      inputs.counted = el("input", { type: "text", maxlength: "20", value: c.counted_as || "", placeholder: "dose", list: "counted-as" });
       extra.append(...[
         el("div", { class: "field-pair" }, field("Usual dose", inputs.dose), field("Measured in", inputs.unit)),
         el("datalist", { id: "dose-units" }, ["mg", "mcg", "g", "ml", "IU", "tablets", "capsules", "drops", "puffs"].map((u) => el("option", { value: u }))),
-        el("p", { class: "hint", style: "margin:-6px 0 14px" }, "When you log a dose you can change the number of doses and the strength."),
+        el("div", { class: "field-pair" }, field("Usually take", inputs.quantity), field("Counted as", inputs.counted)),
+        el("datalist", { id: "counted-as" }, ["dose", "tablet", "capsule", "application", "drop", "puff", "spray", "scoop"].map((u) => el("option", { value: u }))),
+        el("p", { class: "hint", style: "margin:-6px 0 14px" }, "Shown as \"1 dose\" or \"2 tablets\". You can change the amount and strength each time you log it."),
         field("Instructions", inputs.notes, "Optional. Shown on the reminder."),
         t.id ? el("button", { type: "button", class: "secondary", onclick: () => openScheduleSheet(t, view) }, "Set up reminders") : null,
       ].filter(Boolean));
@@ -1327,7 +1638,8 @@ function openTrackerSheet(t, view) {
     }
     if (kind === "tags") return { options: inputs.options.value.split("\n").map((s) => s.trim()).filter(Boolean) };
     if (kind === "factor") return { mode: inputs.mode.value, unit: inputs.unit.value.trim(), goal: inputs.goal.value === "" ? null : inputs.goal.value };
-    if (kind === "medication") return { dose: inputs.dose.value === "" ? null : inputs.dose.value, unit: inputs.unit.value.trim(), notes: inputs.notes.value.trim() };
+    if (kind === "medication") return { dose: inputs.dose.value === "" ? null : inputs.dose.value, unit: inputs.unit.value.trim(),
+      notes: inputs.notes.value.trim(), quantity: inputs.quantity.value || 1, counted_as: inputs.counted.value.trim() };
     return {};
   }
 
@@ -1371,11 +1683,12 @@ function openTrackerSheet(t, view) {
       config: readConfig(),
     };
     if (kind !== "medication") payload.group_name = group.value.trim();
+    else if (isNew && t.group_name) payload.group_name = t.group_name;
     if (!["sleep", "medication"].includes(kind)) payload.frequency = freq.value;
     if (!isNew && kind !== t.kind) {
       if (logged && !confirm(`Change ${t.name} to ${KIND_INFO[kind].toLowerCase()}? This clears the ${logged === 1 ? "1 thing" : logged + " things"} already logged for it.`)) return;
       payload.kind = kind;
-      if (kind === "medication") payload.group_name = "Medications";
+      if (kind === "medication") payload.group_name = "Meds/Supplements";
     }
     try {
       const saved = isNew

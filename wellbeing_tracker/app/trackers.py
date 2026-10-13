@@ -116,6 +116,14 @@ def normalise_config(kind: str, config: dict | None) -> dict:
         out = {}
         if config.get("dose") not in (None, ""):
             out["dose"] = _positive(config["dose"], "Dose strength")
+        # How many you usually take, and what one is called ("1 dose", "2 tablets", "1 application")
+        if config.get("quantity") not in (None, ""):
+            q = _positive(config["quantity"], "Usual number")
+            if q > 100:
+                raise ValidationError("Usual number must be 100 or less")
+            out["quantity"] = q
+        if config.get("counted_as") not in (None, ""):
+            out["counted_as"] = str(config["counted_as"]).strip()[:20]
         for field, limit in (("unit", 20), ("notes", 200)):
             if config.get(field) not in (None, ""):
                 out[field] = str(config[field]).strip()[:limit]

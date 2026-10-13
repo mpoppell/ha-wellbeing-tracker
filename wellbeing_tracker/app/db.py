@@ -174,6 +174,10 @@ MIGRATIONS: list[str] = [
     WHERE key = 'water' AND kind = 'factor' AND json_extract(config, '$.mode') = 'count'
       AND json_extract(config, '$.goal') IS NULL;
     """,
+    # 7: the medications section is called Meds/Supplements, as in Bearable
+    """
+    UPDATE trackers SET group_name = 'Meds/Supplements' WHERE kind = 'medication' AND group_name = 'Medications';
+    """,
 ]
 
 
@@ -347,7 +351,7 @@ class Database:
                 key, n = f"{base}_{n}", n + 1
             group_name = data.get("group_name")
             if group_name is None:
-                group_name = "Medications" if kind == "medication" else ""
+                group_name = "Meds/Supplements" if kind == "medication" else ""
             if kind == "medication":
                 # Medications sit together at the top of the check-in: after the last
                 # existing medication, or before everything else if this is the first.
@@ -455,6 +459,16 @@ class Database:
                     "UPDATE trackers SET sort_order = ? WHERE id = ? AND user_id = ?",
                     ((i + 1) * 10, tid, user_id),
                 )
+
+    def rename_group(self, user_id: str, old: str, new: str) -> int:
+        new = str(new or "").strip()[:40]
+        if not new:
+            raise ValidationError("Give the section a name")
+        with self.connect() as conn:
+            cur = conn.execute(
+                "UPDATE trackers SET group_name = ? WHERE user_id = ? AND group_name = ?", (new, user_id, old)
+            )
+            return cur.rowcount
 
     def delete_tracker(self, user_id: str, tracker_id: int) -> None:
         with self.connect() as conn:

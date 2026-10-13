@@ -95,10 +95,15 @@ class Engine:
         """Save person settings. Anything not included keeps its current value."""
         current = self.get_person(user_id)
         merged = {**current, **data}
-        for group in ("checkins", "hydration"):
+        for group in ("checkins", "hydration", "dashboard"):
             if isinstance(data.get(group), dict):
                 merged[group] = {**current[group], **data[group]}
         clean = normalise_person_settings(merged)
+        for g in clean["med_groups"]:
+            for it in g["items"]:
+                t = self.db.get_tracker(user_id, it["tracker_id"])  # NotFound if not theirs
+                if t["kind"] != "medication":
+                    raise ValidationError(f"{g['name']}: only medications can be in a group")
         clean["checkins_from"] = current.get("checkins_from")
         if clean["checkins"] != current["checkins"] or (clean["checkins"]["enabled"] and not clean["checkins_from"]):
             clean["checkins_from"] = iso(self.clock())

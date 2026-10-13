@@ -6,20 +6,25 @@ Track mood, energy, symptoms, medications, sleep and other factors for everyone 
 
 Open **Wellbeing** in the Home Assistant sidebar (or the Companion app menu). Each person sees only their own log, based on the Home Assistant user they're signed in as.
 
-The Check-in screen is laid out like Bearable: sections you can collapse, each showing how many things you've answered. Everything saves the moment you tap it.
+The Check-in screen is a dashboard of sections, each a card you can open or close. Everything saves the moment you tap it.
 
-- **Mood, Energy and other ratings**: tap **+** to pick a number, at the time shown (tap the time to change it). Tap a logged one to change or delete it.
-- **Symptoms**: tap a level. Tap ⊖ under the name to clear it.
-- **Habits and factors**: tap a chip to say you did it today, or **+** to add a new one to that section.
+- **Ratings like Mood**: tap **+** to pick a number, at the time shown (tap the time to change it). Tap a logged one to change or delete it.
+- **Symptoms**: tap a level. Tap the minus under the name to clear it.
+- **Habits**: tap a chip to say you did it today, or **+** to add one to that section.
 - **Counts like Water**: use − and +.
 
-## Logging medications
+### Arranging your dashboard
 
-Each medication has a **usual dose** and what it's **measured in** (for example 30 mg). On the Check-in screen:
+Tap the pencil at the top of Check-in to edit it, much like a Home Assistant dashboard. You can move sections up and down, rename them, hide them, or add a new one. For anything in a section you can move it, edit it, send it to another section, or hide it. Tap **Done** when you're finished. Each section's ••• menu has shortcuts too.
 
-- **Taken now** logs one usual dose straight away.
-- **Taken at…** lets you choose the time, the **number of doses** (for example 2 tablets or half a tablet) and the dose strength if it was different. The total is worked out for you.
-- Tap any logged time to change it or delete it. Reminders timed from that dose move with it.
+## Meds/Supplements
+
+Each medication shows its usual strength and how many you usually take ("1 dose", "2 tablets"). Doses taken today appear as squares with their time, with the day's total on the right.
+
+- Tap **+** to log a dose: set how many (×1, ×1.5 and so on), change the strength or time if needed, then **Confirm**.
+- Tap a logged dose to change it or delete it. Reminders timed from that dose move with it.
+- **Groups**: make a group such as Morning or Sleep and tap it to log everything in it at once (with Undo).
+- **Copy last**: logs the same doses as the last day you logged any, at the same times (only times that have already passed today).
 
 ## Medication reminders
 

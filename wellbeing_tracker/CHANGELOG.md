@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.0
+
+- **Back to our own look.** Your Home Assistant theme colours, our rating colours and the Atkinson Hyperlegible typeface. Each section is a Home Assistant-style card that opens and closes like an accordion. The Bearable-style layout stays.
+- **Arrange your dashboard.** The pencil on Check-in opens edit mode, like Home Assistant's dashboards:
+  - reorder, rename, hide and add sections;
+  - move, edit, hide or send any item to another section.
+- **Meds/Supplements, laid out like Bearable.**
+  - Name with strength, the usual number of doses, today's doses as squares with their time, **+** to log, and the day's total.
+  - A dose dialog with ×N and −1/−0.5/+0.5/+1 steps, editable strength and time, delete and Confirm.
+  - Medication **groups** you can log in one tap, and **Copy last**.
+- Medications have a **usual number** and what one is **counted as** (dose, tablet, application…).
+- The medications section is now called **Meds/Supplements**.
+
 ## 0.6.0
 
 - **Check-in looks and works like Bearable.**

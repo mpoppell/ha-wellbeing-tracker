@@ -53,6 +53,10 @@ PERSON_DEFAULTS = {
     },
     "checkins_from": None,      # set by the app when check-in times change
     # Reminders to drink water when none has been logged for a while.
+    # The Check-in dashboard: section order and hidden sections.
+    "dashboard": {"sections": []},
+    # Medication groups you can log in one tap, e.g. Morning: Vyvanse + Magnesium.
+    "med_groups": [],
     "hydration": {
         "enabled": False,
         "tracker_id": None,     # None = the tracker called Water
@@ -145,6 +149,8 @@ def normalise_person_settings(data: dict) -> dict:
     s["person_entity"] = _entity(s["person_entity"], "person", "Person")
     s["checkins"] = normalise_checkins(s["checkins"])
     s["hydration"] = normalise_hydration(s["hydration"])
+    s["dashboard"] = normalise_dashboard(s["dashboard"])
+    s["med_groups"] = normalise_med_groups(s["med_groups"])
     return s
 
 
@@ -259,6 +265,53 @@ def normalise_hydration(data: dict | None) -> dict:
     if not 1 <= s["amount"] <= 5000:
         raise ValidationError("One drink must be 1–5000")
     return {k: s[k] for k in PERSON_DEFAULTS["hydration"]}
+
+
+def normalise_dashboard(data) -> dict:
+    sections = (data or {}).get("sections") if isinstance(data, dict) else None
+    out, seen = [], set()
+    for sec in sections or []:
+        if not isinstance(sec, dict):
+            raise ValidationError("Sections must be objects")
+        name = str(sec.get("name") or "").strip()[:40]
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append({"name": name, "hidden": bool(sec.get("hidden"))})
+    if len(out) > 50:
+        raise ValidationError("Up to 50 sections")
+    return {"sections": out}
+
+
+def normalise_med_groups(groups) -> list[dict]:
+    import uuid
+
+    if not isinstance(groups, list):
+        raise ValidationError("Groups must be a list")
+    if len(groups) > 20:
+        raise ValidationError("Up to 20 groups")
+    out = []
+    for g in groups:
+        if not isinstance(g, dict):
+            raise ValidationError("Each group must be an object")
+        name = str(g.get("name") or "").strip()[:30]
+        if not name:
+            raise ValidationError("Give the group a name")
+        items = []
+        for it in g.get("items") or []:
+            try:
+                tid = int(it.get("tracker_id"))
+                qty = float(it.get("quantity", 1))
+            except (TypeError, ValueError, AttributeError):
+                raise ValidationError(f"{name}: choose medications and amounts") from None
+            if not 0 < qty <= 100:
+                raise ValidationError(f"{name}: amounts must be more than 0")
+            items.append({"tracker_id": tid, "quantity": int(qty) if qty == int(qty) else qty})
+        if not items:
+            raise ValidationError(f"{name}: add at least one medication")
+        gid = str(g.get("id") or uuid.uuid4().hex[:8])[:16]
+        out.append({"id": gid, "name": name, "items": items})
+    return out
 
 
 def normalise_schedule(data: dict) -> dict:
