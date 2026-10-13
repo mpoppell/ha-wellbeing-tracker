@@ -10,14 +10,17 @@ A Home Assistant app for tracking mood, energy, symptoms, medications, sleep and
 
 ## Roadmap
 
-| Stage | What it adds | Status |
-| --- | --- | --- |
-| 1 | App skeleton, sidebar panel, per-user profiles | ✅ 0.1.0 |
-| 2 | Logging: mood & energy, symptoms, medications, factors | Next |
-| 3 | Home Assistant link: import sleep, meds and weather; publish entities over MQTT | Planned |
-| 4 | Calendar view and history charts | Planned |
-| 5 | Reminder notifications | Planned |
-| v2 | Correlation insights | Later |
+See [docs/FEATURE_PLAN.md](docs/FEATURE_PLAN.md) for the full plan.
+
+| Stage | What it adds |
+| --- | --- |
+| 1 ✅ | App skeleton, sidebar panel, per-user profiles |
+| 2 | Trackers, Check-in screen, History timeline, Settings |
+| 3 | Reminder engine: medication schedules, synced actionable Android notifications, escalation, HA events |
+| 4 | Check-in reminders, HA data import (sleep, weather, sensors), MQTT entities, NFC logging |
+| 5 | Calendar, charts, export, appointment summary |
+| 6 | Insights: weekly summary, correlations, experiments |
+| 7 | Goals, cycle tracking, PIN lock, dashboard card |
 
 ## Development
 
