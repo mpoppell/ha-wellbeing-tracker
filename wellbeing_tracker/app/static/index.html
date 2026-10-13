@@ -7,29 +7,33 @@
   <link rel="stylesheet" href="static/app.css">
 </head>
 <body>
-  <main class="shell">
-    <header class="top">
-      <p class="eyebrow" id="today">&nbsp;</p>
-      <h1 id="greeting">Hello</h1>
-    </header>
+  <div class="app">
+    <main id="view" class="view" tabindex="-1"></main>
 
-    <section class="card intro">
-      <h2>Your tracker is installed</h2>
-      <p>This is the first build. Logging mood, energy, symptoms, medications and sleep arrives in the next update.
-        Everyone in your home gets their own private log, based on who's signed in to Home Assistant.</p>
-    </section>
+    <div id="savebar" class="savebar" hidden>
+      <button type="button" class="link" id="discard">Discard</button>
+      <button type="button" class="primary" id="save">Save</button>
+    </div>
 
-    <section class="card">
-      <h2>Status</h2>
-      <dl class="status" id="status">
-        <div><dt>Home Assistant</dt><dd id="ha-status"><span class="dot pending"></span>Checking…</dd></div>
-        <div><dt>Signed in as</dt><dd id="who">…</dd></div>
-        <div><dt>People using the app</dt><dd id="people">…</dd></div>
-        <div><dt>Version</dt><dd id="version">…</dd></div>
-      </dl>
-      <p class="error" id="error" hidden></p>
-    </section>
-  </main>
+    <nav class="tabs" aria-label="Main">
+      <a href="#/checkin" data-tab="checkin">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.2 4.2L19 7"/></svg>
+        <span>Check-in</span>
+      </a>
+      <a href="#/history" data-tab="history">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V9m5.3 10V5m5.4 14v-7M20 19v-4"/></svg>
+        <span>History</span>
+      </a>
+      <a href="#/settings" data-tab="settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10m4 0h2M4 17h2m4 0h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>
+        <span>Settings</span>
+      </a>
+    </nav>
+  </div>
+
+  <dialog id="sheet" class="sheet"></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
   <script src="static/app.js"></script>
 </body>
 </html>

@@ -88,8 +88,8 @@ Once stage 3 works, turn off the existing "Medication – Vyvanse Reminder" auto
 | Stage | Contents | Status |
 | --- | --- | --- |
 | 1 | Skeleton: app installs, sidebar panel, per-user profiles | ✅ 0.1.0 |
-| 2 | Tracker model, default trackers, Check-in screen, History timeline, Settings for trackers and med list | In progress |
-| 3 | Reminder engine, medication schedules, synced actionable notifications, escalation, HA events, refill tracking | Planned |
+| 2 | Tracker model, default trackers, Check-in screen, History timeline, Settings for trackers and med list | ✅ 0.2.0 |
+| 3 | Reminder engine, medication schedules, synced actionable notifications, escalation, HA events, refill tracking | Next |
 | 4 | Check-in reminders on the same engine; HA data import; MQTT entities; NFC/button logging | Planned |
 | 5 | History: calendar, charts, CSV export, appointment summary, delete-my-data | Planned |
 | 6 | Insights: weekly summary notification, correlations, experiments | Planned |

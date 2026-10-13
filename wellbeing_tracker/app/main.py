@@ -15,9 +15,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
-from .db import Database
+from .api import build_router
+from .db import Database, NotFound
 from .ha import HomeAssistant
 from .settings import INGRESS_IP, Settings, load_settings
+from .trackers import ValidationError
 
 log = logging.getLogger("wellbeing")
 
@@ -75,6 +77,16 @@ def create_app(settings: Settings) -> FastAPI:
             "people": db.user_count(),
             "home_assistant": await ha.check(),
         }
+
+    @app.exception_handler(ValidationError)
+    async def validation_error(_: Request, exc: ValidationError) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=422)
+
+    @app.exception_handler(NotFound)
+    async def not_found(_: Request, exc: NotFound) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=404)
+
+    app.include_router(build_router(current_user))
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:

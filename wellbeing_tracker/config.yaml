@@ -1,5 +1,5 @@
 name: Wellbeing Tracker
-version: "0.1.0"
+version: "0.2.0"
 slug: wellbeing_tracker
 description: Track mood, energy, symptoms, medications, sleep and other factors for everyone in your home.
 url: https://github.com/mpoppell/ha-wellbeing-tracker
