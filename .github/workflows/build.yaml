@@ -1,0 +1,83 @@
+name: Test and build app images
+
+# Builds a ready-made image for each CPU type whenever the app changes, so
+# Home Assistant downloads updates instead of building them on your machine.
+# The version tag comes from wellbeing_tracker/config.yaml.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "wellbeing_tracker/**"
+      - ".github/workflows/build.yaml"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install dependencies
+        working-directory: wellbeing_tracker
+        run: pip install -r requirements.txt pytest
+      - name: Run tests
+        working-directory: wellbeing_tracker
+        run: python -m pytest -q
+
+  build:
+    needs: test
+    if: github.event_name != 'pull_request'
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read app version
+        id: meta
+        run: |
+          version=$(sed -nE 's/^version: *"?([^"]+)"?.*/\1/p' wellbeing_tracker/config.yaml)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${{ matrix.arch }}-wellbeing-tracker" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: wellbeing_tracker
+          platforms: ${{ matrix.platform }}
+          push: true
+          provenance: false
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+            ${{ steps.meta.outputs.image }}:latest
+          labels: |
+            io.hass.type=addon
+            io.hass.name=Wellbeing Tracker
+            io.hass.version=${{ steps.meta.outputs.version }}
+            io.hass.arch=${{ matrix.arch }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Wellbeing Tracker app for Home Assistant
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
