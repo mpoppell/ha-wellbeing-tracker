@@ -128,6 +128,13 @@ MIGRATIONS: list[str] = [
     CREATE INDEX doses_status ON doses (status, due_at);
     CREATE INDEX doses_user_day ON doses (user_id, local_day);
     """,
+    # 4: doses timed from another dose ("7 hours after Vyvanse"). anchor_entry_id is
+    # the logged dose it was timed from; if that entry is undone the dose goes too.
+    """
+    ALTER TABLE doses ADD COLUMN derived INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE doses ADD COLUMN anchor_entry_id INTEGER REFERENCES entries(id) ON DELETE SET NULL;
+    CREATE INDEX doses_anchor ON doses (anchor_entry_id);
+    """,
 ]
 
 

@@ -15,6 +15,16 @@ Reminders are off until you switch them on for a medication.
 
 Each reminder has **Taken**, **Snooze** and **Skip** buttons. Answering on one phone clears it on the others. You can also answer from the **Due now** card on the Check-in screen, by logging the medication there, or by switching on a linked Home Assistant toggle. Logging a dose shortly before its time means the reminder never goes off.
 
+### Timing one medication from another
+
+In a medication's reminders, choose **When → After another dose** to time it from when you actually take something, instead of fixed clock times. For example, for Dex:
+
+- **7** hours after I take **Vyvanse**
+- **3** hours after I take **Dex (this one)**
+- At most **2** reminders a day
+
+Taking Vyvanse at 7:04 schedules Dex for 2:04. Taking that Dex at 2:10 schedules the next one for 5:10, and the chain stops at the daily limit or the latest time. It counts however you record a dose: the Taken button, the Check-in screen, or a linked toggle. Undoing the earlier dose removes the follow-up.
+
 ### Optional extras, per medication
 
 - **Until I answer**: once only, gently (every 30 minutes), firmly (every 10 minutes) or your own pattern.

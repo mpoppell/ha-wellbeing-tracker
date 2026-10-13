@@ -590,3 +590,21 @@ details.more > summary { font-weight: 700; cursor: pointer; min-height: 28px; }
 details.more[open] > summary { margin-bottom: 8px; }
 
 .sheet { overflow-y: auto; }
+
+.rule-list { display: grid; gap: 8px; margin-bottom: 8px; }
+
+.rule-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas: "hours text remove" "which which which";
+  align-items: center;
+  gap: 6px 8px;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  background: var(--sunken);
+}
+
+.rule-row > input { grid-area: hours; background: var(--surface); }
+.rule-row > span { grid-area: text; color: var(--muted); }
+.rule-row > select { grid-area: which; background: var(--surface); }
+.rule-row > .iconbtn { grid-area: remove; }

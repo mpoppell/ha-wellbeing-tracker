@@ -52,6 +52,13 @@ function niceTime(hhmm) {
   return `${h % 12 || 12}${m ? ":" + pad(m) : ""}${suffix}`;
 }
 
+// 420 -> "7 h", 90 -> "1.5 h", 45 -> "45 min"
+function niceGap(minutes) {
+  if (minutes < 60) return `${minutes} min`;
+  const h = Math.round((minutes / 60) * 100) / 100;
+  return `${h} h`;
+}
+
 function joinNames(list) {
   if (list.length <= 1) return list.join("");
   return `${list.slice(0, -1).join(", ")} and ${list[list.length - 1]}`;
@@ -694,7 +701,14 @@ function describeTracker(t) {
     case "medication": {
       const amount = [c.dose, c.unit].filter(Boolean).join(" ");
       const sch = t._schedule;
-      const when = sch && sch.enabled ? `Reminders at ${joinNames(sch.settings.times.map(niceTime))}` : "No reminders";
+      let when = "No reminders";
+      if (sch && sch.enabled && sch.settings.mode === "after") {
+        const names = (id) => (state.trackers.find((x) => x.id === id) || {}).name || "another medication";
+        when = `Reminders ${joinNames(sch.settings.after.map((r) => `${niceGap(r.minutes)} after ${names(r.tracker_id)}`))}`;
+        if (sch.settings.max_per_day) when += `, up to ${sch.settings.max_per_day} a day`;
+      } else if (sch && sch.enabled) {
+        when = `Reminders at ${joinNames(sch.settings.times.map(niceTime))}`;
+      }
       return [amount, when].filter(Boolean).join(". ");
     }
     case "tags": return `${(c.options || []).length} options, ${often}`;
@@ -1040,6 +1054,45 @@ async function openScheduleSheet(t, view, opts = {}) {
     modeSeg.append(el("button", { type: "button", "data-mode": m, onclick: () => { mode = m; drawMode(); } }, label)));
   drawMode();
 
+  // ----- after another dose -----
+  const meds = state.trackers.filter((x) => x.kind === "medication");
+  if (!meds.some((x) => x.id === t.id)) meds.unshift(t);
+  const medOptions = meds.map((x) => [x.id, x.id === t.id ? `${x.name} (this one)` : x.name]);
+  const ruleList = el("div", { class: "rule-list" });
+  const addRule = (rule) => {
+    const hours = el("input", { type: "number", min: "0.25", max: "24", step: "0.25", inputmode: "decimal",
+      value: rule.minutes / 60, "aria-label": "Hours", style: "width:5.5em" });
+    const which = selectOf(medOptions, rule.tracker_id);
+    which.setAttribute("aria-label", "Medication");
+    const row = el("div", { class: "rule-row" },
+      hours, el("span", {}, "hours after I take"), which,
+      el("button", { type: "button", class: "iconbtn", "aria-label": "Remove this rule", onclick: () => {
+        if (ruleList.children.length > 1) row.remove();
+      } }, svgIcon(ICONS.close)));
+    ruleList.append(row);
+  };
+  const firstOther = meds.find((x) => x.id !== t.id);
+  (s.after.length ? s.after : [{ tracker_id: (firstOther || t).id, minutes: 180 }]).forEach(addRule);
+  const addRuleBtn = el("button", { type: "button", class: "secondary small", onclick: () => addRule({ tracker_id: t.id, minutes: 180 }) }, "Add another");
+  const maxPerDay = el("input", { type: "number", min: "1", max: "24", inputmode: "numeric", value: s.max_per_day ?? "", placeholder: "No limit", style: "width:6em" });
+  const afterBlock = el("div", {},
+    field("Remind me", el("div", {}, ruleList, addRuleBtn),
+      "Timed from when you actually take it: tapping Taken, logging it here, or a linked toggle. Pick this medication to repeat it, like every 3 hours."),
+    field("At most", el("div", { class: "inline-field" }, maxPerDay, el("span", {}, "reminders a day")),
+      "Stops the chain. Leave blank for no limit."),
+  );
+
+  let schedMode = s.mode;
+  const timesBlock = el("div", {});
+  const whenSeg = el("div", { class: "seg", role: "group", "aria-label": "How to time it" });
+  const drawWhen = () => {
+    whenSeg.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === schedMode)));
+    timesBlock.hidden = schedMode !== "times";
+    afterBlock.hidden = schedMode !== "after";
+  };
+  [["times", "At set times"], ["after", "After another dose"]].forEach(([m, label]) =>
+    whenSeg.append(el("button", { type: "button", "data-mode": m, onclick: () => { schedMode = m; drawWhen(); } }, label)));
+
   // ----- nagging -----
   const nag = selectOf(NAG_CHOICES, s.nag);
   const nagEvery = el("input", { type: "number", min: "1", max: "240", value: s.nag_every, inputmode: "numeric", style: "width:5em" });
@@ -1059,7 +1112,7 @@ async function openScheduleSheet(t, view, opts = {}) {
 
   // ----- latest time -----
   const latestOn = switchField("Stop at a latest time", !!s.latest_time,
-    "After this you get one last question: skip today, or take it anyway?");
+    "No new reminders after this. Anything still waiting gets one last question: skip today, or take it anyway?");
   const latestInput = el("input", { type: "time", value: s.latest_time || "11:00", "aria-label": "Latest time" });
   const latestPanel = el("div", { class: "subpanel" }, latestInput);
   const drawLatest = () => { latestPanel.hidden = !latestOn.input.checked; };
@@ -1089,9 +1142,14 @@ async function openScheduleSheet(t, view, opts = {}) {
     field("Set this date and time when taken", linkedTime),
     field("Count it if I log it early, up to", early));
 
-  body.append(
+  timesBlock.append(
     field("Times", el("div", {}, timeList, addTimeBtn)),
-    field("Days", el("div", {}, modeSeg, weekdayPanel, intervalPanel)),
+    field("Days", el("div", {}, modeSeg, weekdayPanel, intervalPanel)));
+  drawWhen();
+  body.append(
+    field("When", whenSeg),
+    timesBlock,
+    afterBlock,
     field("Until I answer, remind me", el("div", {}, nag, nagHint, customPanel)),
     latestOn.node, latestPanel,
     hard.node, hardPanel,
@@ -1116,6 +1174,12 @@ async function openScheduleSheet(t, view, opts = {}) {
     ev.preventDefault();
     err.hidden = true;
     const settings = {
+      mode: schedMode,
+      after: [...ruleList.querySelectorAll(".rule-row")].map((r) => ({
+        tracker_id: Number(r.querySelector("select").value),
+        minutes: Math.round(Number(r.querySelector("input").value) * 60),
+      })),
+      max_per_day: maxPerDay.value === "" ? null : Number(maxPerDay.value),
       times: [...timeList.querySelectorAll("input")].map((i) => i.value).filter(Boolean),
       days: { mode, weekdays: [...weekdays].sort(), every: Number(everyInput.value), start: startInput.value },
       nag: nag.value,

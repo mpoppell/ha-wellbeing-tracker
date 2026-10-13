@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1
+
+- **Time a medication from another dose.** In a medication's reminders, choose **After another dose**, for example "7 hours after I take Vyvanse" and "3 hours after I take Dex", with a daily limit. Reminders are timed from when you actually take the earlier dose, and the notification says what it was timed from.
+- Undoing the earlier dose removes the follow-up reminder.
+
 ## 0.3.0
 
 - **Medication reminders.** Turn them on per medication with the bell in Settings: any number of times a day, every day, chosen days or every few days.

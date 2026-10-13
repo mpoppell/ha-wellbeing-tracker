@@ -42,6 +42,7 @@ PERSON_DEFAULTS = {
 }
 
 SCHEDULE_DEFAULTS = {
+    "mode": "times",            # times: at set clock times | after: timed from another dose being taken
     "times": ["08:00"],
     "days": {"mode": "daily", "weekdays": [0, 1, 2, 3, 4, 5, 6], "every": 2, "start": None},
     "nag": "firmly",            # once | gently | firmly | custom
@@ -55,6 +56,10 @@ SCHEDULE_DEFAULTS = {
     "early_window": 180,        # a dose logged up to this many minutes early counts
     "linked_entity": None,      # input_boolean kept in sync with "taken"
     "linked_time_entity": None, # input_datetime set to the time it was taken
+    # mode "after": each rule says "remind me <minutes> after I take <tracker_id>".
+    # The tracker can be this medication itself, which makes a chain (Dex every 3 hours).
+    "after": [],
+    "max_per_day": 3,           # mode "after": stop the chain after this many reminders a day (null = no limit)
 }
 
 
@@ -124,12 +129,49 @@ def schedule_settings(saved: dict | None) -> dict:
 
 def normalise_schedule(data: dict) -> dict:
     s = schedule_settings(data)
+    if s["mode"] not in ("times", "after"):
+        raise ValidationError("Choose set times or after another dose")
     times = s["times"]
-    if not isinstance(times, list) or not times:
-        raise ValidationError("Add at least one time")
-    s["times"] = sorted(set(_time(t, "Reminder time") for t in times))
-    if len(s["times"]) > 12:
-        raise ValidationError("Up to 12 times a day")
+    if s["mode"] == "times":
+        if not isinstance(times, list) or not times:
+            raise ValidationError("Add at least one time")
+        s["times"] = sorted(set(_time(t, "Reminder time") for t in times))
+        if len(s["times"]) > 12:
+            raise ValidationError("Up to 12 times a day")
+    elif not isinstance(times, list) or not all(isinstance(t, str) and TIME_RE.match(t) for t in times):
+        s["times"] = list(SCHEDULE_DEFAULTS["times"])
+
+    rules = s["after"]
+    if not isinstance(rules, list):
+        raise ValidationError("Add when to remind you")
+    clean_rules = []
+    for r in rules:
+        if not isinstance(r, dict):
+            raise ValidationError("Add when to remind you")
+        try:
+            tid = int(r.get("tracker_id"))
+            minutes = int(r.get("minutes"))
+        except (TypeError, ValueError):
+            raise ValidationError("Each rule needs a medication and a number of hours") from None
+        if not 1 <= minutes <= 24 * 60:
+            raise ValidationError("Choose between a few minutes and 24 hours")
+        if any(c["tracker_id"] == tid for c in clean_rules):
+            raise ValidationError("Each medication can only be used once")
+        clean_rules.append({"tracker_id": tid, "minutes": minutes})
+    if s["mode"] == "after" and not clean_rules:
+        raise ValidationError("Add at least one medication to time it from")
+    if len(clean_rules) > 5:
+        raise ValidationError("Up to 5 rules")
+    s["after"] = clean_rules
+    if s["max_per_day"] not in (None, ""):
+        try:
+            s["max_per_day"] = int(s["max_per_day"])
+        except (TypeError, ValueError):
+            raise ValidationError("At most how many a day?") from None
+        if not 1 <= s["max_per_day"] <= 24:
+            raise ValidationError("At most 1–24 a day")
+    else:
+        s["max_per_day"] = None
 
     d = s["days"]
     mode = d.get("mode")
@@ -185,7 +227,7 @@ def normalise_schedule(data: dict) -> dict:
         raise ValidationError("Escalate after 1–20 reminders")
 
     s["latest_time"] = _time(s["latest_time"], "Latest time") if s["latest_time"] else None
-    if s["latest_time"] and s["latest_time"] <= s["times"][0]:
+    if s["mode"] == "times" and s["latest_time"] and s["latest_time"] <= s["times"][0]:
         raise ValidationError("The latest time must be after the first reminder")
     try:
         s["early_window"] = int(s["early_window"])

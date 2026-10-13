@@ -567,3 +567,155 @@ def test_hidden_medication_is_not_reminded(env):
     db.update_tracker("u1", v["id"], {"hidden": True})
     schedule(engine, v["id"], times=["07:00"])
     assert dose_rows(db, v["id"]) == []
+
+
+# ----- "after another dose" schedules -----
+
+def after_rules(engine, tid, rules, **extra):
+    return schedule(engine, tid, mode="after", after=[{"tracker_id": a, "minutes": m} for a, m in rules], **extra)
+
+
+def chain_env(env, max_per_day=2, **extra):
+    db, ha, clock, engine, med = env
+    v = med("Vyvanse", dose="30", unit="mg")
+    d = med("Dex", dose="5", unit="mg")
+    schedule(engine, v["id"], times=["07:00"])
+    after_rules(engine, d["id"], [(v["id"], 7 * 60), (d["id"], 3 * 60)], max_per_day=max_per_day, **extra)
+    return v, d
+
+
+def test_dex_seven_hours_after_vyvanse_then_three_hours_after_dex(env):
+    db, ha, clock, engine, med = env
+    v, d = chain_env(env)
+    clock.set("2026-10-14T07:00")
+    run(engine.tick())
+    clock.set("2026-10-14T07:04")
+    run(engine.answer_reminder(dose_rows(db, v["id"])[0]["reminder_id"], "TAKEN"))
+    run(engine.tick())
+    [dex1] = dose_rows(db, d["id"])
+    assert (dex1["local_time"], dex1["status"], dex1["derived"]) == ("14:04", "scheduled", 1)
+
+    ha.reset()
+    clock.set("2026-10-14T14:04")
+    run(engine.tick())
+    [n] = ha.notifications()
+    assert n["title"] == "Time for Dex"
+    assert n["message"] == "Dex 5 mg\n7 hours after your Vyvanse at 7:04am"
+
+    clock.set("2026-10-14T14:10")
+    run(engine.answer_reminder(dex1["reminder_id"] or dose_rows(db, d["id"])[0]["reminder_id"], "TAKEN"))
+    run(engine.tick())
+    dex2 = dose_rows(db, d["id"])[1]
+    assert dex2["local_time"] == "17:10"
+
+    ha.reset()
+    clock.set("2026-10-14T17:10")
+    run(engine.tick())
+    assert ha.notifications()[0]["message"].endswith("3 hours after your Dex at 2:10pm")
+    clock.set("2026-10-14T17:12")
+    run(engine.answer_reminder(dose_rows(db, d["id"])[1]["reminder_id"], "TAKEN"))
+    run(engine.tick())
+    assert len(dose_rows(db, d["id"])) == 2  # daily limit of 2 reached: chain stops
+
+
+def test_chain_follows_check_in_logging_and_toggles(env):
+    db, ha, clock, engine, med = env
+    v, d = chain_env(env)
+    # Vyvanse logged from the Check-in screen before its reminder
+    clock.set("2026-10-14T06:50")
+    db.save_checkin("u1", "2026-10-14T06:50:00+11:00", [{"tracker_id": v["id"]}])
+    run(engine.tick())
+    assert dose_rows(db, d["id"])[0]["local_time"] == "13:50"
+
+
+def test_dex_taken_early_restarts_the_clock_from_then(env):
+    db, ha, clock, engine, med = env
+    v, d = chain_env(env, max_per_day=3)
+    clock.set("2026-10-14T07:00")
+    db.save_checkin("u1", "2026-10-14T07:00:00+11:00", [{"tracker_id": v["id"]}])
+    run(engine.tick())  # Dex due 14:00
+    clock.set("2026-10-14T13:00")
+    db.save_checkin("u1", "2026-10-14T13:00:00+11:00", [{"tracker_id": d["id"]}])
+    run(engine.tick())
+    clock.set("2026-10-14T14:00")
+    run(engine.tick())
+    rows = dose_rows(db, d["id"])
+    assert rows[0]["status"] == "taken" and rows[0]["resolved_by"] == "early"
+    assert ha.notifications() == []
+    run(engine.tick())
+    assert dose_rows(db, d["id"])[1]["local_time"] == "16:00"  # 3 h after 1pm, not after 2pm
+
+
+def test_old_log_does_not_create_overdue_reminder(env):
+    db, ha, clock, engine, med = env
+    v, d = chain_env(env, max_per_day=5, early_window=60)
+    clock.set("2026-10-14T07:00")
+    db.save_checkin("u1", "2026-10-14T07:00:00+11:00", [{"tracker_id": v["id"]}])
+    run(engine.tick())  # Dex due 14:00
+    clock.set("2026-10-14T09:00")
+    db.save_checkin("u1", "2026-10-14T09:00:00+11:00", [{"tracker_id": d["id"]}])  # outside early window
+    run(engine.tick())
+    clock.set("2026-10-14T14:00")
+    run(engine.tick())
+    clock.set("2026-10-14T14:05")
+    run(engine.answer_reminder(dose_rows(db, d["id"])[0]["reminder_id"], "TAKEN"))
+    run(engine.tick())
+    times = [r["local_time"] for r in dose_rows(db, d["id"])]
+    assert times == ["14:00", "17:05"]  # nothing for 12:00 (9am + 3h)
+
+
+def test_latest_time_stops_the_chain(env):
+    db, ha, clock, engine, med = env
+    v, d = chain_env(env, max_per_day=None, latest_time="16:00")
+    clock.set("2026-10-14T08:30")
+    db.save_checkin("u1", "2026-10-14T08:30:00+11:00", [{"tracker_id": v["id"]}])
+    run(engine.tick())
+    assert dose_rows(db, d["id"])[0]["local_time"] == "15:30"
+    clock.set("2026-10-14T15:30")
+    run(engine.tick())
+    run(engine.answer_reminder(dose_rows(db, d["id"])[0]["reminder_id"], "TAKEN"))
+    run(engine.tick())
+    assert len(dose_rows(db, d["id"])) == 1  # 18:30 would be past 4pm
+
+
+def test_undoing_the_anchor_removes_the_follow_up(env):
+    db, ha, clock, engine, med = env
+    v, d = chain_env(env)
+    clock.set("2026-10-14T07:00")
+    run(engine.tick())
+    rid = dose_rows(db, v["id"])[0]["reminder_id"]
+    run(engine.answer_reminder(rid, "TAKEN"))
+    run(engine.tick())
+    assert len(dose_rows(db, d["id"])) == 1
+    clock.advance(1)
+    run(engine.answer_reminder(rid, "UNDO"))
+    run(engine.tick())
+    assert dose_rows(db, d["id"]) == []
+
+
+def test_anchor_before_setup_is_ignored(env):
+    db, ha, clock, engine, med = env
+    v = med("Vyvanse")
+    d = med("Dex")
+    clock.set("2026-10-14T07:00")
+    db.save_checkin("u1", "2026-10-14T07:00:00+11:00", [{"tracker_id": v["id"]}])
+    clock.set("2026-10-14T15:00")
+    after_rules(engine, d["id"], [(v["id"], 7 * 60)])  # 7am + 7h = 2pm, already past
+    run(engine.tick())
+    assert dose_rows(db, d["id"]) == []
+
+
+def test_after_rules_validation(env):
+    db, ha, clock, engine, med = env
+    d = med("Dex")
+    mood = [t for t in db.list_trackers("u1") if t["key"] == "mood"][0]
+    with pytest.raises(ValidationError):
+        schedule(engine, d["id"], mode="after", after=[])
+    with pytest.raises(ValidationError):
+        after_rules(engine, d["id"], [(d["id"], 0)])
+    with pytest.raises(ValidationError):
+        after_rules(engine, d["id"], [(mood["id"], 60)])
+    db.touch_user("u2", "k", "Kayla")
+    kmed = db.create_tracker("u2", {"kind": "medication", "name": "Theirs"})
+    with pytest.raises(Exception):
+        after_rules(engine, d["id"], [(kmed["id"], 60)])

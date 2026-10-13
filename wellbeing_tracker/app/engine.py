@@ -23,7 +23,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Callable
 from zoneinfo import ZoneInfo
 
@@ -115,6 +115,10 @@ class Engine:
         if tracker["kind"] != "medication":
             raise ValidationError("Reminders are for medications")
         clean = normalise_schedule(data)
+        for rule in clean["after"]:
+            target = self.db.get_tracker(user_id, rule["tracker_id"])  # NotFound if not theirs
+            if target["kind"] != "medication":
+                raise ValidationError("Reminders can only be timed from a medication")
         now = self.clock()
         out = Outbox()
         async with self.lock:
@@ -185,6 +189,9 @@ class Engine:
         ).fetchall()
         for row in rows:
             s = schedule_settings(json.loads(row["settings"]))
+            if s["mode"] == "after":
+                self._generate_after(conn, row, s, now)
+                continue
             for day in (today, today + timedelta(days=1)):
                 for hhmm, due, latest in due_times(s, day, self.tz):
                     if iso(due) < row["active_from"]:
@@ -198,6 +205,78 @@ class Engine:
                         (row["user_id"], row["tracker_id"], iso(due), day.isoformat(), hhmm,
                          iso(latest) if latest else None),
                     )
+
+    def _generate_after(self, conn, row, s: dict, now: datetime) -> None:
+        """Doses timed from when another dose was actually taken, e.g. Dex 7 hours after Vyvanse."""
+        tid = row["tracker_id"]
+        today = self._local_today(now)
+        # A dose whose anchor was undone or deleted no longer applies.
+        conn.execute(
+            "DELETE FROM doses WHERE tracker_id = ? AND derived = 1 AND status = 'scheduled' "
+            "AND anchor_entry_id IS NULL",
+            (tid,),
+        )
+        offsets = {r["tracker_id"]: r["minutes"] for r in s["after"]}
+        if not offsets:
+            return
+        marks = ",".join("?" * len(offsets))
+        entries = conn.execute(
+            f"""
+            SELECT e.id, e.tracker_id, e.logged_at FROM entries e
+            WHERE e.user_id = ? AND e.tracker_id IN ({marks}) AND e.day >= ?
+              AND NOT EXISTS (SELECT 1 FROM doses d WHERE d.tracker_id = ? AND d.anchor_entry_id = e.id)
+            ORDER BY e.logged_at
+            """,
+            (row["user_id"], *offsets, (today - timedelta(days=1)).isoformat(), tid),
+        ).fetchall()
+        # Only time from doses taken since the last answered one, so an old log can't
+        # produce a reminder that's already overdue. A dose taken early still counts.
+        last = conn.execute(
+            "SELECT due_at FROM doses WHERE tracker_id = ? AND status IN ('taken', 'skipped', 'missed') "
+            "ORDER BY due_at DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        linked = {r[0] for r in conn.execute(
+            "SELECT entry_id FROM doses WHERE tracker_id = ? AND entry_id IS NOT NULL", (tid,))}
+        for e in entries:
+            logged = parse(e["logged_at"])
+            if last and e["id"] not in linked and logged < parse(last["due_at"]):
+                continue
+            due = logged + timedelta(minutes=offsets[e["tracker_id"]])
+            if iso(due) < row["active_from"]:
+                continue
+            local = due.astimezone(self.tz)
+            day = local.date()
+            if day not in (today, today + timedelta(days=1)):
+                continue
+            latest = None
+            if s["latest_time"]:
+                h, m = map(int, s["latest_time"].split(":"))
+                latest = datetime.combine(day, time(h, m), self.tz)
+                if due >= latest:
+                    continue  # too late in the day to start another
+            pending = conn.execute(
+                "SELECT 1 FROM doses WHERE tracker_id = ? AND status IN ('scheduled', 'due') LIMIT 1", (tid,)
+            ).fetchone()
+            if pending:
+                continue  # one at a time: the next is timed from whenever this one is taken
+            if s["max_per_day"]:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM doses WHERE tracker_id = ? AND derived = 1 AND local_day = ? "
+                    "AND status != 'cancelled'",
+                    (tid, day.isoformat()),
+                ).fetchone()[0]
+                if count >= s["max_per_day"]:
+                    continue
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO doses (user_id, tracker_id, due_at, local_day, local_time, latest_at,
+                                             status, derived, anchor_entry_id)
+                VALUES (?, ?, ?, ?, ?, ?, 'scheduled', 1, ?)
+                """,
+                (row["user_id"], tid, iso(due), day.isoformat(), local.strftime("%H:%M"),
+                 iso(latest) if latest else None, e["id"]),
+            )
 
     def _schedule_for(self, conn, tracker_id: int) -> dict:
         row = conn.execute("SELECT settings FROM schedules WHERE tracker_id = ?", (tracker_id,)).fetchone()
@@ -432,7 +511,17 @@ class Engine:
         t = conn.execute("SELECT name, emoji, config FROM trackers WHERE id = ?", (dose["tracker_id"],)).fetchone()
         cfg = json.loads(t["config"]) if t else {}
         amount = " ".join(x for x in (cfg.get("dose"), cfg.get("unit")) if x)
+        because = None
+        if dose["anchor_entry_id"]:
+            a = conn.execute(
+                "SELECT t.name, e.logged_at FROM entries e JOIN trackers t ON t.id = e.tracker_id WHERE e.id = ?",
+                (dose["anchor_entry_id"],),
+            ).fetchone()
+            if a:
+                gap = parse(dose["due_at"]) - parse(a["logged_at"])
+                because = f"{_hours(gap)} after your {a['name']} at {describe_time(parse(a['logged_at']).strftime('%H:%M'))}"
         return {
+            "because": because,
             "dose_id": dose["id"],
             "tracker_id": dose["tracker_id"],
             "name": t["name"] if t else "Medication",
@@ -450,6 +539,8 @@ class Engine:
             line = i["name"] + (f" {i['amount']}" if i["amount"] else "")
             if i["notes"]:
                 line += f". {i['notes']}"
+            if i.get("because") and len(infos) == 1:
+                line += f"\n{i['because'][0].upper()}{i['because'][1:]}"
             lines.append(line)
         rid = r["id"]
         data = {
@@ -845,6 +936,16 @@ class Engine:
                      **({"clickAction": self.panel_path} if self.panel_path else {})},
         })
         return len(person["devices"])
+
+
+def _hours(gap: timedelta) -> str:
+    minutes = round(gap.total_seconds() / 60)
+    h, m = divmod(minutes, 60)
+    if h and m:
+        return f"{h} h {m} min"
+    if h:
+        return f"{h} hour{'s' if h != 1 else ''}"
+    return f"{m} minutes"
 
 
 def _join(names: list[str]) -> str:
