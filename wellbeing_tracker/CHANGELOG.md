@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.9.0
+
+Polish: easier to use and easier to understand.
+
+**Check-in**
+- A progress bar under the date: "5 of 12 answered".
+- Swipe left and right to change day. When you're on another day, a banner says so, with **Back to today**.
+- Anything not answered yet shows yesterday's answer ("Not logged yet · yesterday Good (8)"). Symptoms you haven't answered say **Not answered**, so a blank isn't mistaken for "None".
+- Each section's ••• menu has **Copy yesterday's answers** and **Hide this section** (both with Undo).
+- A friendlier start when nothing is set up yet.
+
+**Meds/Supplements**
+- Today's reminders under each medication are buttons: tap "1 dose at 10pm" to log exactly that. A bell next to the name opens its reminders.
+- Skipping a dose offers one-tap reasons instead of a typed box.
+- Halves show as ½ in History too ("½ dose (50 mcg)").
+- "Counted as" is now "Each one is a…", with examples.
+
+**Reminders**
+- **Pause reminders** for an hour, until tomorrow morning, a few days, a week or a time you choose. Doses still show in the app, and the Home Assistant event says `paused: true`.
+- **Today's reminders** lists everything due today in time order.
+- **Send me a test** for any medication sends a real-looking example to your phones.
+- Check-in reminders are shorter: "How are you feeling? Tap one to log your mood."
+
+**Everywhere**
+- Deleting an entry, dose or group happens straight away with **Undo**, instead of an "Are you sure?" box.
+- Times follow the 12 or 24-hour clock in your Home Assistant profile.
+- History's day headings stay at the top as you scroll; tap one to open that day in Check-in.
+- Each type in **Add something to track** has examples ("For example stress, focus, pain or motivation").
+- Editing an item from Check-in no longer jumps to the Settings screen.
+
 ## 0.8.0
 
 - **A different amount at each reminder time.** For example, Clonidine half a dose at 7pm and one at 10pm. Set it under **Times and amounts** in a medication's reminders, with the strength worked out as you type.

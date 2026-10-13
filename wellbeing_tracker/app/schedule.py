@@ -39,6 +39,7 @@ PERSON_DEFAULTS = {
     "tts_entity": None,         # e.g. tts.home_assistant_cloud
     "announce_only_home": True,
     "person_entity": None,      # None = find the person linked to this HA user
+    "paused_until": None,       # ISO date-time: no notifications or announcements until then
     # Reminders to fill in a check-in (mood, symptoms and so on).
     "checkins": {
         "enabled": False,
@@ -149,6 +150,16 @@ def normalise_person_settings(data: dict) -> dict:
     s["speakers"] = [_entity(x, "media_player", "Speaker") for x in speakers if x]
     s["tts_entity"] = _entity(s["tts_entity"], "tts", "Voice")
     s["person_entity"] = _entity(s["person_entity"], "person", "Person")
+    if s["paused_until"] in (None, ""):
+        s["paused_until"] = None
+    else:
+        try:
+            until = datetime.fromisoformat(str(s["paused_until"]))
+        except ValueError:
+            raise ValidationError("Pause until must be a date and time") from None
+        if until.tzinfo is None:
+            raise ValidationError("Pause until must include a UTC offset")
+        s["paused_until"] = until.isoformat(timespec="seconds")
     s["checkins"] = normalise_checkins(s["checkins"])
     s["hydration"] = normalise_hydration(s["hydration"])
     s["dashboard"] = normalise_dashboard(s["dashboard"])
@@ -459,6 +470,11 @@ def due_times(s: dict, day: date, tz: ZoneInfo) -> list[tuple[str, datetime, dat
 def amount_at(s: dict, hhmm: str):
     """How many to take at this time, or None for the medication's usual number."""
     return (s.get("amounts") or {}).get(hhmm)
+
+
+def is_paused(settings: dict, now: datetime) -> bool:
+    until = settings.get("paused_until")
+    return bool(until) and datetime.fromisoformat(until) > now
 
 
 def in_quiet_hours(settings: dict, local_now: datetime) -> bool:

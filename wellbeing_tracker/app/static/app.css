@@ -580,13 +580,27 @@ textarea { min-height: 88px; resize: vertical; }
 
 .time-head { color: var(--muted); font-size: 0.85rem; margin-bottom: 4px; }
 
-.med-plan { display: flex; flex-wrap: wrap; gap: 2px 12px; background: none; border: 0; padding: 0; text-align: left; font: inherit; color: var(--muted); font-size: 0.9rem; cursor: pointer; }
+.med-plan { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; font-size: 0.9rem; color: var(--muted); }
 
-.med-plan:hover .plan-dose, .med-plan:focus-visible .plan-dose { text-decoration: underline; }
+.plan-dose { padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); background: none; font: inherit; color: inherit; }
 
-.plan-taken { color: var(--ink); }
+button.plan-dose { cursor: pointer; border-style: dashed; color: var(--ink); min-height: 32px; }
 
-.plan-due { color: var(--accent); font-weight: 700; }
+button.plan-dose:hover, button.plan-dose:focus-visible { border-color: var(--accent); color: var(--accent); }
+
+.plan-taken { color: var(--ink); border-color: transparent; background: var(--sunken); }
+
+.plan-due { color: var(--accent); font-weight: 700; border-color: var(--accent); }
+
+.plan-missed, .plan-skipped { text-decoration: line-through; text-decoration-thickness: 1px; }
+
+.plan-missed .plan-mark, .plan-skipped .plan-mark { text-decoration: none; display: inline-block; }
+
+.med-title { display: flex; align-items: center; flex-wrap: wrap; gap: 0 2px; }
+
+.med-bell { width: 32px; height: 32px; min-height: 32px; margin-left: 2px; }
+
+.med-bell svg { width: 16px; height: 16px; }
 
 .time-row input { max-width: 10em; }
 
@@ -1047,3 +1061,43 @@ details.more[open] > summary { margin-bottom: 8px; }
 
 .card-head.edit .card-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .edit-row .brow-text { min-width: 0; }
+
+
+/* ---------- 0.9 polish ---------- */
+
+.banner {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px;
+  margin: 0 0 14px; padding: 10px 14px; border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  font-size: 0.95rem;
+}
+
+.progress { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+
+.progress-bar { flex: 0 0 72px; height: 6px; border-radius: 3px; background: var(--sunken); overflow: hidden; }
+
+.progress-bar span { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.3s; }
+
+.day-block > h2 {
+  position: sticky; top: 0; z-index: 2;
+  margin-left: 0; padding: 8px 4px;
+  background: var(--base);
+}
+
+.day-open {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 0; background: none; padding: 0; font: inherit; color: inherit; cursor: pointer;
+}
+
+.day-open svg { width: 14px; height: 14px; fill: none; stroke: var(--muted); stroke-width: 2; }
+
+.day-open:hover, .day-open:focus-visible { color: var(--accent); }
+
+.today-row { display: grid; grid-template-columns: 4.6em 1fr; gap: 8px; font-weight: 400; }
+
+.today-row > span:last-child { font-weight: 700; }
+
+.today-time { color: var(--muted); }
+
+.med-title .med-strength { margin-left: 4px; }

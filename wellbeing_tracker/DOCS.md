@@ -6,7 +6,11 @@ Track mood, energy, symptoms, medications, sleep and other factors for everyone 
 
 Open **Wellbeing** in the Home Assistant sidebar (or the Companion app menu). Each person sees only their own log, based on the Home Assistant user they're signed in as.
 
-The Check-in screen is a dashboard of sections, each a card you can open or close. Everything saves the moment you tap it.
+The Check-in screen is a dashboard of sections, each a card you can open or close. Everything saves the moment you tap it. The bar under the date shows how many questions you've answered today (medications, notes and yes/no habits aren't counted, because leaving them blank is a normal answer).
+
+- **Other days**: use the arrows or swipe left and right. A banner shows which day you're changing, with **Back to today**.
+- **Yesterday's answer** is shown under anything you haven't answered yet, and each section's ••• menu has **Copy yesterday's answers** and **Hide this section**.
+- **Deleting** something happens straight away, with **Undo** in the message at the bottom.
 
 - **Ratings like Mood**: tap **+** to pick a number, at the time shown (tap the time to change it). Tap a logged one to change or delete it.
 - **Symptoms**: tap a level. Tap the minus under the name to clear it.
@@ -21,7 +25,9 @@ Tap the pencil at the top of Check-in to edit it, much like a Home Assistant das
 
 Each medication shows its usual strength and how many you usually take ("1 dose", "2 tablets"). Doses taken today appear as squares with their time, with the day's total on the right.
 
+- Today's reminders show under each medication ("½ dose at 7pm ✓", "1 dose at 10pm"). Tap one that's still to come to log exactly that amount, or tap the bell to change the reminders.
 - Tap **+** to log a dose: set how many (×1, ×1.5 and so on), change the strength or time if needed, then **Confirm**.
+- **Skip** on the Due now card offers one-tap reasons (Felt fine, Side effects, Ran out…), or skip without one.
 - Tap a logged dose to change it or delete it. Reminders timed from that dose move with it.
 - **Groups**: make a group such as Morning or Sleep and tap it to log everything in it at once (with Undo).
 - **Copy last**: logs the same doses as the last day you logged any, at the same times (only times that have already passed today).
@@ -43,6 +49,13 @@ Under **Times and amounts**, each time has its own **How many**. For example, Cl
 The notification says how much to take ("Clonidine ½ dose (50 mcg)"), tapping **Taken** logs that amount, and the Meds/Supplements section on Check-in shows the day's plan under each medication ("½ dose at 7pm ✓ · 1 dose at 10pm"). Tap that line to change it.
 
 Each reminder has **Taken**, **Snooze** and **Skip** buttons. Answering on one phone clears it on the others. You can also answer from the **Due now** card on the Check-in screen, by logging the medication there, or by switching on a linked Home Assistant toggle. Logging a dose shortly before its time means the reminder never goes off.
+
+**Send me a test** in a medication's reminders sends one example to your phones, exactly as it will look (its buttons don't log anything).
+
+### Pausing and checking reminders
+
+- **Settings → Notifications → Pause reminders**: for an hour, until tomorrow morning, a few days, a week or a time you choose. Nothing is sent to phones or speakers until then, but doses still show in the app, and anything still due comes back afterwards. Check-in shows a banner with **Resume**.
+- **Settings → Notifications → Today's reminders** lists every medication and check-in reminder for today in time order, with what's been taken.
 
 ### Timing one medication from another
 
@@ -76,7 +89,7 @@ Give **Water** (or any count or amount you track) a **daily goal** in Settings, 
 
 ## Appearance
 
-The app uses the same colours as your Home Assistant theme, including dark mode and custom themes, and changes when Home Assistant does.
+The app uses the same colours as your Home Assistant theme, including dark mode and custom themes, and changes when Home Assistant does. Times use the 12 or 24-hour clock set in your Home Assistant profile.
 
 ## Using reminders in your own automations
 
@@ -91,6 +104,7 @@ Every step fires a Home Assistant event, `wellbeing_tracker_reminder`, with:
 | `medications` | `["Vyvanse"]` (empty for check-ins) |
 | `due` | `07:00` |
 | `reminder_id` | `12` |
+| `paused` | `true` while reminders are paused, so your automations can stay quiet too |
 
 For example, flash a light when a reminder escalates:
 

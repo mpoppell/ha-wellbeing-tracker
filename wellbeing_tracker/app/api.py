@@ -136,6 +136,10 @@ def build_router(current_user) -> APIRouter:
             raise ValidationError("settings must be an object")
         return await e.save_schedule(user["id"], tracker_id, bool(payload.get("enabled")), settings)
 
+    @router.post("/trackers/{tracker_id}/schedule/preview")
+    async def preview_schedule(tracker_id: int, user: dict = Depends(current_user), e=Depends(engine)) -> dict:
+        return {"sent_to": await e.send_preview(user["id"], tracker_id)}
+
     @router.get("/doses/today")
     async def doses_today(user: dict = Depends(current_user), e=Depends(engine)) -> list[dict]:
         await e.tick()

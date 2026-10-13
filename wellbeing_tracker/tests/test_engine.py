@@ -1017,3 +1017,45 @@ def test_amounts_validated(env):
     # amounts for times that were removed are dropped
     saved = schedule(engine, c["id"], times=["22:00"], amounts={"19:00": 0.5})
     assert saved["settings"]["amounts"] == {}
+
+
+# ----- pausing every reminder -----
+
+def test_pause_stops_notifications_until_the_time(env):
+    db, ha, clock, engine, med = env
+    v = med("Vyvanse")
+    schedule(engine, v["id"], times=["07:00"], nag="gently")
+    engine.save_person("u1", {"paused_until": "2026-10-14T07:20:00+11:00"})
+    clock.set("2026-10-14T07:00")
+    run(engine.tick())
+    assert ha.notifications() == []
+    # still due in the app, and HA automations hear about it
+    assert [d["status"] for d in engine.doses_today("u1")][:1] == ["due"]
+    assert ha.events[-1]["paused"] is True
+    # after the pause the next repeat goes out as normal
+    clock.set("2026-10-14T07:30")
+    run(engine.tick())
+    assert len(ha.notifications()) == 1
+
+
+def test_pause_can_be_cleared_and_is_validated(env):
+    db, ha, clock, engine, med = env
+    assert engine.save_person("u1", {"paused_until": "2026-10-20T09:00:00+11:00"})["paused_until"] == "2026-10-20T09:00:00+11:00"
+    assert engine.save_person("u1", {"paused_until": None})["paused_until"] is None
+    with pytest.raises(ValidationError):
+        engine.save_person("u1", {"paused_until": "tomorrow"})
+
+
+def test_preview_sends_the_real_wording(env):
+    db, ha, clock, engine, med = env
+    c = med("Clonidine", dose="100", unit="mcg", notes="With water")
+    schedule(engine, c["id"], times=["19:00", "22:00"], amounts={"19:00": 0.5})
+    engine.save_person("u1", {"paused_until": "2026-10-20T09:00:00+11:00"})  # previews still go out
+    assert run(engine.send_preview("u1", c["id"])) == 2
+    [n] = ha.notifications()
+    assert n["title"] == "Time for Clonidine"
+    assert n["message"].startswith("Clonidine ½ dose (50 mcg). With water")
+    assert n["data"]["tag"] == "wbt-preview"
+    # tapping its buttons does nothing
+    run(engine.handle_event("mobile_app_notification_action", {"action": "WBT_TAKEN_0"}))
+    assert db.list_entries("u1", "2026-10-14", "2026-10-14") == []

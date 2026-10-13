@@ -44,10 +44,29 @@ const ICONS = {
   close: "M6 6l12 12M18 6L6 18",
 };
 
-// "07:00" -> "7am", "13:30" -> "1:30pm"
+// 12 or 24-hour clock, following the time format in your Home Assistant profile.
+let clock24 = false;
+function detectClock() {
+  const cycle = (lang) => {
+    try { return new Intl.DateTimeFormat(lang, { hour: "numeric" }).resolvedOptions().hourCycle; } catch { return "h12"; }
+  };
+  try {
+    const ha = window.parent !== window && window.parent.document.querySelector("home-assistant");
+    const loc = ha && ha.hass && ha.hass.locale;
+    if (loc) {
+      if (loc.time_format === "24") return true;
+      if (loc.time_format === "12") return false;
+      return ["h23", "h24"].includes(cycle(loc.time_format === "language" ? loc.language : undefined));
+    }
+  } catch { /* not inside Home Assistant */ }
+  return ["h23", "h24"].includes(cycle(undefined));
+}
+
+// "07:00" -> "7am" (or "07:00"), "13:30" -> "1:30pm" (or "13:30")
 function niceTime(hhmm) {
   if (!hhmm) return "";
   const [h, m] = hhmm.split(":").map(Number);
+  if (clock24) return `${pad(h)}:${pad(m)}`;
   const suffix = h < 12 ? "am" : "pm";
   return `${h % 12 || 12}${m ? ":" + pad(m) : ""}${suffix}`;
 }
@@ -117,6 +136,7 @@ function timeOf(iso) {
   // logged_at keeps its own offset; show the wall-clock time it was logged at
   const m = /T(\d{2}):(\d{2})/.exec(iso);
   if (!m) return "";
+  if (clock24) return `${m[1]}:${m[2]}`;
   const h = Number(m[1]);
   const suffix = h < 12 ? "am" : "pm";
   return `${h % 12 || 12}:${m[2]}${suffix}`;
@@ -177,9 +197,9 @@ function doseText(t, e) {
   const n = e && e.value_num != null ? e.value_num : 1;
   const strength = e && e.value_json && e.value_json.dose != null ? e.value_json.dose : c.dose;
   const unit = c.unit || "";
-  if (strength == null || strength === "") return n === 1 ? "1 dose" : `${fmtNum(n)} doses`;
+  if (strength == null || strength === "") return qtyText(t, n);
   const one = `${fmtNum(strength)} ${unit}`.trim();
-  return n === 1 ? one : `${fmtNum(n)} × ${one} (${fmtNum(n * Number(strength))} ${unit})`.replace(" )", ")");
+  return n === 1 ? one : `${qtyText(t, n)} (${fmtNum(n * Number(strength))} ${unit})`.replace(" )", ")");
 }
 
 // 0.5 -> "½", 1.5 -> "1½", 2 -> "2"
@@ -274,13 +294,16 @@ function updateSaveBar() { /* no save bar */ }
 
 async function loadDay() {
   const isToday = state.day === isoDay(new Date());
-  const [entries, doses, person, all] = await Promise.all([
+  const prev = addDays(state.day, -1);
+  const [entries, prevEntries, doses, person, all] = await Promise.all([
     api("GET", `api/entries?from=${state.day}&to=${state.day}`),
+    api("GET", `api/entries?from=${prev}&to=${prev}`).catch(() => []),
     isToday ? api("GET", "api/doses/today").catch(() => []) : Promise.resolve([]),
     api("GET", "api/reminders/settings").catch(() => state.person),
     api("GET", "api/trackers?include_hidden=true"),
   ]);
   state.dayEntries = entries;
+  state.prevEntries = prevEntries;
   state.doses = doses;
   state.person = person;
   state.allTrackers = all;
@@ -295,6 +318,30 @@ async function renderCheckin(view) {
 }
 
 const viewEl = () => document.getElementById("view");
+
+// Draw the current screen again after a change made from a sheet.
+async function redraw() {
+  await refreshTrackers();
+  const tab = currentTab();
+  if (tab === "checkin") await refreshCheckin();
+  else await views[tab](viewEl());
+}
+
+// Delete a logged entry straight away, with Undo in the toast instead of "Are you sure?".
+async function deleteWithUndo(entry, what) {
+  try {
+    await api("DELETE", `api/entries/${entry.id}`);
+  } catch (err) { toast(err.message); return; }
+  await redraw();
+  toast(`${what} deleted`, "Undo", async () => {
+    try {
+      await api("POST", "api/checkin", { logged_at: entry.logged_at, items: [{
+        tracker_id: entry.tracker_id, value_num: entry.value_num, value_json: entry.value_json, note: entry.note }] });
+      await redraw();
+      toast(`${what} is back`);
+    } catch (err) { toast(err.message); }
+  });
+}
 
 async function refreshCheckin() {
   await loadDay();
@@ -483,7 +530,7 @@ function drawCheckin(view) {
             el("button", { type: "button", class: "iconbtn", "aria-label": "Previous day", onclick: () => changeDay(-1) }, svgIcon(ICONS.left)),
             el("span", { class: "day-label" }, longDate(state.day)),
             el("button", { type: "button", class: "iconbtn", "aria-label": "Next day", disabled: isToday, onclick: () => changeDay(1) }, svgIcon(ICONS.right))),
-      !editing && isToday && state.nextCheckin ? el("p", { class: "row-sub" }, `Next check-in reminder at ${niceTime(state.nextCheckin)}`) : null),
+      editing ? null : progressLine(isToday)),
     editing
       ? el("button", { type: "button", class: "primary small", onclick: () => { state.editing = false; drawCheckin(view); } }, "Done")
       : el("button", { type: "button", class: "iconbtn", "aria-label": "Edit dashboard", title: "Edit dashboard",
@@ -493,16 +540,116 @@ function drawCheckin(view) {
   const sections = dashboardSections(editing).filter((s) => editing || (!s.hidden && s.items.length));
   const cards = sections.map((s, i) => editing ? editSectionCard(s, i, sections, view) : sectionCard(s, view));
 
+  const banners = [];
+  if (!editing && !isToday) {
+    banners.push(el("div", { class: "banner" },
+      el("span", {}, `Anything you change is saved to ${longDate(state.day)}.`),
+      el("button", { type: "button", class: "link inline", onclick: () => { state.day = today; renderCheckin(view); } }, "Back to today")));
+  }
+  const paused = pausedUntil();
+  if (!editing && paused) {
+    banners.push(el("div", { class: "banner" },
+      el("span", {}, `Reminders are paused until ${paused}.`),
+      el("button", { type: "button", class: "link inline", onclick: () => setPause(null) }, "Resume")));
+  }
+
   const extra = [];
   if (editing) {
     extra.push(el("div", { class: "actions" },
       el("button", { type: "button", class: "secondary", onclick: () => addSection(sections) }, "+ Add section")));
   } else if (!state.trackers.length) {
     extra.push(el("div", { class: "empty" },
-      el("p", {}, "You're not tracking anything yet."),
-      el("button", { type: "button", class: "primary", onclick: () => { state.editing = true; drawCheckin(view); } }, "Set up your dashboard")));
+      el("p", {}, "Pick a few things to track. Start small: 3 to 5 is plenty, and you can add more any time."),
+      el("button", { type: "button", class: "primary", onclick: () => openTrackerSheet({ kind: "rating" }, view) }, "Add something to track")));
   }
-  view.replaceChildren(...[head, !editing && isToday ? dueCard(view) : null, ...cards, ...extra].filter(Boolean));
+  view.replaceChildren(...[head, ...banners, !editing && isToday ? dueCard(view) : null, ...cards, ...extra].filter(Boolean));
+}
+
+// Items that count towards "7 of 12 answered": the questions on the screen. Medications, notes and
+// yes/no habits aren't counted, because leaving those blank is a normal answer.
+function answerable() {
+  return dashboardSections(false).filter((s) => !s.hidden)
+    .flatMap((s) => s.items)
+    .filter((t) => !isMeds(t) && t.kind !== "note" && !(t.kind === "factor" && t.config.mode === "bool"));
+}
+
+function progressLine(isToday) {
+  const items = answerable();
+  const done = items.filter((t) => entriesFor(t.id).length).length;
+  const parts = [];
+  if (items.length) parts.push(done === items.length ? `All ${items.length} answered` : `${done} of ${items.length} answered`);
+  if (isToday && state.nextCheckin) parts.push(`next reminder ${niceTime(state.nextCheckin)}`);
+  if (!parts.length) return null;
+  return el("div", { class: "progress" },
+    items.length ? el("div", { class: "progress-bar", role: "progressbar", "aria-label": "Answered today",
+      "aria-valuemin": "0", "aria-valuemax": String(items.length), "aria-valuenow": String(done) },
+      el("span", { style: `width:${Math.round((done / items.length) * 100)}%` })) : null,
+    el("span", { class: "row-sub" }, parts.join(" · ")));
+}
+
+/* ---------- pausing reminders ---------- */
+
+function pausedUntil() {
+  const until = state.person && state.person.paused_until;
+  if (!until || new Date(until) <= new Date()) return null;
+  const d = new Date(until);
+  const day = isoDay(d);
+  const time = niceTime(`${pad(d.getHours())}:${pad(d.getMinutes())}`);
+  return day === isoDay(new Date()) ? time : `${dayLabel(day)} ${time}`;
+}
+
+async function setPause(until) {
+  try {
+    state.person = await api("PUT", "api/reminders/settings", { paused_until: until ? localISO(until) : null });
+    toast(until ? "Reminders paused" : "Reminders are back on");
+    await redraw();
+  } catch (err) { toast(err.message); }
+}
+
+function openPauseSheet() {
+  const sheet = document.getElementById("sheet");
+  const at = (days, h, m = 0) => { const d = new Date(); d.setDate(d.getDate() + days); d.setHours(h, m, 0, 0); return d; };
+  const inHours = (h) => new Date(Date.now() + h * 3600 * 1000);
+  const pick = (until) => { sheet.close(); setPause(until); };
+  const custom = el("input", { type: "datetime-local", "aria-label": "Pause until" });
+  const item = (label, fn) => el("button", { type: "button", class: "menu-item", onclick: fn }, label);
+  sheet.replaceChildren(el("div", { class: "sheet-body" },
+    el("h2", {}, "Pause reminders"),
+    el("p", { class: "row-sub", style: "margin:-8px 0 14px" },
+      "No notifications or announcements until then. Doses still show on Check-in, and anything still due comes back afterwards."),
+    el("div", { class: "menu" },
+      item("For 1 hour", () => pick(inHours(1))),
+      item("For 3 hours", () => pick(inHours(3))),
+      item("Until tomorrow morning (7am)", () => pick(at(1, 7))),
+      item("For 3 days", () => pick(at(3, 7))),
+      item("For a week", () => pick(at(7, 7)))),
+    field("Or until", el("div", { class: "inline-field" }, custom,
+      el("button", { type: "button", class: "secondary small", onclick: () => { if (custom.value) pick(new Date(custom.value)); } }, "Pause"))),
+    el("div", { class: "actions" },
+      pausedUntil() ? el("button", { type: "button", class: "primary", onclick: () => pick(null) }, "Resume now") : null,
+      el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Cancel"))));
+  sheet.showModal();
+}
+
+/* ---------- swipe between days ---------- */
+
+let swipeStart = null;
+function watchSwipe() {
+  const view = viewEl();
+  view.addEventListener("touchstart", (ev) => {
+    const t = ev.touches[0];
+    const skip = ev.touches.length > 1 || ev.target.closest("input, textarea, select, .rating-grid, .level-tiles");
+    swipeStart = skip ? null : { x: t.clientX, y: t.clientY, at: Date.now() };
+  }, { passive: true });
+  view.addEventListener("touchend", (ev) => {
+    if (!swipeStart || currentTab() !== "checkin" || state.editing) return;
+    const t = ev.changedTouches[0];
+    const dx = t.clientX - swipeStart.x;
+    const dy = t.clientY - swipeStart.y;
+    const quick = Date.now() - swipeStart.at < 600;
+    swipeStart = null;
+    if (quick && Math.abs(dx) > 70 && Math.abs(dy) < 40) changeDay(dx > 0 ? -1 : 1);
+  }, { passive: true });
 }
 
 async function changeDay(delta) {
@@ -562,9 +709,44 @@ function openSectionMenu(s, view) {
         : item(`Add something to ${s.name}`, () => openTrackerSheet({ kind: "rating", group_name: s.name }, view)),
       meds ? item("Create a group", () => openGroupSheet(null, view)) : null,
       meds ? item("Reminders and phones", () => { location.hash = "#/settings"; }) : null,
+      !meds ? item("Copy yesterday's answers", () => copyYesterday(s)) : null,
+      item("Hide this section", () => hideSection(s)),
       item("Edit dashboard", () => { state.editing = true; drawCheckin(view); })),
     el("div", { class: "actions" }, el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Close"))));
   sheet.showModal();
+}
+
+async function hideSection(s) {
+  const all = dashboardSections(true);
+  const set = async (hidden) => {
+    await saveLayout(all.map((x) => x.name === s.name ? { ...x, hidden } : x));
+    drawCheckin(viewEl());
+  };
+  try {
+    await set(true);
+    toast(`${s.name} hidden`, "Undo", () => set(false));
+  } catch (err) { toast(err.message); }
+}
+
+// Fill anything not answered yet in this section with yesterday's answer.
+async function copyYesterday(s) {
+  const prev = state.prevEntries || [];
+  const items = [];
+  for (const t of s.items) {
+    if (isMeds(t) || t.kind === "note" || entriesFor(t.id).length) continue;
+    const e = prev.find((x) => x.tracker_id === t.id);
+    if (!e) continue;
+    items.push({ tracker_id: t.id, value_num: e.value_num, value_json: e.value_json });
+  }
+  if (!items.length) {
+    toast(prev.some((e) => s.items.some((t) => t.id === e.tracker_id)) ? "Nothing left to copy from yesterday" : "Nothing from yesterday to copy");
+    return;
+  }
+  const res = await quickSave(items);
+  if (res) toast(`Copied ${items.length} from yesterday`, "Undo", async () => {
+    for (const e of res.saved) await api("DELETE", `api/entries/${e.id}`).catch(() => {});
+    await refreshCheckin();
+  });
 }
 
 /* ---------- edit mode ---------- */
@@ -672,12 +854,8 @@ function dueCard(view) {
   const later = state.doses.filter((d) => d.status === "scheduled" && d.local_day === state.day);
   if (!due.length && !later.length) return null;
 
-  const act = async (d, action) => {
-    let reason;
-    if (action === "skip") {
-      reason = prompt(`Skipping ${d.name}. Add a reason? (optional)`);
-      if (reason === null) return;
-    }
+  const act = async (d, action, reason) => {
+    if (action === "skip" && reason === undefined) { openSkipSheet(d, (r) => act(d, "skip", r)); return; }
     try {
       state.doses = await api("POST", `api/doses/${d.dose_id}`, { action, reason });
       state.dayEntries = await api("GET", `api/entries?from=${state.day}&to=${state.day}`);
@@ -710,6 +888,24 @@ function dueCard(view) {
       el("span", { class: "card-title" }, due.length ? "Due now" : "Coming up"),
       due.length ? el("span", { class: "card-count" }, String(due.length)) : null),
     el("div", { class: "card-body" }, rows, laterText ? el("p", { class: "row-sub due-later" }, laterText) : null));
+}
+
+const SKIP_REASONS = ["Felt fine", "Side effects", "Ran out", "Not needed today", "Forgot, too late now"];
+
+function openSkipSheet(d, done) {
+  const sheet = document.getElementById("sheet");
+  const other = el("input", { type: "text", maxlength: "200", placeholder: "Something else", "aria-label": "Another reason", style: "flex:1;min-width:0" });
+  const go = (r) => { sheet.close(); done(r); };
+  sheet.replaceChildren(el("div", { class: "sheet-body" },
+    el("h2", {}, `Skip ${d.name}?`),
+    el("p", { class: "row-sub", style: "margin:-8px 0 14px" }, "A reason is optional. It's kept with the dose so you can look back on it."),
+    el("div", { class: "bchips" }, SKIP_REASONS.map((r) => el("button", { type: "button", class: "chip", onclick: () => go(r) }, r))),
+    el("div", { class: "inline-field", style: "margin-top:12px" }, other,
+      el("button", { type: "button", class: "secondary small", onclick: () => go(other.value.trim() || null) }, "Skip")),
+    el("div", { class: "actions" },
+      el("button", { type: "button", class: "primary", onclick: () => go(null) }, "Skip without a reason"),
+      el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Cancel"))));
+  sheet.showModal();
 }
 
 /* ---------- Meds/Supplements ---------- */
@@ -767,15 +963,22 @@ function medRow(t, view) {
   const title = el("div", { class: "brow-text" },
     el("div", { class: "med-title" },
       el("span", { class: "brow-name" }, t.emoji ? el("span", { class: "emoji", "aria-hidden": "true" }, t.emoji) : null, t.name),
-      strength ? el("span", { class: "med-strength" }, ` (${strength})`) : null),
+      strength ? el("span", { class: "med-strength" }, ` (${strength})`) : null,
+      el("button", { type: "button", class: "iconbtn plain med-bell", "aria-label": `Reminders for ${t.name}`, title: "Reminders",
+        onclick: () => openScheduleSheet(t, view) }, svgIcon(ICONS.bell))),
     planned.length
-      ? el("button", { type: "button", class: "row-sub med-plan", title: "Change reminders",
-          "aria-label": `Reminders today: ${planned.map((d) => `${qtyText(t, d.quantity)} at ${niceTime(d.time)}, ${d.status}`).join("; ")}. Change reminders`,
-          onclick: () => openScheduleSheet(t, view) },
-          planned.map((d) => el("span", { class: `plan-dose plan-${d.status}` },
-            `${qtyText(t, d.quantity)} at ${niceTime(d.time)}`,
-            d.status === "taken" ? el("span", { class: "plan-mark", "aria-hidden": "true" }, " ✓")
-              : d.status === "skipped" || d.status === "missed" ? el("span", { class: "plan-mark" }, ` (${d.status})`) : null)))
+      ? el("div", { class: "row-sub med-plan", role: "list", "aria-label": "Today's reminders" },
+          planned.map((d) => {
+            const text = `${qtyText(t, d.quantity)} at ${niceTime(d.time)}`;
+            if (d.status === "scheduled" || d.status === "due") {
+              return el("button", { type: "button", role: "listitem", class: `plan-dose plan-${d.status}`,
+                "aria-label": `Log ${text}`, title: "Log this dose",
+                onclick: () => openDoseDialog(t, null, { quantity: d.quantity }) }, text);
+            }
+            return el("span", { role: "listitem", class: `plan-dose plan-${d.status}` }, text,
+              d.status === "taken" ? el("span", { class: "plan-mark", "aria-label": "taken" }, " ✓")
+                : el("span", { class: "plan-mark" }, ` (${d.status})`));
+          }))
       : el("div", { class: "row-sub" }, usualText(t)));
   if (!taken.length) {
     return el("div", { class: "med-row" }, el("div", { class: "brow-main" }, title, add));
@@ -789,14 +992,14 @@ function medRow(t, view) {
 }
 
 // The dose dialog: ×N with −1/−0.5/+0.5/+1, strength, time, delete, Confirm.
-function openDoseDialog(t, entry) {
+function openDoseDialog(t, entry, opts = {}) {
   const sheet = document.getElementById("sheet");
   const c = t.config;
   const day = entry ? entry.day : state.day;
   const now = new Date();
   let time = entry ? /T(\d{2}:\d{2})/.exec(entry.logged_at)[1] : `${pad(now.getHours())}:${pad(now.getMinutes())}`;
   const dueNow = entry ? null : state.doses.find((d) => d.tracker_id === t.id && (d.status === "due" || (d.status === "scheduled" && d.local_day === state.day)));
-  let count = entry ? Number(entry.value_num ?? 1) : Number(dueNow ? dueNow.quantity : c.quantity ?? 1);
+  let count = entry ? Number(entry.value_num ?? 1) : Number(opts.quantity ?? (dueNow ? dueNow.quantity : c.quantity ?? 1));
   let strength = entry && entry.value_json && entry.value_json.dose != null ? entry.value_json.dose : c.dose;
 
   const countOut = el("span", { class: "dose-big", "aria-live": "polite" });
@@ -838,10 +1041,8 @@ function openDoseDialog(t, entry) {
     el("div", { class: "dose-top" },
       entry ? el("button", { type: "button", class: "iconbtn plain dose-delete", "aria-label": "Delete this dose", title: "Delete",
         onclick: async () => {
-          if (!confirm(`Delete the ${t.name} dose at ${niceTime(time)}?`)) return;
           sheet.close();
-          await removeEntry(entry);
-          toast("Dose deleted");
+          await deleteWithUndo(entry, `${t.name} at ${niceTime(time)}`);
         } }, svgIcon(ICONS.trash)) : null,
       el("button", { type: "button", class: "iconbtn plain dose-close", "aria-label": "Close", onclick: () => sheet.close() }, svgIcon(ICONS.close)),
       el("div", { class: "dose-count" }, svgIcon(ICONS.pill), countOut),
@@ -941,9 +1142,10 @@ function openGroupSheet(g, view) {
       : notice("Add a medication first."),
     el("div", { class: "actions" },
       el("button", { type: "submit", class: "primary" }, g ? "Save group" : "Create group"),
-      g ? el("button", { type: "button", class: "secondary danger", onclick: () => {
-        if (!confirm(`Delete the ${g.name} group? Your medications stay.`)) return;
-        save(state.person.med_groups.filter((x) => x.id !== g.id));
+      g ? el("button", { type: "button", class: "secondary danger", onclick: async () => {
+        const before = state.person.med_groups;
+        await save(before.filter((x) => x.id !== g.id));
+        toast(`${g.name} group deleted`, "Undo", () => save(before));
       } }, "Delete") : null,
       el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Cancel")));
   form.addEventListener("submit", (ev) => {
@@ -975,6 +1177,14 @@ function goalAside(c, current) {
   return `${fmtNum(current)} of ${fmtNum(c.goal)}${c.unit ? " " + c.unit : ""}${done ? " ✓" : ""}`;
 }
 
+// "yesterday Good (8)" for an item not answered yet today.
+function yesterdayText(t) {
+  const e = (state.prevEntries || []).find((x) => x.tracker_id === t.id);
+  if (!e) return "";
+  const v = formatValue(t, e);
+  return v ? ` · yesterday ${t.kind === "rating" ? ratingText(t.config, e.value_num) : v.toLowerCase()}` : "";
+}
+
 function trackerRow(t, view) {
   const c = t.config;
   const entries = entriesFor(t.id);
@@ -982,7 +1192,7 @@ function trackerRow(t, view) {
 
   if (t.kind === "rating") {
     const level = latest ? levelLine(ratingText(c, latest.value_num), scaleColor(c, latest.value_num),
-      t.frequency === "daily" ? () => removeEntry(latest) : null) : levelLine("Not logged yet", "var(--muted)");
+      t.frequency === "daily" ? () => removeEntry(latest) : null) : levelLine(`Not logged yet${yesterdayText(t)}`, "var(--muted)");
     const chips = t.frequency === "many" && entries.length
       ? el("div", { class: "bchips small" }, entries.slice().reverse().map((e) => el("button", {
           type: "button", class: "chip", style: `--lc:${scaleColor(c, e.value_num)}`,
@@ -1000,7 +1210,8 @@ function trackerRow(t, view) {
   if (t.kind === "symptom") {
     const val = latest ? latest.value_num : null;
     const labels = state.meta.severity_labels;
-    const level = val != null ? levelLine(labels[val], SEVERITY_COLOURS[val], () => quickSave([{ tracker_id: t.id, clear: true }])) : null;
+    const level = val != null ? levelLine(labels[val], SEVERITY_COLOURS[val], () => quickSave([{ tracker_id: t.id, clear: true }]))
+      : levelLine(`Not answered${yesterdayText(t)}`, "var(--muted)");
     const tiles = el("div", { class: "level-tiles", role: "group", "aria-label": `${t.name} severity` },
       labels.map((label, i) => tile(barsIcon(i), {
         class: `tile tile-square${val === i ? " on" : ""}`, style: `--c:${SEVERITY_COLOURS[i]}`,
@@ -1089,7 +1300,7 @@ function trackerRow(t, view) {
       tile(String(v), { class: `tile tile-rating${quality === v ? " on" : ""}`, "aria-pressed": String(quality === v),
         "aria-label": `Sleep quality ${qcfg.labels[v - 1]}`, onclick: () => save(hours, quality === v ? null : v) }))));
     const text = [hours != null ? `${fmtNum(hours)} hours` : null, quality ? `${qcfg.labels[quality - 1]} sleep` : null].filter(Boolean).join(", ");
-    return brow(t, levelLine(text || "Not logged yet", quality ? scaleColor(qcfg, quality) : "var(--muted)",
+    return brow(t, levelLine(text || `Not logged yet${yesterdayText(t)}`, quality ? scaleColor(qcfg, quality) : "var(--muted)",
       latest ? () => removeEntry(latest) : null), stepper,
       el("div", { class: "brow-below" }, el("span", { class: "row-sub" }, "How well did you sleep?"), qualityTiles));
   }
@@ -1161,9 +1372,8 @@ function openRatingDialog(t, entry = null) {
     el("div", { class: `rating-grid${perCol === 1 ? " one-row" : ""}`, style: `--cols:${cols.length}` }, cols),
     entry ? el("div", { class: "actions center" },
       el("button", { type: "button", class: "link danger", onclick: async () => {
-        if (!confirm(`Delete this ${t.name} entry?`)) return;
         sheet.close();
-        await removeEntry(entry);
+        await deleteWithUndo(entry, `${t.name} at ${timeOf(entry.logged_at)}`);
       } }, "Delete this entry")) : null);
 
   sheet.classList.add("center");
@@ -1194,7 +1404,7 @@ async function renderHistory(view) {
 
   const head = el("header", { class: "head" },
     el("h1", {}, "History"),
-    el("p", {}, `Last ${state.historyDays} days. Tap an entry to change or delete it.`),
+    el("p", {}, `Last ${state.historyDays} days. Tap an entry to change or delete it, or a day to open it in Check-in.`),
   );
 
   if (!entries.length) {
@@ -1214,7 +1424,10 @@ async function renderHistory(view) {
   const blocks = [];
   for (const [day, list] of byDay) {
     blocks.push(el("section", { class: "day-block" },
-      el("h2", {}, dayLabel(day), daySummary(list, byId)),
+      el("h2", {},
+        el("button", { type: "button", class: "day-open", "aria-label": `Open ${longDate(day)} in Check-in`, title: "Open in Check-in",
+          onclick: () => { state.day = day; location.hash = "#/checkin"; } }, dayLabel(day), svgIcon(ICONS.edit)),
+        daySummary(list, byId)),
       el("div", { class: "panel" }, list.map((e) => entryButton(e, byId.get(e.tracker_id)))),
     ));
   }
@@ -1271,14 +1484,8 @@ function openEntrySheet(e, t) {
         location.hash = "#/checkin";
       } }, "Edit this day"),
       el("button", { type: "button", class: "secondary danger", onclick: async () => {
-        if (!confirm(`Delete this ${t.name} entry?`)) return;
-        try {
-          await api("DELETE", `api/entries/${e.id}`);
-          sheet.close();
-          toast("Entry deleted");
-          state.loadedDay = null;
-          await renderHistory(document.getElementById("view"));
-        } catch (err) { toast(err.message); }
+        sheet.close();
+        await deleteWithUndo(e, `${t.name} at ${timeOf(e.logged_at)}`);
       } }, "Delete entry"),
       el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Close"),
     ),
@@ -1375,6 +1582,8 @@ async function renderSettings(view) {
     api("GET", "api/reminders/settings").catch(() => null),
   ]);
   meds.forEach((m, i) => { m._schedule = schedules[i]; });
+  if (person) state.person = person;
+  const paused = pausedUntil();
 
   const medSection = el("section", { class: "group" },
     el("h2", {}, "Meds/Supplements"),
@@ -1390,6 +1599,9 @@ async function renderSettings(view) {
   const notifySection = el("section", { class: "group" },
     el("h2", {}, "Notifications"),
     el("div", { class: "panel" },
+      settingRow("Today's reminders", "Everything due today, in time order", "See", () => openTodaySheet(view)),
+      settingRow("Pause reminders", paused ? `Paused until ${paused}` : "Take a break from notifications, for example on holiday",
+        paused ? "Resume" : "Pause", () => (paused ? setPause(null) : openPauseSheet())),
       settingRow("Phones and alerts",
         phones ? `Sending to ${phones === 1 ? "1 phone" : phones + " phones"}` : "No phone chosen yet, so reminders only show in this app",
         "Change", () => openPersonSheet(view)),
@@ -1427,6 +1639,49 @@ async function renderSettings(view) {
     el("h2", { class: "section-title" }, "What you track"),
     ...trackerSections, addRow, hiddenSection,
     el("p", { class: "whoami" }, `Signed in to Home Assistant as ${state.me.display_name || state.me.username}`)].filter(Boolean));
+}
+
+// Does a check-in or water "days" setting include today?
+function runsToday(d) {
+  if (!d || d.mode === "daily") return true;
+  const today = dayToDate(isoDay(new Date()));
+  if (d.mode === "weekdays") return d.weekdays.includes((today.getDay() + 6) % 7);
+  const start = dayToDate(d.start);
+  const diff = Math.round((today - start) / 86400000);
+  return diff >= 0 && diff % d.every === 0;
+}
+
+async function openTodaySheet(view) {
+  const sheet = document.getElementById("sheet");
+  let doses, person;
+  try {
+    [doses, person] = await Promise.all([api("GET", "api/doses/today"), api("GET", "api/reminders/settings")]);
+  } catch (err) { toast(err.message); return; }
+  const today = isoDay(new Date());
+  const STATUS = { scheduled: "", due: "Due now", taken: "Taken", skipped: "Skipped", missed: "Missed", cancelled: "Cancelled" };
+  const rows = doses.filter((d) => d.local_day === today).map((d) => ({
+    time: d.time, name: d.name, sub: [d.amount, STATUS[d.status]].filter(Boolean).join(" · "),
+    open: () => { const t = state.trackers.find((x) => x.id === d.tracker_id); if (t) openScheduleSheet(t, view); },
+  }));
+  if (person.checkins.enabled && runsToday(person.checkins.days)) {
+    for (const time of person.checkins.times) rows.push({ time, name: "Check-in", sub: "", open: () => openCheckinSheet(view) });
+  }
+  rows.sort((a, b) => a.time.localeCompare(b.time));
+  const h = person.hydration;
+  const water = h.enabled && runsToday(h.days)
+    ? `Water: if you haven't had any for ${niceGap(h.every)}, between ${niceTime(h.start)} and ${niceTime(h.end)}.` : null;
+  const paused = pausedUntil();
+  sheet.replaceChildren(el("div", { class: "sheet-body" },
+    el("h2", {}, "Today's reminders"),
+    paused ? notice(`Paused until ${paused}. These still show in the app.`) : null,
+    rows.length ? el("div", { class: "menu" }, rows.map((r) => el("button", { type: "button", class: "menu-item today-row",
+      onclick: () => { sheet.close(); r.open(); } },
+      el("span", { class: "today-time" }, niceTime(r.time)),
+      el("span", {}, r.name, r.sub ? el("span", { class: "row-sub" }, ` ${r.sub}`) : null))))
+      : el("p", { class: "row-sub" }, "No reminders at set times today."),
+    water ? el("p", { class: "row-sub" }, water) : null,
+    el("div", { class: "actions" }, el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Close"))));
+  sheet.showModal();
 }
 
 function settingsRow(t, all, view) {
@@ -1584,8 +1839,20 @@ function openTrackerSheet(t, view) {
   kindSelect.value = kind;
   const logged = t.entry_count || 0;
   const kindHint = !isNew && logged
-    ? `Changing the type clears the ${logged === 1 ? "1 thing" : logged + " things"} already logged for it, because they were recorded differently.`
+    ? `Changing the type clears the ${logged === 1 ? "1 thing" : logged + " things"} already logged for it, because they were recorded differently. To keep them, add a new item instead and hide this one.`
     : null;
+  const KIND_EXAMPLES = {
+    rating: "For example stress, focus, pain or motivation.",
+    symptom: "For example headache, nausea or brain fog: none, mild, moderate or severe.",
+    factor: "Things you do or that happen: coffee, exercise, work, time outside.",
+    tags: "Choose one or more words from your own list, like emotions or weather.",
+    note: "A free-text box, like a journal.",
+    medication: "Log doses and get reminders.",
+    sleep: "Hours slept and how well.",
+  };
+  const kindExample = el("span", { class: "hint" });
+  const drawKindExample = () => { kindExample.textContent = KIND_EXAMPLES[kind] || ""; };
+  drawKindExample();
 
   const extra = el("div", {});
   const err = el("p", { class: "form-error", hidden: true });
@@ -1637,9 +1904,9 @@ function openTrackerSheet(t, view) {
       extra.append(...[
         el("div", { class: "field-pair" }, field("Usual dose", inputs.dose), field("Measured in", inputs.unit)),
         el("datalist", { id: "dose-units" }, ["mg", "mcg", "g", "ml", "IU", "tablets", "capsules", "drops", "puffs"].map((u) => el("option", { value: u }))),
-        el("div", { class: "field-pair" }, field("Usually take", inputs.quantity), field("Counted as", inputs.counted)),
+        el("div", { class: "field-pair" }, field("Usually take", inputs.quantity), field("Each one is a", inputs.counted)),
         el("datalist", { id: "counted-as" }, ["dose", "tablet", "capsule", "application", "drop", "puff", "spray", "scoop"].map((u) => el("option", { value: u }))),
-        el("p", { class: "hint", style: "margin:-6px 0 14px" }, "Shown as \"1 dose\" or \"2 tablets\". You can change the amount and strength each time you log it."),
+        el("p", { class: "hint", style: "margin:-6px 0 14px" }, "For example tablet, puff or drop. Shown as \"1 dose\" or \"2 tablets\". You can change the amount and strength each time you log it."),
         field("Instructions", inputs.notes, "Optional. Shown on the reminder."),
         t.id ? el("button", { type: "button", class: "secondary", onclick: () => openScheduleSheet(t, view) }, "Set up reminders") : null,
       ].filter(Boolean));
@@ -1659,6 +1926,7 @@ function openTrackerSheet(t, view) {
     freqFieldNode.hidden = ["sleep", "medication"].includes(kind);
   };
   kindSelect.addEventListener("change", drawKindFields);
+  kindSelect.addEventListener("change", drawKindExample);
   drawKindFields();
 
   function readConfig() {
@@ -1676,7 +1944,8 @@ function openTrackerSheet(t, view) {
   const form = el("form", { method: "dialog" },
     el("h2", {}, isNew ? (t.kind === "medication" ? "Add medication" : "Add something to track") : `Edit ${t.name}`),
     err,
-    isNew && kind === "medication" ? null : field("What kind?", kindSelect, kindHint),
+    isNew && kind === "medication" ? null : el("label", { class: "field" }, el("span", {}, "What kind?"), kindSelect, kindExample,
+      kindHint ? el("span", { class: "hint" }, kindHint) : null),
     field("Name", name),
     el("div", { class: "field" }, el("span", {}, "Icon"), icon.node),
     groupFieldNode,
@@ -1689,16 +1958,14 @@ function openTrackerSheet(t, view) {
         await api("PATCH", `api/trackers/${t.id}`, { hidden: !t.hidden });
         sheet.close();
         toast(t.hidden ? `${t.name} is back on Check-in` : `${t.name} hidden from Check-in`);
-        await refreshTrackers();
-        await renderSettings(view);
+        await redraw();
       } }, t.hidden ? "Show on Check-in" : "Hide") : null,
       !isNew ? el("button", { type: "button", class: "secondary danger", onclick: async () => {
         if (!confirm(`Delete ${t.name} and everything logged for it? To keep its history, hide it instead.`)) return;
         await api("DELETE", `api/trackers/${t.id}`);
         sheet.close();
         toast(`${t.name} deleted`);
-        await refreshTrackers();
-        await renderSettings(view);
+        await redraw();
       } }, "Delete") : null,
       el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Cancel"),
     ),
@@ -1726,8 +1993,7 @@ function openTrackerSheet(t, view) {
         : await api("PATCH", `api/trackers/${t.id}`, payload);
       sheet.close();
       toast(isNew ? `${payload.name.trim()} added` : "Changes saved");
-      await refreshTrackers();
-      await renderSettings(view);
+      await redraw();
       if (isNew && kind === "medication") openScheduleSheet(saved, view, { turnOn: true });
     } catch (e) {
       err.textContent = e.message;
@@ -2011,6 +2277,12 @@ async function openScheduleSheet(t, view, opts = {}) {
     err, noPhoneNotice(person, view), enabled.node, body,
     el("div", { class: "actions" },
       el("button", { type: "submit", class: "primary" }, "Save reminders"),
+      sched.enabled ? el("button", { type: "button", class: "secondary", title: "Uses your saved settings", onclick: async () => {
+        try {
+          const r = await api("POST", `api/trackers/${t.id}/schedule/preview`);
+          toast(`Test sent to ${r.sent_to === 1 ? "1 phone" : r.sent_to + " phones"}`);
+        } catch (e) { toast(e.message); }
+      } }, "Send me a test") : null,
       el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Cancel")));
 
   form.addEventListener("submit", async (ev) => {
@@ -2393,6 +2665,8 @@ async function start() {
   });
   window.addEventListener("hashchange", route);
   try {
+    clock24 = detectClock();
+    watchSwipe();
     [state.me, state.meta] = await Promise.all([api("GET", "api/me"), api("GET", "api/meta")]);
     await refreshTrackers();
   } catch (err) {

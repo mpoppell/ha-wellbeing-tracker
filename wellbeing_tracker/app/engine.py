@@ -33,6 +33,7 @@ from .schedule import (
     describe_time,
     due_times,
     in_quiet_hours,
+    is_paused,
     nag_params,
     runs_on,
     normalise_person_settings,
@@ -1055,7 +1056,7 @@ class Engine:
         if self.panel_path:
             data["clickAction"] = self.panel_path
         if mood:
-            message = "How are you feeling? Tap an answer to log your mood, or open the app to fill in the rest."
+            message = "How are you feeling? Tap one to log your mood."
             data["actions"] = [{"action": f"{ACTION_PREFIX}MOOD_{v}_{rid}", "title": label}
                                for v, label in self._mood_choices(mood)]
         else:
@@ -1401,8 +1402,11 @@ class Engine:
             except Exception:
                 log.exception("Home Assistant call %s failed", kind)
 
-    async def _notify(self, user_id: str, payload: dict) -> None:
+    async def _notify(self, user_id: str, payload: dict, force: bool = False) -> None:
         person = self.get_person(user_id)
+        # While reminders are paused nothing new arrives, but old ones can still be cleared.
+        if not force and payload.get("message") != "clear_notification" and is_paused(person, self.clock()):
+            return
         for service in person["devices"]:
             await self.ha.call_service("notify", service, payload)
 
@@ -1418,11 +1422,12 @@ class Engine:
             "stage": stage,
             "medications": [i["name"] for i in infos] if kind == "medication" else [],
             "due": infos[0]["time"] if infos else None,
+            "paused": is_paused(self.get_person(user_id), self.clock()),
         })
 
     async def _announce(self, user_id: str, infos: list[dict]) -> None:
         person = self.get_person(user_id)
-        if not person["speakers"] or not person["tts_entity"]:
+        if not person["speakers"] or not person["tts_entity"] or is_paused(person, self.clock()):
             return
         if person["announce_only_home"]:
             if not await self._is_home(user_id, person):
@@ -1453,13 +1458,36 @@ class Engine:
         person = self.get_person(user_id)
         if not person["devices"]:
             raise ValidationError("Choose at least one phone first")
-        await self._notify(user_id, {
+        await self._notify(user_id, force=True, payload={
             "title": "Wellbeing reminders are working",
             "message": "This is how medication reminders will arrive.",
             "data": {"tag": "wbt-test", "channel": "Medication reminders", "importance": "high",
                      "notification_icon": "mdi:pill", "timeout": 120,
                      **({"clickAction": self.panel_path} if self.panel_path else {})},
         })
+        return len(person["devices"])
+
+
+    async def send_preview(self, user_id: str, tracker_id: int) -> int:
+        """Send one example of a medication's reminder, exactly as it will look."""
+        person = self.get_person(user_id)
+        if not person["devices"]:
+            raise ValidationError("Choose at least one phone first")
+        tracker = self.db.get_tracker(user_id, tracker_id)
+        if tracker["kind"] != "medication":
+            raise ValidationError("Reminders are for medications")
+        s = self.get_schedule(user_id, tracker_id)["settings"]
+        cfg = tracker["config"]
+        first = s["times"][0] if s["mode"] == "times" and s["times"] else self.clock().astimezone(self.tz).strftime("%H:%M")
+        quantity = dose_quantity(cfg, amount_at(s, first) if s["mode"] == "times" else None)
+        info = {"name": tracker["name"], "amount": amount_text(cfg, quantity), "notes": cfg.get("notes") or "",
+                "because": None, "time": first, "latest": s["latest_time"]}
+        payload = self._render({"id": 0, "kind": "dose"}, [info], person, 1, escalate=False, alarm=False)
+        payload["message"] += "\n(A test. The buttons won't log anything.)"
+        payload["data"]["tag"] = "wbt-preview"
+        payload["data"]["persistent"] = False
+        payload["data"]["sticky"] = False
+        await self._notify(user_id, payload, force=True)
         return len(person["devices"])
 
 
