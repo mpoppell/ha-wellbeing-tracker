@@ -75,6 +75,59 @@ MIGRATIONS: list[str] = [
     CREATE INDEX entries_user_day ON entries (user_id, day);
     CREATE INDEX entries_tracker_day ON entries (tracker_id, day);
     """,
+    # 3: reminders. A schedule says when a medication is due; each due time
+    # becomes a dose; a reminder is the notification that asks about one or more doses.
+    """
+    CREATE TABLE person_settings (
+        user_id   TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        settings  TEXT NOT NULL DEFAULT '{}'
+    );
+
+    CREATE TABLE schedules (
+        tracker_id   INTEGER PRIMARY KEY REFERENCES trackers(id) ON DELETE CASCADE,
+        user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        enabled      INTEGER NOT NULL DEFAULT 1,
+        settings     TEXT NOT NULL DEFAULT '{}',
+        active_from  TEXT NOT NULL,
+        updated_at   TEXT NOT NULL
+    );
+
+    CREATE TABLE reminders (
+        id              INTEGER PRIMARY KEY,
+        user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        kind            TEXT NOT NULL DEFAULT 'dose',
+        due_at          TEXT NOT NULL,
+        status          TEXT NOT NULL,
+        next_at         TEXT,
+        sends           INTEGER NOT NULL DEFAULT 0,
+        escalated       INTEGER NOT NULL DEFAULT 0,
+        announced       INTEGER NOT NULL DEFAULT 0,
+        last_call_sent  INTEGER NOT NULL DEFAULT 0,
+        answered_at     TEXT,
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL
+    );
+    CREATE INDEX reminders_status ON reminders (status, next_at);
+
+    CREATE TABLE doses (
+        id           INTEGER PRIMARY KEY,
+        user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        tracker_id   INTEGER NOT NULL REFERENCES trackers(id) ON DELETE CASCADE,
+        due_at       TEXT NOT NULL,
+        local_day    TEXT NOT NULL,
+        local_time   TEXT NOT NULL,
+        latest_at    TEXT,
+        status       TEXT NOT NULL,
+        reminder_id  INTEGER REFERENCES reminders(id) ON DELETE SET NULL,
+        entry_id     INTEGER REFERENCES entries(id) ON DELETE SET NULL,
+        reason       TEXT,
+        resolved_at  TEXT,
+        resolved_by  TEXT,
+        UNIQUE (tracker_id, due_at)
+    );
+    CREATE INDEX doses_status ON doses (status, due_at);
+    CREATE INDEX doses_user_day ON doses (user_id, local_day);
+    """,
 ]
 
 

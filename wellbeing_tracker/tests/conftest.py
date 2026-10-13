@@ -46,6 +46,9 @@ class As:
     def post(self, url, json=None):
         return self.client.post(url, headers=self.headers, json=json)
 
+    def put(self, url, json=None):
+        return self.client.put(url, headers=self.headers, json=json)
+
     def patch(self, url, json=None):
         return self.client.patch(url, headers=self.headers, json=json)
 

@@ -469,3 +469,124 @@ textarea { min-height: 88px; resize: vertical; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
+
+/* ---------- reminders ---------- */
+
+[hidden] { display: none !important; }
+
+.primary.small, .secondary.small { min-height: 40px; padding: 6px 16px; font-size: 0.95rem; }
+
+.due {
+  margin-top: 4px;
+  padding: 14px 16px;
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  border: 2px solid var(--accent);
+}
+
+.due > h2 { margin: 0 0 4px; font-size: 1.05rem; }
+
+.due-row { padding: 10px 0; display: grid; gap: 10px; }
+
+.due-row + .due-row { border-top: 1px solid var(--line); }
+
+.due-amount { font-weight: 400; color: var(--muted); }
+
+.due-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.due-later { margin: 6px 0 0; }
+
+.hint { display: block; color: var(--muted); font-size: 0.88rem; margin: 4px 0 0; }
+
+.notice {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--r5) 16%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--r5) 45%, transparent);
+  font-size: 0.95rem;
+}
+
+.link.inline { padding: 0; color: var(--accent); font-weight: 700; }
+
+.switch-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  cursor: pointer;
+}
+
+.switch-text { display: flex; flex-direction: column; }
+
+.switch-label { font-weight: 700; }
+
+.switch {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  width: 52px;
+  height: 30px;
+  margin: 0;
+  border-radius: 15px;
+  background: var(--line);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: transform 0.15s;
+}
+
+.switch:checked { background: var(--accent); }
+
+.switch:checked::after { transform: translateX(22px); }
+
+.subpanel { margin: 8px 0 6px; padding-left: 12px; border-left: 3px solid var(--line); }
+
+.sched-body { margin-top: 6px; transition: opacity 0.15s; }
+
+.sched-body.dimmed { opacity: 0.45; }
+
+.time-list { display: grid; gap: 8px; margin-bottom: 8px; }
+
+.time-row { display: flex; gap: 8px; align-items: center; }
+
+.time-row input { max-width: 10em; }
+
+input[type="time"], input[type="date"] {
+  padding: 9px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--sunken);
+}
+
+.checks { display: grid; gap: 4px; margin-bottom: 8px; }
+
+.check { display: flex; align-items: center; gap: 10px; min-height: 40px; cursor: pointer; }
+
+.check input { width: 22px; height: 22px; accent-color: var(--accent); }
+
+details.more {
+  margin: 12px 0;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--sunken);
+}
+
+details.more > summary { font-weight: 700; cursor: pointer; min-height: 28px; }
+
+details.more[open] > summary { margin-bottom: 8px; }
+
+.sheet { overflow-y: auto; }

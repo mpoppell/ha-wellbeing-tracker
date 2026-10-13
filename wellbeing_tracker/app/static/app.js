@@ -40,7 +40,22 @@ const ICONS = {
   edit: "M4 20h4L19 9l-4-4L4 16v4z",
   minus: "M6 12h12",
   plus: "M12 6v12M6 12h12",
+  bell: "M6 16v-5a6 6 0 0112 0v5l1.5 2h-15L6 16zM10 20a2 2 0 004 0",
+  close: "M6 6l12 12M18 6L6 18",
 };
+
+// "07:00" -> "7am", "13:30" -> "1:30pm"
+function niceTime(hhmm) {
+  if (!hhmm) return "";
+  const [h, m] = hhmm.split(":").map(Number);
+  const suffix = h < 12 ? "am" : "pm";
+  return `${h % 12 || 12}${m ? ":" + pad(m) : ""}${suffix}`;
+}
+
+function joinNames(list) {
+  if (list.length <= 1) return list.join("");
+  return `${list.slice(0, -1).join(", ")} and ${list[list.length - 1]}`;
+}
 
 async function api(method, path, body) {
   const opts = { method, credentials: "same-origin", headers: {} };
@@ -129,6 +144,7 @@ const state = {
   day: isoDay(new Date()),
   dayEntries: [],
   pending: new Map(), // tracker_id -> item to send
+  doses: [], // today's medication doses from the reminder engine
   historyDays: 14,
 };
 
@@ -243,7 +259,13 @@ function updateSaveBar() {
 }
 
 async function loadDay() {
-  state.dayEntries = await api("GET", `api/entries?from=${state.day}&to=${state.day}`);
+  const isToday = state.day === isoDay(new Date());
+  const [entries, doses] = await Promise.all([
+    api("GET", `api/entries?from=${state.day}&to=${state.day}`),
+    isToday ? api("GET", "api/doses/today").catch(() => []) : Promise.resolve([]),
+  ]);
+  state.dayEntries = entries;
+  state.doses = doses;
 }
 
 async function renderCheckin(view) {
@@ -288,7 +310,49 @@ function drawCheckin(view) {
       el("a", { class: "primary", href: "#/settings", style: "display:inline-block;text-decoration:none" }, "Add trackers"),
     ));
   }
-  view.replaceChildren(head, ...sections);
+  view.replaceChildren(...[head, isToday ? dueCard(view) : null, ...sections].filter(Boolean));
+}
+
+function dueCard(view) {
+  const due = state.doses.filter((d) => d.status === "due");
+  const later = state.doses.filter((d) => d.status === "scheduled" && d.local_day === state.day);
+  if (!due.length && !later.length) return null;
+
+  const act = async (d, action) => {
+    let reason;
+    if (action === "skip") {
+      reason = prompt(`Skipping ${d.name}. Add a reason? (optional)`);
+      if (reason === null) return;
+    }
+    try {
+      state.doses = await api("POST", `api/doses/${d.dose_id}`, { action, reason });
+      state.dayEntries = await api("GET", `api/entries?from=${state.day}&to=${state.day}`);
+      toast(action === "taken" ? `${d.name} taken` : action === "skip" ? `${d.name} skipped` : `${d.name} snoozed`);
+      drawCheckin(view);
+    } catch (err) { toast(err.message); }
+  };
+
+  const rows = due.map((d) => {
+    const status = d.snoozed_until ? `Snoozed until ${niceTime(d.snoozed_until)}`
+      : d.last_call ? `Past ${niceTime(d.latest)}. Skip today, or take it anyway?`
+      : `Due since ${niceTime(d.time)}`;
+    return el("div", { class: "due-row" },
+      el("div", {},
+        el("div", { class: "row-name" }, d.name, d.amount ? el("span", { class: "due-amount" }, ` ${d.amount}`) : null),
+        el("div", { class: "row-sub" }, status)),
+      el("div", { class: "due-actions" },
+        el("button", { type: "button", class: "primary small", onclick: () => act(d, "taken") }, "Taken"),
+        d.last_call ? null : el("button", { type: "button", class: "secondary small", onclick: () => act(d, "snooze") }, "Snooze"),
+        el("button", { type: "button", class: "secondary small", onclick: () => act(d, "skip") }, "Skip")),
+    );
+  });
+  const laterText = later.length
+    ? `Later today: ${joinNames(later.map((d) => `${d.name} at ${niceTime(d.time)}`))}` : null;
+  return el("section", { class: "due", "aria-label": "Medications due" },
+    due.length ? el("h2", {}, due.length === 1 ? "Due now" : `${due.length} due now`) : null,
+    rows,
+    laterText ? el("p", { class: "row-sub due-later" }, laterText) : null,
+  );
 }
 
 async function changeDay(delta) {
@@ -419,7 +483,8 @@ function trackerRow(t, view) {
     const taken = entriesFor(t.id);
     const marked = state.pending.has(t.id);
     const dose = [c.dose, c.unit].filter(Boolean).join(" ");
-    const sub = [dose, c.notes].filter(Boolean).join(". ");
+    const nextDose = state.doses.find((d) => d.tracker_id === t.id && d.status === "scheduled" && d.local_day === state.day);
+    const sub = [dose, c.notes, nextDose ? `Next reminder ${niceTime(nextDose.time)}` : null].filter(Boolean).join(". ");
     const takenText = taken.length ? `Taken at ${taken.map((e) => timeOf(e.logged_at)).reverse().join(", ")}` : "Not taken yet";
     const btn = el("button", {
       type: "button", class: "med-taken", "aria-pressed": String(marked),
@@ -626,7 +691,12 @@ function describeTracker(t) {
   switch (t.kind) {
     case "rating": return `Rating ${c.min}–${c.max}, ${often}`;
     case "factor": return `${c.mode === "bool" ? "Yes or no" : c.mode === "count" ? `Count${c.unit ? " of " + c.unit : ""}` : `Amount${c.unit ? " in " + c.unit : ""}`}, ${often}`;
-    case "medication": return [c.dose, c.unit].filter(Boolean).join(" ") || "Medication";
+    case "medication": {
+      const amount = [c.dose, c.unit].filter(Boolean).join(" ");
+      const sch = t._schedule;
+      const when = sch && sch.enabled ? `Reminders at ${joinNames(sch.settings.times.map(niceTime))}` : "No reminders";
+      return [amount, when].filter(Boolean).join(". ");
+    }
     case "tags": return `${(c.options || []).length} options, ${often}`;
     default: return `${KIND_INFO[t.kind]}, ${often}`;
   }
@@ -645,6 +715,24 @@ async function renderSettings(view) {
 
   const meds = visible.filter((t) => t.kind === "medication");
   const others = visible.filter((t) => t.kind !== "medication");
+  const [schedules, person] = await Promise.all([
+    Promise.all(meds.map((m) => api("GET", `api/trackers/${m.id}/schedule`).catch(() => null))),
+    api("GET", "api/reminders/settings").catch(() => null),
+  ]);
+  meds.forEach((m, i) => { m._schedule = schedules[i]; });
+
+  const phones = person ? person.devices.length : 0;
+  const reminderSection = el("section", { class: "group" },
+    el("h2", {}, "Reminders"),
+    el("div", { class: "panel" },
+      el("div", { class: "tracker-row" },
+        el("div", { class: "info" },
+          el("div", { class: "row-name" }, "Reminder settings"),
+          el("div", { class: "row-sub" }, phones
+            ? `Sending to ${phones === 1 ? "1 phone" : phones + " phones"}`
+            : "No phone chosen yet, so reminders only show here")),
+        el("button", { type: "button", class: "secondary", onclick: () => openPersonSheet(view) }, "Change"))),
+  );
 
   const medSection = el("section", { class: "group" },
     el("h2", {}, "Medications"),
@@ -674,7 +762,7 @@ async function renderSettings(view) {
     el("div", { class: "panel" }, hidden.map((t) => settingsRow(t, all, view))),
   ) : null;
 
-  view.replaceChildren(...[head, medSection, ...trackerSections, addRow, hiddenSection,
+  view.replaceChildren(...[head, medSection, reminderSection, ...trackerSections, addRow, hiddenSection,
     el("p", { class: "whoami" }, `Signed in to Home Assistant as ${state.me.display_name || state.me.username}`)].filter(Boolean));
 }
 
@@ -711,6 +799,9 @@ function settingsRow(t, all, view) {
           el("button", { type: "button", class: "iconbtn", "aria-label": `Move ${t.name} up`, disabled: i <= 0, onclick: () => move(-1) }, svgIcon(ICONS.up)),
           el("button", { type: "button", class: "iconbtn", "aria-label": `Move ${t.name} down`, disabled: i >= last, onclick: () => move(1) }, svgIcon(ICONS.down)),
         ],
+    t.kind === "medication" && !t.hidden
+      ? el("button", { type: "button", class: "iconbtn", "aria-label": `Reminders for ${t.name}`, onclick: () => openScheduleSheet(t, view) }, svgIcon(ICONS.bell))
+      : null,
     el("button", { type: "button", class: "iconbtn", "aria-label": `Edit ${t.name}`, onclick: () => openTrackerSheet(t, view) }, svgIcon(ICONS.edit)),
   );
 }
@@ -768,7 +859,7 @@ function openTrackerSheet(t, view) {
       extra.append(
         el("div", { class: "field-pair" }, field("Dose", inputs.dose), field("Unit", inputs.unit)),
         field("Notes", inputs.notes),
-        el("p", { class: "row-sub" }, "Reminder schedules arrive in the next update."),
+        t.id ? el("button", { type: "button", class: "secondary", onclick: () => openScheduleSheet(t, view) }, "Reminders…") : null,
       );
     }
   }
@@ -834,12 +925,14 @@ function openTrackerSheet(t, view) {
     if (kind !== "medication") payload.group_name = group.value.trim();
     if (!["sleep", "medication"].includes(kind)) payload.frequency = freq.value;
     try {
-      if (isNew) await api("POST", "api/trackers", { kind, ...payload });
-      else await api("PATCH", `api/trackers/${t.id}`, payload);
+      const saved = isNew
+        ? await api("POST", "api/trackers", { kind, ...payload })
+        : await api("PATCH", `api/trackers/${t.id}`, payload);
       sheet.close();
       toast(isNew ? `${payload.name.trim()} added` : "Changes saved");
       await refreshTrackers();
       await renderSettings(view);
+      if (isNew && kind === "medication") openScheduleSheet(saved, view, { turnOn: true });
     } catch (e) {
       err.textContent = e.message;
       err.hidden = false;
@@ -849,6 +942,306 @@ function openTrackerSheet(t, view) {
   sheet.replaceChildren(form);
   sheet.showModal();
   name.focus();
+}
+
+/* ================= reminders ================= */
+
+let haOptionsCache = null;
+async function haOptions() {
+  if (!haOptionsCache) {
+    try { haOptionsCache = await api("GET", "api/ha/options"); }
+    catch { haOptionsCache = { connected: false, phones: [], speakers: [], voices: [], toggles: [], datetimes: [], people: [] }; }
+  }
+  return haOptionsCache;
+}
+
+function switchField(label, checked, hint) {
+  const input = el("input", { type: "checkbox", role: "switch", class: "switch" });
+  input.checked = !!checked;
+  const node = el("label", { class: "switch-field" },
+    el("span", { class: "switch-text" }, el("span", { class: "switch-label" }, label),
+      hint ? el("span", { class: "hint" }, hint) : null),
+    input);
+  return { node, input };
+}
+
+function selectOf(options, value) {
+  const sel = el("select", {}, options.map(([v, label]) => el("option", { value: v }, label)));
+  sel.value = value == null ? "" : String(value);
+  return sel;
+}
+
+function notice(...children) {
+  return el("div", { class: "notice" }, children);
+}
+
+const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const NAG_CHOICES = [
+  ["once", "Once only"],
+  ["gently", "Gently"],
+  ["firmly", "Firmly"],
+  ["custom", "My own pattern"],
+];
+const NAG_HINTS = {
+  once: "One reminder, no repeats.",
+  gently: "Every 30 minutes, up to 4 more times.",
+  firmly: "Every 10 minutes, up to 6 more times.",
+  custom: "",
+};
+
+async function openScheduleSheet(t, view, opts = {}) {
+  const sheet = document.getElementById("sheet");
+  let sched, person, ha;
+  try {
+    [sched, person, ha] = await Promise.all([
+      api("GET", `api/trackers/${t.id}/schedule`), api("GET", "api/reminders/settings"), haOptions()]);
+  } catch (err) { toast(err.message); return; }
+  const s = sched.settings;
+
+  const enabled = switchField(`Remind me to take ${t.name}`, sched.enabled || opts.turnOn);
+  const body = el("div", { class: "sched-body" });
+  const err = el("p", { class: "form-error", hidden: true });
+
+  // ----- times -----
+  const timeList = el("div", { class: "time-list" });
+  const addTime = (value) => {
+    const input = el("input", { type: "time", value, required: true, "aria-label": "Reminder time" });
+    const row = el("div", { class: "time-row" }, input,
+      el("button", { type: "button", class: "iconbtn", "aria-label": "Remove this time", onclick: () => {
+        if (timeList.children.length > 1) row.remove();
+      } }, svgIcon(ICONS.close)));
+    timeList.append(row);
+  };
+  s.times.forEach(addTime);
+  const addTimeBtn = el("button", { type: "button", class: "secondary small", onclick: () => addTime("12:00") }, "Add a time");
+
+  // ----- days -----
+  let mode = s.days.mode;
+  const weekdays = new Set(s.days.weekdays);
+  const dayChips = el("div", { class: "chips" }, WEEKDAYS.map((w, i) => {
+    const b = el("button", { type: "button", class: "chip", "aria-pressed": String(weekdays.has(i)), onclick: () => {
+      if (weekdays.has(i)) weekdays.delete(i); else weekdays.add(i);
+      b.setAttribute("aria-pressed", String(weekdays.has(i)));
+    } }, w);
+    return b;
+  }));
+  const everyInput = el("input", { type: "number", min: "2", max: "60", value: s.days.every, inputmode: "numeric", style: "width:5em" });
+  const startInput = el("input", { type: "date", value: s.days.start || isoDay(new Date()) });
+  const weekdayPanel = el("div", { class: "subpanel" }, dayChips);
+  const intervalPanel = el("div", { class: "subpanel inline-field" },
+    el("span", {}, "Every"), everyInput, el("span", {}, "days, starting"), startInput);
+  const modeSeg = el("div", { class: "seg", role: "group", "aria-label": "Which days" });
+  const drawMode = () => {
+    modeSeg.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
+    weekdayPanel.hidden = mode !== "weekdays";
+    intervalPanel.hidden = mode !== "interval";
+  };
+  [["daily", "Every day"], ["weekdays", "Some days"], ["interval", "Every few days"]].forEach(([m, label]) =>
+    modeSeg.append(el("button", { type: "button", "data-mode": m, onclick: () => { mode = m; drawMode(); } }, label)));
+  drawMode();
+
+  // ----- nagging -----
+  const nag = selectOf(NAG_CHOICES, s.nag);
+  const nagEvery = el("input", { type: "number", min: "1", max: "240", value: s.nag_every, inputmode: "numeric", style: "width:5em" });
+  const nagRepeats = el("input", { type: "number", min: "0", max: "50", value: s.nag_repeats ?? "", inputmode: "numeric", style: "width:5em", placeholder: "∞" });
+  const customPanel = el("div", { class: "subpanel" },
+    el("div", { class: "inline-field" }, el("span", {}, "Every"), nagEvery, el("span", {}, "minutes")),
+    el("div", { class: "inline-field" }, el("span", {}, "Up to"), nagRepeats, el("span", {}, "more times")),
+    el("p", { class: "hint" }, "Leave blank to keep going until the latest time or the end of the day."));
+  const nagHint = el("p", { class: "hint" });
+  const drawNag = () => {
+    customPanel.hidden = nag.value !== "custom";
+    nagHint.textContent = NAG_HINTS[nag.value];
+    nagHint.hidden = !NAG_HINTS[nag.value];
+  };
+  nag.addEventListener("change", drawNag);
+  drawNag();
+
+  // ----- latest time -----
+  const latestOn = switchField("Stop at a latest time", !!s.latest_time,
+    "After this you get one last question: skip today, or take it anyway?");
+  const latestInput = el("input", { type: "time", value: s.latest_time || "11:00", "aria-label": "Latest time" });
+  const latestPanel = el("div", { class: "subpanel" }, latestInput);
+  const drawLatest = () => { latestPanel.hidden = !latestOn.input.checked; };
+  latestOn.input.addEventListener("change", drawLatest);
+  drawLatest();
+
+  // ----- hard to miss -----
+  const hard = switchField("Make it hard to miss", s.hard_to_miss, "Step it up if a reminder goes unanswered.");
+  const hardAfter = selectOf([2, 3, 4, 5, 6].map((n) => [n, `From reminder ${n}`]), s.hard_after);
+  const alarm = switchField("Ring like an alarm", s.alarm_sound, "Sounds even on Do Not Disturb, except in your quiet hours.");
+  const speakersReady = person.speakers.length && person.tts_entity;
+  const announce = switchField("Announce it on speakers", s.announce, speakersReady
+    ? "Uses the speakers in Reminder settings."
+    : "Choose speakers and a voice in Reminder settings first.");
+  const hardPanel = el("div", { class: "subpanel" }, field("Starting", hardAfter), alarm.node, announce.node);
+  const drawHard = () => { hardPanel.hidden = !hard.input.checked; };
+  hard.input.addEventListener("change", drawHard);
+  drawHard();
+
+  // ----- Home Assistant link -----
+  const linked = selectOf([["", "None"], ...ha.toggles.map((x) => [x.entity_id, x.name])], s.linked_entity);
+  const linkedTime = selectOf([["", "None"], ...ha.datetimes.map((x) => [x.entity_id, x.name])], s.linked_time_entity);
+  const early = selectOf([[0, "Not at all"], [30, "30 minutes"], [60, "1 hour"], [120, "2 hours"], [180, "3 hours"], [360, "6 hours"]], s.early_window);
+  const linkDetails = el("details", { class: "more", open: !!(s.linked_entity || s.linked_time_entity) },
+    el("summary", {}, "Home Assistant link and early doses"),
+    field("Keep this toggle in sync", linked, "Turning it on counts as taken; taking it turns it on."),
+    field("Set this date and time when taken", linkedTime),
+    field("Count it if I log it early, up to", early));
+
+  body.append(
+    field("Times", el("div", {}, timeList, addTimeBtn)),
+    field("Days", el("div", {}, modeSeg, weekdayPanel, intervalPanel)),
+    field("Until I answer, remind me", el("div", {}, nag, nagHint, customPanel)),
+    latestOn.node, latestPanel,
+    hard.node, hardPanel,
+    linkDetails,
+  );
+  const drawEnabled = () => { body.classList.toggle("dimmed", !enabled.input.checked); };
+  enabled.input.addEventListener("change", drawEnabled);
+  drawEnabled();
+
+  const noPhone = !person.devices.length ? notice(
+    "No phone is chosen yet, so reminders will only show on the Check-in screen. ",
+    el("button", { type: "button", class: "link inline", onclick: () => openPersonSheet(view) }, "Choose phones")) : null;
+
+  const form = el("form", { method: "dialog" },
+    el("h2", {}, `Reminders for ${t.name}`),
+    err, noPhone, enabled.node, body,
+    el("div", { class: "actions" },
+      el("button", { type: "submit", class: "primary" }, "Save reminders"),
+      el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Cancel")));
+
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    err.hidden = true;
+    const settings = {
+      times: [...timeList.querySelectorAll("input")].map((i) => i.value).filter(Boolean),
+      days: { mode, weekdays: [...weekdays].sort(), every: Number(everyInput.value), start: startInput.value },
+      nag: nag.value,
+      nag_every: Number(nagEvery.value),
+      nag_repeats: nagRepeats.value === "" ? null : Number(nagRepeats.value),
+      latest_time: latestOn.input.checked ? latestInput.value : null,
+      hard_to_miss: hard.input.checked,
+      hard_after: Number(hardAfter.value),
+      alarm_sound: alarm.input.checked,
+      announce: announce.input.checked,
+      linked_entity: linked.value || null,
+      linked_time_entity: linkedTime.value || null,
+      early_window: Number(early.value),
+    };
+    try {
+      await api("PUT", `api/trackers/${t.id}/schedule`, { enabled: enabled.input.checked, settings });
+      sheet.close();
+      toast(enabled.input.checked ? `Reminders for ${t.name} saved` : `Reminders for ${t.name} off`);
+      if (currentTab() === "settings") await renderSettings(view);
+    } catch (e) {
+      err.textContent = e.message;
+      err.hidden = false;
+      err.scrollIntoView({ block: "nearest" });
+    }
+  });
+
+  sheet.replaceChildren(form);
+  if (!sheet.open) sheet.showModal();
+}
+
+async function openPersonSheet(view) {
+  const sheet = document.getElementById("sheet");
+  let s, ha;
+  try {
+    haOptionsCache = null; // phones may have been added since last time
+    [s, ha] = await Promise.all([api("GET", "api/reminders/settings"), haOptions()]);
+  } catch (err) { toast(err.message); return; }
+  const err = el("p", { class: "form-error", hidden: true });
+
+  const phoneBoxes = ha.phones.map((p) => {
+    const box = el("input", { type: "checkbox", value: p.service });
+    box.checked = s.devices.includes(p.service);
+    return el("label", { class: "check" }, box, el("span", {}, p.name));
+  });
+  const phones = ha.phones.length ? el("div", { class: "checks" }, phoneBoxes)
+    : notice(ha.connected
+      ? "No phones with the Home Assistant app were found. Install the Companion app and sign in, then come back."
+      : "Can't reach Home Assistant right now, so phones can't be listed.");
+  const testBtn = el("button", { type: "button", class: "secondary small", onclick: async () => {
+    try {
+      await saveIt(false);
+      const r = await api("POST", "api/reminders/test");
+      toast(`Test sent to ${r.sent_to === 1 ? "1 phone" : r.sent_to + " phones"}`);
+    } catch (e) { toast(e.message); }
+  } }, "Send a test");
+
+  const group = switchField("Combine medications due at the same time", s.group_doses, "One reminder instead of several.");
+  const undo = switchField("Offer Undo after I answer", s.undo, "For a minute, in case of a mis-tap.");
+  const swipe = switchField("Let me swipe reminders away", s.swipe_away, "When off, reminders stay until you answer them.");
+  const snooze = selectOf([5, 10, 15, 20, 30, 45, 60].map((n) => [n, `${n} minutes`]), s.snooze_minutes);
+
+  const quiet = switchField("Quiet hours", s.quiet.enabled, "No alarm sounds or speaker announcements. Reminders still arrive.");
+  const qStart = el("input", { type: "time", value: s.quiet.start, "aria-label": "Quiet hours start" });
+  const qEnd = el("input", { type: "time", value: s.quiet.end, "aria-label": "Quiet hours end" });
+  const quietPanel = el("div", { class: "subpanel inline-field" }, el("span", {}, "From"), qStart, el("span", {}, "to"), qEnd);
+  const drawQuiet = () => { quietPanel.hidden = !quiet.input.checked; };
+  quiet.input.addEventListener("change", drawQuiet);
+  drawQuiet();
+
+  const speakerBoxes = ha.speakers.map((p) => {
+    const box = el("input", { type: "checkbox", value: p.entity_id });
+    box.checked = s.speakers.includes(p.entity_id);
+    return el("label", { class: "check" }, box, el("span", {}, p.name));
+  });
+  const voice = selectOf([["", "Choose a voice"], ...ha.voices.map((v) => [v.entity_id, v.name])], s.tts_entity);
+  const onlyHome = switchField("Only when I'm home", s.announce_only_home,
+    ha.people.some((p) => p.is_you) ? "Uses your Home Assistant person." : "Needs a Home Assistant person linked to your user.");
+  const speakerDetails = el("details", { class: "more", open: !!s.speakers.length },
+    el("summary", {}, "Speaker announcements"),
+    el("p", { class: "hint" }, "Used when a medication is set to announce. Pick where and which voice."),
+    speakerBoxes.length ? el("div", { class: "checks" }, speakerBoxes) : notice("No speakers found."),
+    field("Voice", voice), onlyHome.node);
+
+  async function saveIt(close = true) {
+    const payload = {
+      devices: phoneBoxes.map((l) => l.querySelector("input")).filter((b) => b.checked).map((b) => b.value),
+      group_doses: group.input.checked,
+      undo: undo.input.checked,
+      swipe_away: swipe.input.checked,
+      snooze_minutes: Number(snooze.value),
+      quiet: { enabled: quiet.input.checked, start: qStart.value, end: qEnd.value },
+      speakers: speakerBoxes.map((l) => l.querySelector("input")).filter((b) => b.checked).map((b) => b.value),
+      tts_entity: voice.value || null,
+      announce_only_home: onlyHome.input.checked,
+      person_entity: s.person_entity,
+    };
+    await api("PUT", "api/reminders/settings", payload);
+    if (close) {
+      sheet.close();
+      toast("Reminder settings saved");
+      if (currentTab() === "settings") await renderSettings(view);
+    }
+  }
+
+  const form = el("form", { method: "dialog" },
+    el("h2", {}, "Reminder settings"),
+    err,
+    field("Send reminders to", el("div", {}, phones, ha.phones.length ? testBtn : null),
+      "Answering on one phone clears the reminder on the others."),
+    group.node, undo.node, swipe.node,
+    field("Snooze for", snooze),
+    quiet.node, quietPanel,
+    speakerDetails,
+    el("div", { class: "actions" },
+      el("button", { type: "submit", class: "primary" }, "Save"),
+      el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Cancel")));
+
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    err.hidden = true;
+    try { await saveIt(true); }
+    catch (e) { err.textContent = e.message; err.hidden = false; }
+  });
+
+  sheet.replaceChildren(form);
+  if (!sheet.open) sheet.showModal();
 }
 
 /* ================= start ================= */

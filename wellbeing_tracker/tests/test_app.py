@@ -34,14 +34,14 @@ def test_users_are_created_and_kept_separate(ingress_client):
 
     status = ingress_client.get("/api/status", headers=user_headers("user-1")).json()
     assert status["people"] == 2
-    assert status["schema_version"] == 2
+    assert status["schema_version"] == 3
     assert status["home_assistant"]["connected"] is False
 
 
 def test_migrations_are_idempotent(tmp_path):
     create_app(make_settings(tmp_path))
     app = create_app(make_settings(tmp_path))
-    assert app.state.db.schema_version() == 2
+    assert app.state.db.schema_version() == 3
 
 
 def test_upgrade_from_v1_seeds_existing_users(tmp_path):

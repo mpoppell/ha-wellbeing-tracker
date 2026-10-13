@@ -28,7 +28,7 @@ See [docs/FEATURE_PLAN.md](docs/FEATURE_PLAN.md) for the full plan.
 | --- | --- |
 | 1 ✅ | App skeleton, sidebar panel, per-user profiles |
 | 2 ✅ | Trackers, Check-in screen, History timeline, Settings |
-| 3 | Reminder engine: medication schedules, synced actionable Android notifications, escalation, HA events |
+| 3 ✅ | Reminder engine: medication schedules, synced actionable Android notifications, escalation, HA events |
 | 4 | Check-in reminders, HA data import (sleep, weather, sensors), MQTT entities, NFC logging |
 | 5 | Calendar, charts, export, appointment summary |
 | 6 | Insights: weekly summary, correlations, experiments |

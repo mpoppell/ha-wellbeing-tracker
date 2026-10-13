@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +25,7 @@ class Settings:
     supervisor_token: str | None
     ha_api_url: str
     port: int
+    panel_path: str | None = None  # where tapping a reminder opens the app
 
     @property
     def db_path(self) -> Path:
@@ -40,6 +42,13 @@ def load_settings() -> Settings:
         except (OSError, ValueError):
             options = {}
 
+    # Inside Home Assistant the container hostname is the app slug with dashes,
+    # and the sidebar page lives at /<slug>.
+    panel_path = os.environ.get("WELLBEING_PANEL_PATH")
+    hostname = os.environ.get("HOSTNAME") or socket.gethostname()
+    if not panel_path and os.environ.get("SUPERVISOR_TOKEN") and hostname:
+        panel_path = "/" + hostname.replace("-", "_")
+
     return Settings(
         data_dir=data_dir,
         dev_mode=os.environ.get("WELLBEING_DEV") == "1",
@@ -47,4 +56,5 @@ def load_settings() -> Settings:
         supervisor_token=os.environ.get("SUPERVISOR_TOKEN"),
         ha_api_url=os.environ.get("WELLBEING_HA_API_URL", "http://supervisor/core/api"),
         port=int(os.environ.get("WELLBEING_PORT", "8099")),
+        panel_path=panel_path,
     )

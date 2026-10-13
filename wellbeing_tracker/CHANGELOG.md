@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0
+
+- **Medication reminders.** Turn them on per medication with the bell in Settings: any number of times a day, every day, chosen days or every few days.
+- **Answer from the notification** with Taken, Snooze or Skip (with an optional reason). Answering on one phone clears it everywhere.
+- **Due now card** at the top of Check-in, plus "Later today" and each medication's next reminder time.
+- **Logging counts:** logging a dose on the Check-in screen answers its reminder, and logging it early means the reminder never goes off.
+- **Optional extras per medication:** how often to repeat (once, gently, firmly or your own pattern), a latest time with one last "skip or take anyway?" question, escalation to an alarm sound and/or a speaker announcement, and a linked Home Assistant toggle and time helper.
+- **Optional extras per person:** which phones, combining medications due together, Undo after answering, swipe-away, snooze length, quiet hours, and speakers and voice for announcements (optionally only when home).
+- **Home Assistant events** (`wellbeing_tracker_reminder`) at every step, for your own automations.
+- Reminders survive restarts: anything due or snoozed picks up where it left off.
+
 ## 0.2.1
 
 - Updates now download a ready-made image instead of building on your Home Assistant machine, so they install in seconds.
