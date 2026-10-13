@@ -1,0 +1,21 @@
+name: Wellbeing Tracker
+version: "0.1.0"
+slug: wellbeing_tracker
+description: Track mood, energy, symptoms, medications, sleep and other factors for everyone in your home.
+url: https://github.com/mpoppell/ha-wellbeing-tracker
+arch:
+  - amd64
+  - aarch64
+startup: application
+boot: auto
+init: false
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:heart-pulse
+panel_title: Wellbeing
+homeassistant_api: true
+backup: hot
+options:
+  log_level: info
+schema:
+  log_level: list(debug|info|warning|error)

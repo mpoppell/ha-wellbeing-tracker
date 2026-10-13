@@ -1,0 +1,120 @@
+:root {
+  --bg: #f6f4f0;
+  --surface: #ffffff;
+  --text: #1f2421;
+  --muted: #5f6762;
+  --line: #e4e0d8;
+  --accent: #2f7a63;
+  --good: #2f7a63;
+  --bad: #b5473a;
+  --pending: #b08a2e;
+  --radius: 16px;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141716;
+    --surface: #1d2120;
+    --text: #e9ece9;
+    --muted: #a3aba6;
+    --line: #2c3230;
+    --accent: #6cc4a4;
+    --good: #6cc4a4;
+    --bad: #e2786a;
+    --pending: #d8b45a;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.shell {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+
+.top { margin-bottom: 20px; }
+
+.eyebrow {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 4px 0 0;
+  font-size: 1.9rem;
+  line-height: 1.2;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 18px 18px 16px;
+  margin-bottom: 14px;
+}
+
+.card p { margin: 0; color: var(--muted); }
+
+.intro { border-left: 4px solid var(--accent); }
+
+.status { margin: 0; }
+
+.status div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+
+.status div:first-child { border-top: 0; }
+
+.status dt { color: var(--muted); }
+
+.status dd {
+  margin: 0;
+  text-align: right;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+  flex: none;
+}
+
+.dot.ok { background: var(--good); }
+.dot.bad { background: var(--bad); }
+.dot.pending { background: var(--pending); }
+
+.error {
+  margin-top: 12px !important;
+  color: var(--bad) !important;
+}

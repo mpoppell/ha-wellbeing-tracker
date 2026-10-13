@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Wellbeing</title>
+  <link rel="stylesheet" href="static/app.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="top">
+      <p class="eyebrow" id="today">&nbsp;</p>
+      <h1 id="greeting">Hello</h1>
+    </header>
+
+    <section class="card intro">
+      <h2>Your tracker is installed</h2>
+      <p>This is the first build. Logging mood, energy, symptoms, medications and sleep arrives in the next update.
+        Everyone in your home gets their own private log, based on who's signed in to Home Assistant.</p>
+    </section>
+
+    <section class="card">
+      <h2>Status</h2>
+      <dl class="status" id="status">
+        <div><dt>Home Assistant</dt><dd id="ha-status"><span class="dot pending"></span>Checking…</dd></div>
+        <div><dt>Signed in as</dt><dd id="who">…</dd></div>
+        <div><dt>People using the app</dt><dd id="people">…</dd></div>
+        <div><dt>Version</dt><dd id="version">…</dd></div>
+      </dl>
+      <p class="error" id="error" hidden></p>
+    </section>
+  </main>
+  <script src="static/app.js"></script>
+</body>
+</html>
