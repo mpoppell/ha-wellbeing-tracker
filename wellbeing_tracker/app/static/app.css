@@ -558,7 +558,35 @@ textarea { min-height: 88px; resize: vertical; }
 
 .time-list { display: grid; gap: 8px; margin-bottom: 8px; }
 
-.time-row { display: flex; gap: 8px; align-items: center; }
+.time-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.time-word { color: var(--muted); }
+
+.time-row .iconbtn { margin-left: auto; }
+
+.time-row.with-qty { display: grid; grid-template-columns: minmax(0, 8em) 4.6em minmax(0, 1fr) auto; gap: 2px 8px; }
+
+.time-row.with-qty .time-word { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.time-strength { grid-column: 2 / 4; color: var(--muted); font-size: 0.8rem; }
+
+.time-strength:empty { display: none; }
+
+.time-head span { white-space: nowrap; }
+
+.time-row.with-qty input { max-width: none; width: 100%; min-width: 0; }
+
+.time-row.with-qty .time-word { font-size: 0.9rem; line-height: 1.2; }
+
+.time-head { color: var(--muted); font-size: 0.85rem; margin-bottom: 4px; }
+
+.med-plan { display: flex; flex-wrap: wrap; gap: 2px 12px; background: none; border: 0; padding: 0; text-align: left; font: inherit; color: var(--muted); font-size: 0.9rem; cursor: pointer; }
+
+.med-plan:hover .plan-dose, .med-plan:focus-visible .plan-dose { text-decoration: underline; }
+
+.plan-taken { color: var(--ink); }
+
+.plan-due { color: var(--accent); font-weight: 700; }
 
 .time-row input { max-width: 10em; }
 

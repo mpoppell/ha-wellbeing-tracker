@@ -963,3 +963,57 @@ def test_editing_dose_time_moves_the_follow_up(env):
     db.update_entry("u1", saved["id"], {"logged_at": "2026-10-14T06:30:00+11:00"})
     run(engine.entry_changed("u1", saved["id"]))
     assert [r["local_time"] for r in dose_rows(db, d["id"])] == ["13:30"]
+
+
+# ----- a different amount at each time -----
+
+def test_different_amount_at_each_time(env):
+    db, ha, clock, engine, med = env
+    c = med("Clonidine", dose="100", unit="mcg")
+    saved = schedule(engine, c["id"], times=[{"time": "19:00", "quantity": 0.5}, {"time": "22:00", "quantity": 1}])
+    # the usual amount isn't stored, so changing the usual number later still applies to 10pm
+    assert saved["settings"]["times"] == ["19:00", "22:00"]
+    assert saved["settings"]["amounts"] == {"19:00": 0.5}
+    assert [d["quantity"] for d in dose_rows(db, c["id"])[:2]] == [0.5, None]
+
+    clock.set("2026-10-14T19:00")
+    run(engine.tick())
+    [n] = ha.notifications()
+    assert n["message"] == "Clonidine ½ dose (50 mcg)"
+    rid = dose_rows(db, c["id"])[0]["reminder_id"]
+    run(engine.handle_event("mobile_app_notification_action", {"action": f"WBT_TAKEN_{rid}"}))
+    [e] = db.list_entries("u1", "2026-10-14", "2026-10-14")
+    assert e["value_num"] == 0.5
+
+    ha.reset()
+    clock.set("2026-10-14T22:00")
+    run(engine.tick())
+    [n] = ha.notifications()
+    assert n["message"] == "Clonidine 100 mcg"
+    today = [d for d in engine.doses_today("u1") if d["local_day"] == "2026-10-14"]
+    assert [(d["time"], d["quantity"], d["amount"]) for d in today] == [
+        ("19:00", 0.5, "½ dose (50 mcg)"), ("22:00", 1, "100 mcg")]
+
+
+def test_amount_uses_usual_number_and_counted_as(env):
+    db, ha, clock, engine, med = env
+    m = med("Magnesium", dose="250", unit="mg", quantity=2, counted_as="tablet")
+    schedule(engine, m["id"], times=["08:00", "20:00"], amounts={"20:00": 1.5})
+    clock.set("2026-10-14T08:00")
+    run(engine.tick())
+    assert ha.notifications()[0]["message"] == "Magnesium 2 tablets (500 mg)"
+    today = engine.doses_today("u1")
+    assert [d["amount"] for d in today if d["local_day"] == "2026-10-14"] == [
+        "2 tablets (500 mg)", "1½ tablets (375 mg)"]
+
+
+def test_amounts_validated(env):
+    db, ha, clock, engine, med = env
+    c = med("Clonidine")
+    with pytest.raises(ValidationError):
+        schedule(engine, c["id"], times=["19:00"], amounts={"19:00": 0})
+    with pytest.raises(ValidationError):
+        schedule(engine, c["id"], times=[{"time": "19:00", "quantity": 1}, {"time": "19:00", "quantity": 2}])
+    # amounts for times that were removed are dropped
+    saved = schedule(engine, c["id"], times=["22:00"], amounts={"19:00": 0.5})
+    assert saved["settings"]["amounts"] == {}

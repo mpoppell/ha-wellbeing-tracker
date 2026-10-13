@@ -178,6 +178,11 @@ MIGRATIONS: list[str] = [
     """
     UPDATE trackers SET group_name = 'Meds/Supplements' WHERE kind = 'medication' AND group_name = 'Medications';
     """,
+    # 8: each reminder time can have its own amount (half a tablet at 7pm, one at 10pm).
+    # NULL means the medication's usual number.
+    """
+    ALTER TABLE doses ADD COLUMN quantity REAL;
+    """,
 ]
 
 

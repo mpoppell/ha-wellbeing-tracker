@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0
+
+- **A different amount at each reminder time.** For example, Clonidine half a dose at 7pm and one at 10pm. Set it under **Times and amounts** in a medication's reminders, with the strength worked out as you type.
+- Reminders say how much to take ("Clonidine ½ dose (50 mcg)"), and **Taken** logs that amount.
+- Each medication on Check-in shows today's plan ("½ dose at 7pm ✓ · 1 dose at 10pm"). Tap it to change the reminders.
+- The dose dialog starts at the amount that's due, and steps in quarters.
+- Halves and quarters show as ½ and ¼.
+
 ## 0.7.0
 
 - **Back to our own look.** Your Home Assistant theme colours, our rating colours and the Atkinson Hyperlegible typeface. Each section is a Home Assistant-style card that opens and closes like an accordion. The Bearable-style layout stays.

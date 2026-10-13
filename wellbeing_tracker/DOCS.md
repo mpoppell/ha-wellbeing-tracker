@@ -31,7 +31,16 @@ Each medication shows its usual strength and how many you usually take ("1 dose"
 Reminders are off until you switch them on for a medication.
 
 1. **Settings → Notifications → Phones and alerts → Change**: tick the phones that should get your reminders (any phone signed in to the Home Assistant Companion app) and tap **Send a test**.
-2. **Settings → Medications**: tap the bell next to a medication, turn on **Remind me**, and pick the times and days.
+2. **Settings → Meds/Supplements**: tap the bell next to a medication, turn on **Remind me**, and pick the times and days.
+
+### A different amount at each time
+
+Under **Times and amounts**, each time has its own **How many**. For example, Clonidine:
+
+- **7:00pm**: 0.5 (half a dose, = 50 mcg)
+- **10:00pm**: 1
+
+The notification says how much to take ("Clonidine ½ dose (50 mcg)"), tapping **Taken** logs that amount, and the Meds/Supplements section on Check-in shows the day's plan under each medication ("½ dose at 7pm ✓ · 1 dose at 10pm"). Tap that line to change it.
 
 Each reminder has **Taken**, **Snooze** and **Skip** buttons. Answering on one phone clears it on the others. You can also answer from the **Due now** card on the Check-in screen, by logging the medication there, or by switching on a linked Home Assistant toggle. Logging a dose shortly before its time means the reminder never goes off.
 

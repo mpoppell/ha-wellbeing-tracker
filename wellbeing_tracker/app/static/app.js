@@ -182,6 +182,21 @@ function doseText(t, e) {
   return n === 1 ? one : `${fmtNum(n)} × ${one} (${fmtNum(n * Number(strength))} ${unit})`.replace(" )", ")");
 }
 
+// 0.5 -> "½", 1.5 -> "1½", 2 -> "2"
+function fmtQty(q) {
+  const v = Number(q);
+  const whole = Math.trunc(v);
+  const frac = Math.round((v - whole) * 1000) / 1000;
+  const sym = { 0.25: "¼", 0.5: "½", 0.75: "¾" }[frac];
+  if (!frac) return String(whole);
+  return sym ? (whole ? String(whole) : "") + sym : fmtNum(v);
+}
+
+// "½ dose", "2 tablets"
+function qtyText(t, q) {
+  return `${fmtQty(q)} ${plural(t.config.counted_as || "dose", Number(q) > 1 ? 2 : 1)}`;
+}
+
 function ratingLabel(cfg, v) {
   const labels = cfg.labels || [];
   return labels.length ? labels[v - cfg.min] : `${v} of ${cfg.max}`;
@@ -688,7 +703,7 @@ function dueCard(view) {
         d.last_call ? null : el("button", { type: "button", class: "secondary small", onclick: () => act(d, "snooze") }, "Snooze"),
         el("button", { type: "button", class: "secondary small", onclick: () => act(d, "skip") }, "Skip")));
   });
-  const laterText = later.length ? `Later today: ${joinNames(later.map((d) => `${d.name} at ${niceTime(d.time)}`))}` : null;
+  const laterText = later.length ? `Later today: ${joinNames(later.map((d) => `${d.name}${d.amount ? " " + d.amount : ""} at ${niceTime(d.time)}`))}` : null;
   return el("section", { class: "card due-card", "aria-label": "Medications due" },
     el("div", { class: "card-head" },
       el("span", { class: "card-icon" }, svgIcon(ICONS.bell)),
@@ -737,7 +752,7 @@ function medsBody(s, view) {
 function medRow(t, view) {
   const taken = entriesFor(t.id).slice().reverse(); // earliest first
   const c = t.config;
-  const nextDose = state.doses.find((d) => d.tracker_id === t.id && d.status === "scheduled" && d.local_day === state.day);
+  const planned = state.doses.filter((d) => d.tracker_id === t.id && d.local_day === state.day && d.status !== "cancelled");
   const totalQty = taken.reduce((a, e) => a + Number(e.value_num || 1), 0);
   const totalStrength = taken.reduce((a, e) => {
     const strength = e.value_json && e.value_json.dose != null ? e.value_json.dose : c.dose;
@@ -746,14 +761,22 @@ function medRow(t, view) {
   const add = el("button", { type: "button", class: "dose-add", "aria-label": `Log ${t.name}`, onclick: () => openDoseDialog(t, null) }, svgIcon(ICONS.plus));
   const squares = taken.map((e) => el("div", { class: "dose-cell" },
     el("button", { type: "button", class: "dose-square", "aria-label": `${t.name} at ${timeOf(e.logged_at)}, ${doseText(t, e)}. Change or delete`,
-      onclick: () => openDoseDialog(t, e) }, fmtNum(e.value_num ?? 1)),
+      onclick: () => openDoseDialog(t, e) }, fmtQty(e.value_num ?? 1)),
     el("span", { class: "dose-time" }, timeOf(e.logged_at))));
   const strength = strengthText(t);
   const title = el("div", { class: "brow-text" },
     el("div", { class: "med-title" },
       el("span", { class: "brow-name" }, t.emoji ? el("span", { class: "emoji", "aria-hidden": "true" }, t.emoji) : null, t.name),
       strength ? el("span", { class: "med-strength" }, ` (${strength})`) : null),
-    el("div", { class: "row-sub" }, [usualText(t), nextDose ? `next reminder ${niceTime(nextDose.time)}` : null].filter(Boolean).join(", ")));
+    planned.length
+      ? el("button", { type: "button", class: "row-sub med-plan", title: "Change reminders",
+          "aria-label": `Reminders today: ${planned.map((d) => `${qtyText(t, d.quantity)} at ${niceTime(d.time)}, ${d.status}`).join("; ")}. Change reminders`,
+          onclick: () => openScheduleSheet(t, view) },
+          planned.map((d) => el("span", { class: `plan-dose plan-${d.status}` },
+            `${qtyText(t, d.quantity)} at ${niceTime(d.time)}`,
+            d.status === "taken" ? el("span", { class: "plan-mark", "aria-hidden": "true" }, " ✓")
+              : d.status === "skipped" || d.status === "missed" ? el("span", { class: "plan-mark" }, ` (${d.status})`) : null)))
+      : el("div", { class: "row-sub" }, usualText(t)));
   if (!taken.length) {
     return el("div", { class: "med-row" }, el("div", { class: "brow-main" }, title, add));
   }
@@ -761,7 +784,7 @@ function medRow(t, view) {
     el("div", { class: "med-main" },
       el("div", { class: "dose-cells" }, squares, el("div", { class: "dose-cell" }, add)),
       el("div", { class: "med-total", "aria-label": "Total today" },
-        el("strong", {}, `${fmtNum(totalQty)} ${plural(c.counted_as || "dose", totalQty)}`),
+        el("strong", {}, qtyText(t, totalQty)),
         totalStrength ? el("span", {}, `${fmtNum(totalStrength)}${c.unit || ""}`) : null)));
 }
 
@@ -772,13 +795,14 @@ function openDoseDialog(t, entry) {
   const day = entry ? entry.day : state.day;
   const now = new Date();
   let time = entry ? /T(\d{2}:\d{2})/.exec(entry.logged_at)[1] : `${pad(now.getHours())}:${pad(now.getMinutes())}`;
-  let count = entry ? Number(entry.value_num ?? 1) : Number(c.quantity ?? 1);
+  const dueNow = entry ? null : state.doses.find((d) => d.tracker_id === t.id && (d.status === "due" || (d.status === "scheduled" && d.local_day === state.day)));
+  let count = entry ? Number(entry.value_num ?? 1) : Number(dueNow ? dueNow.quantity : c.quantity ?? 1);
   let strength = entry && entry.value_json && entry.value_json.dose != null ? entry.value_json.dose : c.dose;
 
   const countOut = el("span", { class: "dose-big", "aria-live": "polite" });
   const drawCount = () => { countOut.textContent = `× ${fmtNum(count)}`; };
   drawCount();
-  const step = (d) => { count = Math.max(0.5, Math.round((count + d) * 2) / 2); drawCount(); };
+  const step = (d) => { count = Math.max(0.25, Math.round((count + d) * 4) / 4); drawCount(); };
 
   const strengthBtn = el("button", { type: "button", class: "strength-edit" });
   const strengthInput = el("input", { type: "number", min: "0", step: "any", inputmode: "decimal", hidden: true, "aria-label": "Strength", style: "width:6em" });
@@ -1292,13 +1316,13 @@ function describeTracker(t) {
     case "note": return `Free text, ${often}`;
     case "medication": {
       const amount = [c.dose, c.unit].filter(Boolean).join(" ");
-      return [amount, describeSchedule(t._schedule)].filter(Boolean).join(". ");
+      return [amount, describeSchedule(t._schedule, t)].filter(Boolean).join(". ");
     }
     default: return often;
   }
 }
 
-function describeSchedule(sch) {
+function describeSchedule(sch, t) {
   if (!sch || !sch.enabled) return "No reminders";
   const s = sch.settings;
   if (s.mode === "after") {
@@ -1307,7 +1331,13 @@ function describeSchedule(sch) {
     if (s.max_per_day) text += `, up to ${s.max_per_day} a day`;
     return text;
   }
-  return `Reminds you at ${joinNames(s.times.map(niceTime))}${describeDays(s.days) ? ", " + describeDays(s.days) : ""}`;
+  const days = describeDays(s.days) ? ", " + describeDays(s.days) : "";
+  const amounts = s.amounts || {};
+  if (t && Object.keys(amounts).length) {
+    const usual = t.config.quantity ?? 1;
+    return `Reminds you: ${joinNames(s.times.map((x) => `${qtyText(t, amounts[x] ?? usual)} at ${niceTime(x)}`))}${days}`;
+  }
+  return `Reminds you at ${joinNames(s.times.map(niceTime))}${days}`;
 }
 
 function describeDays(d) {
@@ -1744,20 +1774,51 @@ function notice(...children) {
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 // A list of clock times with add and remove.
-function timesEditor(times) {
+// A list of times. For a medication (opts.med), each time also has how many to take.
+function timesEditor(times, opts = {}) {
+  const t = opts.med;
+  const usual = t ? Number(t.config.quantity ?? 1) : 1;
+  const amounts = opts.amounts || {};
   const list = el("div", { class: "time-list" });
-  const add = (value) => {
-    const input = el("input", { type: "time", value, required: true, "aria-label": "Time" });
-    const row = el("div", { class: "time-row" }, input,
+  const add = (value, qty) => {
+    const input = el("input", { type: "time", value, required: true, class: "time-at", "aria-label": "Time" });
+    const parts = [input];
+    if (t) {
+      const amount = el("input", { type: "number", min: "0.25", max: "100", step: "0.25", inputmode: "decimal",
+        value: qty ?? usual, required: true, class: "time-qty", "aria-label": "How many to take" });
+      const word = el("span", { class: "time-word" });
+      const total = el("span", { class: "time-strength" });
+      const draw = () => {
+        const q = Number(amount.value) || 0;
+        const strength = t.config.dose != null && t.config.dose !== "" ? `${fmtNum(q * Number(t.config.dose))}${t.config.unit || ""}` : "";
+        word.textContent = plural(t.config.counted_as || "dose", q > 1 ? 2 : 1);
+        total.textContent = strength ? `= ${strength}` : "";
+      };
+      amount.addEventListener("input", draw);
+      draw();
+      parts.push(amount, word);
+      parts.extra = total;
+    }
+    const row = el("div", { class: t ? "time-row with-qty" : "time-row" }, ...parts,
       el("button", { type: "button", class: "iconbtn", "aria-label": "Remove this time", onclick: () => {
         if (list.children.length > 1) row.remove();
-      } }, svgIcon(ICONS.close)));
+      } }, svgIcon(ICONS.close)), parts.extra || null);
     list.append(row);
   };
-  times.forEach(add);
-  const node = el("div", {}, list,
+  times.forEach((v) => add(v, amounts[v]));
+  const head = t ? el("div", { class: "time-row with-qty time-head", "aria-hidden": "true" },
+    el("span", {}, "Time"), el("span", {}, "How many"), el("span", {}), el("span", {})) : null;
+  const node = el("div", {}, head, list,
     el("button", { type: "button", class: "secondary small", onclick: () => add("12:00") }, "Add a time"));
-  return { node, read: () => [...list.querySelectorAll("input")].map((i) => i.value).filter(Boolean) };
+  const rows = () => [...list.querySelectorAll(".time-row")];
+  return {
+    node,
+    read: () => rows().map((r) => r.querySelector(".time-at").value).filter(Boolean),
+    // {"19:00": 0.5, ...} for every time; the app drops ones that match the usual number
+    readAmounts: () => Object.fromEntries(rows()
+      .filter((r) => r.querySelector(".time-at").value && r.querySelector(".time-qty"))
+      .map((r) => [r.querySelector(".time-at").value, Number(r.querySelector(".time-qty").value)])),
+  };
 }
 
 // Every day / some days / every few days.
@@ -1852,7 +1913,7 @@ async function openScheduleSheet(t, view, opts = {}) {
   const body = el("div", { class: "sched-body" });
   const err = el("p", { class: "form-error", hidden: true });
 
-  const times = timesEditor(s.times);
+  const times = timesEditor(s.times, { med: t, amounts: s.amounts || {} });
   const days = daysEditor(s.days);
 
   // ----- timed from another dose -----
@@ -1884,7 +1945,9 @@ async function openScheduleSheet(t, view, opts = {}) {
   );
 
   let schedMode = s.mode;
-  const timesBlock = el("div", {}, field("Times", times.node), field("Days", days.node));
+  const timesBlock = el("div", {}, field("Times and amounts", times.node,
+    `Set how many to take at each time, for example half at 7pm and one at 10pm. Usually ${usualText(t)}.`),
+    field("Days", days.node));
   const whenSeg = el("div", { class: "seg", role: "group", "aria-label": "How to time it" });
   const drawWhen = () => {
     whenSeg.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === schedMode)));
@@ -1961,6 +2024,7 @@ async function openScheduleSheet(t, view, opts = {}) {
       })),
       max_per_day: maxPerDay.value === "" ? null : Number(maxPerDay.value),
       times: times.read(),
+      amounts: times.readAmounts(),
       days: days.read(),
       ...nag.read(),
       latest_time: latestOn.input.checked ? latestInput.value : null,
@@ -1977,6 +2041,7 @@ async function openScheduleSheet(t, view, opts = {}) {
       sheet.close();
       toast(enabled.input.checked ? `Reminders for ${t.name} saved` : `Reminders for ${t.name} turned off`);
       if (currentTab() === "settings") await renderSettings(view);
+      else await refreshCheckin();
     } catch (e) {
       err.textContent = e.message;
       err.hidden = false;

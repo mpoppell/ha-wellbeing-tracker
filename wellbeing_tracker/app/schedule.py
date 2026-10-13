@@ -71,6 +71,8 @@ PERSON_DEFAULTS = {
 SCHEDULE_DEFAULTS = {
     "mode": "times",            # times: at set clock times | after: timed from another dose being taken
     "times": ["08:00"],
+    # How many to take at each time, when it isn't the usual number, e.g. {"19:00": 0.5}.
+    "amounts": {},
     "days": {"mode": "daily", "weekdays": [0, 1, 2, 3, 4, 5, 6], "every": 2, "start": None},
     "nag": "firmly",            # once | gently | firmly | custom
     "nag_every": 10,            # custom only: minutes between repeats
@@ -314,15 +316,52 @@ def normalise_med_groups(groups) -> list[dict]:
     return out
 
 
+def _amount(value, label: str) -> float | int:
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        raise ValidationError(f"{label}: how many to take must be a number") from None
+    if not 0 < v <= 100:
+        raise ValidationError(f"{label}: how many to take must be more than 0")
+    v = round(v, 3)
+    return int(v) if v == int(v) else v
+
+
+def _split_times(times, amounts) -> tuple[list, dict]:
+    """Times may be "19:00" or {"time": "19:00", "quantity": 0.5}; amounts may also come separately."""
+    if not isinstance(amounts, dict):
+        raise ValidationError("Amounts must be an object")
+    amounts = dict(amounts)
+    plain = []
+    if isinstance(times, list):
+        for t in times:
+            if isinstance(t, dict):
+                plain.append(t.get("time"))
+                if t.get("quantity") not in (None, ""):
+                    amounts[t.get("time")] = t["quantity"]
+            else:
+                plain.append(t)
+    else:
+        plain = times
+    return plain, amounts
+
+
 def normalise_schedule(data: dict) -> dict:
     s = schedule_settings(data)
     if s["mode"] not in ("times", "after"):
         raise ValidationError("Choose set times or after another dose")
-    times = s["times"]
+    times, amounts = _split_times(s["times"], s["amounts"] or {})
     if s["mode"] == "times":
+        if isinstance(times, list) and len(set(times)) != len(times):
+            raise ValidationError("Each time can only be used once")
         s["times"] = _times(times)
     elif not isinstance(times, list) or not all(isinstance(t, str) and TIME_RE.match(t) for t in times):
         s["times"] = list(SCHEDULE_DEFAULTS["times"])
+    else:
+        s["times"] = sorted(set(times))
+    s["amounts"] = {
+        t: _amount(q, describe_time(t)) for t, q in amounts.items() if t in s["times"] and q not in (None, "")
+    }
 
     rules = s["after"]
     if not isinstance(rules, list):
@@ -415,6 +454,11 @@ def due_times(s: dict, day: date, tz: ZoneInfo) -> list[tuple[str, datetime, dat
         due = datetime.combine(day, time(h, m), tz)
         out.append((t, due, latest if latest and latest > due else None))
     return out
+
+
+def amount_at(s: dict, hhmm: str):
+    """How many to take at this time, or None for the medication's usual number."""
+    return (s.get("amounts") or {}).get(hhmm)
 
 
 def in_quiet_hours(settings: dict, local_now: datetime) -> bool:

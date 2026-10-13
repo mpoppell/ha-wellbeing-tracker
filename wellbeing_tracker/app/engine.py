@@ -29,6 +29,7 @@ from zoneinfo import ZoneInfo
 
 from .db import Database, NotFound
 from .schedule import (
+    amount_at,
     describe_time,
     due_times,
     in_quiet_hours,
@@ -42,6 +43,45 @@ from .schedule import (
 from .trackers import ValidationError
 
 log = logging.getLogger(__name__)
+
+FRACTIONS = {0.25: "¼", 0.5: "½", 0.75: "¾"}
+
+
+def fmt_quantity(q: float) -> str:
+    """0.5 -> "½", 1.5 -> "1½", 2 -> "2", 0.3 -> "0.3"."""
+    whole = int(q)
+    frac = round(q - whole, 3)
+    if frac == 0:
+        return str(whole)
+    if frac in FRACTIONS:
+        return (str(whole) if whole else "") + FRACTIONS[frac]
+    return f"{q:g}"
+
+
+def _fmt(n) -> str:
+    n = float(n)
+    return str(int(n)) if n == int(n) else f"{round(n, 3):g}"
+
+
+def dose_quantity(cfg: dict, quantity) -> float | int:
+    """How many to take: the amount set for this time, or the medication's usual number."""
+    q = quantity if quantity is not None else (cfg.get("quantity") or 1)
+    q = float(q)
+    return int(q) if q == int(q) else q
+
+
+def amount_text(cfg: dict, quantity) -> str:
+    """ "100 mcg" for one dose, "½ dose (50 mcg)" or "2 tablets (60 mg)" otherwise."""
+    strength, unit = cfg.get("dose"), (cfg.get("unit") or "").strip()
+    if quantity == 1:
+        return f"{_fmt(strength)} {unit}".strip() if strength not in (None, "") else ""
+    word = cfg.get("counted_as") or "dose"
+    if quantity > 1:
+        word = word + ("es" if word.endswith(("s", "x", "ch", "sh")) else "s")
+    text = f"{fmt_quantity(quantity)} {word}"
+    if strength not in (None, ""):
+        text += f" ({_fmt(float(strength) * quantity)} {unit})".replace(" )", ")")
+    return text
 
 EVENT_TYPE = "wellbeing_tracker_reminder"
 ACTION_PREFIX = "WBT_"
@@ -132,6 +172,10 @@ class Engine:
         if tracker["kind"] != "medication":
             raise ValidationError("Reminders are for medications")
         clean = normalise_schedule(data)
+        usual = tracker["config"].get("quantity") or 1
+        # Only keep amounts that differ from the usual number, so changing the usual number later
+        # changes every time that wasn't set on purpose.
+        clean["amounts"] = {k: v for k, v in clean["amounts"].items() if v != usual}
         for rule in clean["after"]:
             target = self.db.get_tracker(user_id, rule["tracker_id"])  # NotFound if not theirs
             if target["kind"] != "medication":
@@ -220,11 +264,11 @@ class Engine:
                     conn.execute(
                         """
                         INSERT OR IGNORE INTO doses (user_id, tracker_id, due_at, local_day, local_time,
-                                                     latest_at, status)
-                        VALUES (?, ?, ?, ?, ?, ?, 'scheduled')
+                                                     latest_at, status, quantity)
+                        VALUES (?, ?, ?, ?, ?, ?, 'scheduled', ?)
                         """,
                         (row["user_id"], row["tracker_id"], iso(due), day.isoformat(), hhmm,
-                         iso(latest) if latest else None),
+                         iso(latest) if latest else None, amount_at(s, hhmm)),
                     )
 
     def _generate_after(self, conn, row, s: dict, now: datetime) -> None:
@@ -537,7 +581,8 @@ class Engine:
     def _dose_info(self, conn, dose) -> dict:
         t = conn.execute("SELECT name, emoji, config FROM trackers WHERE id = ?", (dose["tracker_id"],)).fetchone()
         cfg = json.loads(t["config"]) if t else {}
-        amount = " ".join(str(x) for x in (cfg.get("dose"), cfg.get("unit")) if x not in (None, ""))
+        quantity = dose_quantity(cfg, dose["quantity"])
+        amount = amount_text(cfg, quantity)
         because = None
         if dose["anchor_entry_id"]:
             a = conn.execute(
@@ -553,6 +598,7 @@ class Engine:
             "tracker_id": dose["tracker_id"],
             "name": t["name"] if t else "Medication",
             "amount": amount,
+            "quantity": quantity,
             "notes": cfg.get("notes") or "",
             "time": dose["local_time"],
             "latest": parse(dose["latest_at"]).astimezone(self.tz).strftime("%H:%M") if dose["latest_at"] else None,
@@ -684,14 +730,16 @@ class Engine:
         """Mark one dose taken or skipped. Taken doses get a log entry and update linked toggles."""
         if status == "taken" and entry_id is None:
             local = now.astimezone(self.tz)
+            t = conn.execute("SELECT config FROM trackers WHERE id = ?", (dose["tracker_id"],)).fetchone()
+            quantity = dose_quantity(json.loads(t["config"]) if t else {}, dose["quantity"])
             cur = conn.execute(
                 """
                 INSERT INTO entries (user_id, tracker_id, day, logged_at, value_num, value_json, note,
                                      source, created_at, updated_at)
-                VALUES (?, ?, ?, ?, 1, NULL, NULL, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)
                 """,
                 (dose["user_id"], dose["tracker_id"], local.date().isoformat(),
-                 local.isoformat(timespec="seconds"), source, iso(now), iso(now)),
+                 local.isoformat(timespec="seconds"), quantity, source, iso(now), iso(now)),
             )
             entry_id = cur.lastrowid
         conn.execute(
