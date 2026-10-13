@@ -135,6 +135,23 @@ MIGRATIONS: list[str] = [
     ALTER TABLE doses ADD COLUMN anchor_entry_id INTEGER REFERENCES entries(id) ON DELETE SET NULL;
     CREATE INDEX doses_anchor ON doses (anchor_entry_id);
     """,
+    # 5: check-in reminders ("time to check in"), one row per scheduled reminder time
+    """
+    CREATE TABLE checkins (
+        id           INTEGER PRIMARY KEY,
+        user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        due_at       TEXT NOT NULL,
+        local_day    TEXT NOT NULL,
+        local_time   TEXT NOT NULL,
+        status       TEXT NOT NULL,
+        reminder_id  INTEGER REFERENCES reminders(id) ON DELETE SET NULL,
+        entry_id     INTEGER REFERENCES entries(id) ON DELETE SET NULL,
+        resolved_at  TEXT,
+        resolved_by  TEXT,
+        UNIQUE (user_id, due_at)
+    );
+    CREATE INDEX checkins_status ON checkins (status, due_at);
+    """,
 ]
 
 

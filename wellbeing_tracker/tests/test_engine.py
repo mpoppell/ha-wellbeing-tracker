@@ -719,3 +719,130 @@ def test_after_rules_validation(env):
     kmed = db.create_tracker("u2", {"kind": "medication", "name": "Theirs"})
     with pytest.raises(Exception):
         after_rules(engine, d["id"], [(kmed["id"], 60)])
+
+
+# ----- check-in reminders -----
+
+def checkins_on(engine, **c):
+    return engine.save_person("u1", {"checkins": {"enabled": True, **c}})
+
+
+def checkin_rows(db):
+    with db.connect() as conn:
+        return [dict(r) for r in conn.execute("SELECT * FROM checkins ORDER BY due_at")]
+
+
+def test_checkin_reminder_with_quick_mood_buttons(env):
+    db, ha, clock, engine, med = env
+    checkins_on(engine, times=["09:00", "20:00"])
+    clock.set("2026-10-14T09:00")
+    run(engine.tick())
+    [n] = ha.notifications()
+    assert n["title"] == "Time to check in"
+    assert [a["title"] for a in n["data"]["actions"]] == ["Good", "Okay", "Bad"]
+    assert n["data"]["channel"] == "Check-in reminders"
+    assert "persistent" not in n["data"]  # check-ins can always be swiped away
+    rid = checkin_rows(db)[0]["reminder_id"]
+
+    ha.reset()
+    clock.advance(2)
+    run(engine.handle_event("mobile_app_notification_action", {"action": f"WBT_MOOD_4_{rid}"}))
+    [entry] = db.list_entries("u1", "2026-10-14", "2026-10-14")
+    mood = [t for t in db.list_trackers("u1") if t["key"] == "mood"][0]
+    assert entry["tracker_id"] == mood["id"] and entry["value_num"] == 4 and entry["source"] == "notification"
+    assert checkin_rows(db)[0]["status"] == "done"
+    assert ha.clears() == [f"wbt-reminder-{rid}"]
+    [undo] = ha.notifications()
+    assert undo["title"] == "Mood logged: Good"
+    assert ha.events[-1]["type"] == "checkin" and ha.events[-1]["stage"] == "checked_in"
+
+    run(engine.answer_reminder(rid, "UNDO"))
+    assert db.list_entries("u1", "2026-10-14", "2026-10-14") == []
+    assert checkin_rows(db)[0]["status"] == "due"
+
+
+def test_checkin_snooze_and_not_now_buttons(env):
+    db, ha, clock, engine, med = env
+    checkins_on(engine, times=["09:00"], buttons="snooze")
+    clock.set("2026-10-14T09:00")
+    run(engine.tick())
+    [n] = ha.notifications()
+    assert [a["title"] for a in n["data"]["actions"]] == ["Snooze 15 min", "Not now"]
+    rid = checkin_rows(db)[0]["reminder_id"]
+    run(engine.answer_reminder(rid, "SNOOZE"))
+    ha.reset()
+    clock.advance(15)
+    run(engine.tick())
+    assert ha.notifications()[0]["title"] == "Reminder: time to check in"
+    run(engine.answer_reminder(rid, "SKIP"))
+    assert checkin_rows(db)[0]["status"] == "skipped"
+
+
+def test_no_checkin_reminder_if_just_checked_in(env):
+    db, ha, clock, engine, med = env
+    checkins_on(engine, times=["09:00"], skip_if_recent=60)
+    clock.set("2026-10-14T08:30")
+    mood = [t for t in db.list_trackers("u1") if t["key"] == "mood"][0]
+    with db.connect() as conn:  # an entry saved from the Check-in screen at 8:30
+        conn.execute(
+            "INSERT INTO entries (user_id, tracker_id, day, logged_at, value_num, source, created_at, updated_at) "
+            "VALUES ('u1', ?, '2026-10-14', '2026-10-14T08:30:00+11:00', 3, 'app', ?, ?)",
+            (mood["id"], "2026-10-13T21:30:00+00:00", "2026-10-13T21:30:00+00:00"))
+    clock.set("2026-10-14T09:00")
+    run(engine.tick())
+    assert ha.notifications() == []
+    assert checkin_rows(db)[0]["resolved_by"] == "early"
+
+
+def test_checking_in_on_screen_clears_reminder(env):
+    db, ha, clock, engine, med = env
+    checkins_on(engine, times=["09:00"])
+    clock.set("2026-10-14T09:00")
+    run(engine.tick())
+    rid = checkin_rows(db)[0]["reminder_id"]
+    ha.reset()
+    run(engine.checkin_logged("u1"))
+    assert checkin_rows(db)[0]["status"] == "done"
+    assert ha.clears() == [f"wbt-reminder-{rid}"]
+
+
+def test_checkin_reminder_repeats_then_expires(env):
+    db, ha, clock, engine, med = env
+    checkins_on(engine, times=["09:00"], nag="custom", nag_every=30, nag_repeats=1, expire_after=120)
+    clock.set("2026-10-14T09:00")
+    for _ in range(5):
+        run(engine.tick())
+        clock.advance(30)
+    assert len(ha.notifications()) == 2
+    assert checkin_rows(db)[0]["status"] == "expired"
+    assert ha.stages()[-1] == "expired"
+
+
+def test_turning_checkins_off_and_changing_times(env):
+    db, ha, clock, engine, med = env
+    checkins_on(engine, times=["09:00", "20:00"])
+    run(engine.tick())
+    assert [r["local_time"] for r in checkin_rows(db)] == ["09:00", "20:00", "09:00", "20:00"]
+    engine.save_person("u1", {"checkins": {"times": ["12:00"]}})
+    run(engine.tick())
+    assert [r["local_time"] for r in checkin_rows(db)] == ["12:00", "12:00"]
+    engine.save_person("u1", {"checkins": {"enabled": False}})
+    clock.set("2026-10-14T12:00")
+    run(engine.tick())
+    assert ha.notifications() == []
+
+
+def test_saving_one_setting_keeps_the_others(env):
+    db, ha, clock, engine, med = env
+    checkins_on(engine, times=["07:30"])
+    engine.save_person("u1", {"snooze_minutes": 20})
+    s = engine.get_person("u1")
+    assert s["checkins"]["enabled"] is True and s["checkins"]["times"] == ["07:30"]
+    assert s["devices"] == ["mobile_app_s26u", "mobile_app_tablet"]
+
+
+def test_checkin_validation(env):
+    db, ha, clock, engine, med = env
+    for bad in ({"times": []}, {"buttons": "lots"}, {"expire_after": 5}, {"days": {"mode": "weekdays", "weekdays": []}}):
+        with pytest.raises(ValidationError):
+            engine.save_person("u1", {"checkins": bad})

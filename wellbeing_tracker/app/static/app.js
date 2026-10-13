@@ -273,6 +273,7 @@ async function loadDay() {
   ]);
   state.dayEntries = entries;
   state.doses = doses;
+  state.nextCheckin = isToday ? (await api("GET", "api/checkins/next").catch(() => ({}))).time : null;
 }
 
 async function renderCheckin(view) {
@@ -294,6 +295,7 @@ function drawCheckin(view) {
       el("span", { class: "day-label" }, longDate(state.day)),
       el("button", { type: "button", class: "iconbtn", "aria-label": "Next day", disabled: isToday, onclick: () => changeDay(1) }, svgIcon(ICONS.right)),
     ),
+    isToday && state.nextCheckin ? el("p", { class: "row-sub" }, `Next check-in reminder at ${niceTime(state.nextCheckin)}`) : null,
   );
 
   const groups = new Map();
@@ -314,7 +316,7 @@ function drawCheckin(view) {
   if (!state.trackers.length) {
     sections.push(el("div", { class: "empty" },
       el("p", {}, "You're not tracking anything yet."),
-      el("a", { class: "primary", href: "#/settings", style: "display:inline-block;text-decoration:none" }, "Add trackers"),
+      el("a", { class: "primary", href: "#/settings", style: "display:inline-block;text-decoration:none" }, "Choose what to track"),
     ));
   }
   view.replaceChildren(...[head, isToday ? dueCard(view) : null, ...sections].filter(Boolean));
@@ -504,7 +506,7 @@ function trackerRow(t, view) {
         updateSaveBar();
         redraw(view);
       },
-    }, marked ? "Taken, not saved yet" : "Mark as taken");
+    }, marked ? "Marked as taken" : "Mark as taken");
     return rowShell(t, el("span", { class: "row-aside" }, takenText), btn, sub || null);
   }
 
@@ -565,7 +567,7 @@ async function saveCheckin() {
     await api("POST", "api/checkin", { logged_at: loggedAtFor(state.day), items });
     state.pending.clear();
     await loadDay();
-    toast("Saved");
+    toast("Check-in saved");
     updateSaveBar();
     drawCheckin(document.getElementById("view"));
   } catch (err) {
@@ -662,7 +664,7 @@ function openEntrySheet(e, t) {
         state.day = e.day;
         state.loadedDay = null;
         location.hash = "#/checkin";
-      } }, "Change in check-in"),
+      } }, "Edit this day"),
       el("button", { type: "button", class: "secondary danger", onclick: async () => {
         if (!confirm(`Delete this ${t.name} entry?`)) return;
         try {
@@ -683,37 +685,65 @@ function openEntrySheet(e, t) {
 /* ================= settings ================= */
 
 const KIND_INFO = {
-  rating: "Rating",
+  rating: "Rating (1 to 5)",
   tags: "Pick from a list",
-  symptom: "Symptom severity",
+  symptom: "Symptom (none to severe)",
   medication: "Medication",
-  factor: "Factor",
+  factor: "Habit or factor (yes/no, count or amount)",
   sleep: "Sleep",
   note: "Note",
 };
 
+const OFTEN = { many: "as often as you like", daily: "once a day" };
+
 function describeTracker(t) {
   const c = t.config;
-  const often = t.frequency === "daily" ? "once a day" : "every check-in";
+  const often = OFTEN[t.frequency] || "";
   switch (t.kind) {
-    case "rating": return `Rating ${c.min}–${c.max}, ${often}`;
-    case "factor": return `${c.mode === "bool" ? "Yes or no" : c.mode === "count" ? `Count${c.unit ? " of " + c.unit : ""}` : `Amount${c.unit ? " in " + c.unit : ""}`}, ${often}`;
+    case "rating": return `Rated ${c.min}–${c.max}, ${often}`;
+    case "symptom": return `None to severe, ${often}`;
+    case "factor": {
+      const what = c.mode === "bool" ? "Yes or no" : c.mode === "count" ? `Count${c.unit ? " of " + c.unit : ""}` : `Amount${c.unit ? " in " + c.unit : ""}`;
+      return `${what}, ${often}`;
+    }
+    case "tags": return `Choose from ${(c.options || []).length} options, ${often}`;
+    case "sleep": return "Hours and quality, once a day";
+    case "note": return `Free text, ${often}`;
     case "medication": {
       const amount = [c.dose, c.unit].filter(Boolean).join(" ");
-      const sch = t._schedule;
-      let when = "No reminders";
-      if (sch && sch.enabled && sch.settings.mode === "after") {
-        const names = (id) => (state.trackers.find((x) => x.id === id) || {}).name || "another medication";
-        when = `Reminders ${joinNames(sch.settings.after.map((r) => `${niceGap(r.minutes)} after ${names(r.tracker_id)}`))}`;
-        if (sch.settings.max_per_day) when += `, up to ${sch.settings.max_per_day} a day`;
-      } else if (sch && sch.enabled) {
-        when = `Reminders at ${joinNames(sch.settings.times.map(niceTime))}`;
-      }
-      return [amount, when].filter(Boolean).join(". ");
+      return [amount, describeSchedule(t._schedule)].filter(Boolean).join(". ");
     }
-    case "tags": return `${(c.options || []).length} options, ${often}`;
-    default: return `${KIND_INFO[t.kind]}, ${often}`;
+    default: return often;
   }
+}
+
+function describeSchedule(sch) {
+  if (!sch || !sch.enabled) return "No reminders";
+  const s = sch.settings;
+  if (s.mode === "after") {
+    const name = (id) => (state.trackers.find((x) => x.id === id) || {}).name || "another medication";
+    let text = `Reminds you ${joinNames(s.after.map((r) => `${niceGap(r.minutes)} after ${name(r.tracker_id)}`))}`;
+    if (s.max_per_day) text += `, up to ${s.max_per_day} a day`;
+    return text;
+  }
+  return `Reminds you at ${joinNames(s.times.map(niceTime))}${describeDays(s.days) ? ", " + describeDays(s.days) : ""}`;
+}
+
+function describeDays(d) {
+  if (!d || d.mode === "daily") return "every day";
+  if (d.mode === "weekdays") {
+    const set = d.weekdays.join(",");
+    if (set === "0,1,2,3,4") return "on weekdays";
+    if (set === "5,6") return "on weekends";
+    return "on " + joinNames(d.weekdays.map((w) => WEEKDAYS[w]));
+  }
+  return `every ${d.every} days`;
+}
+
+function settingRow(title, sub, buttonLabel, onclick) {
+  return el("div", { class: "tracker-row" },
+    el("div", { class: "info" }, el("div", { class: "row-name" }, title), el("div", { class: "row-sub" }, sub)),
+    el("button", { type: "button", class: "secondary", onclick }, buttonLabel));
 }
 
 async function renderSettings(view) {
@@ -724,7 +754,7 @@ async function renderSettings(view) {
 
   const head = el("header", { class: "head" },
     el("h1", {}, "Settings"),
-    el("p", {}, "Choose what you track. Your list is private to you."),
+    el("p", {}, "Choose what you track and how you're reminded. Only you can see your list."),
   );
 
   const meds = visible.filter((t) => t.kind === "medication");
@@ -735,26 +765,26 @@ async function renderSettings(view) {
   ]);
   meds.forEach((m, i) => { m._schedule = schedules[i]; });
 
-  const phones = person ? person.devices.length : 0;
-  const reminderSection = el("section", { class: "group" },
-    el("h2", {}, "Reminders"),
-    el("div", { class: "panel" },
-      el("div", { class: "tracker-row" },
-        el("div", { class: "info" },
-          el("div", { class: "row-name" }, "Reminder settings"),
-          el("div", { class: "row-sub" }, phones
-            ? `Sending to ${phones === 1 ? "1 phone" : phones + " phones"}`
-            : "No phone chosen yet, so reminders only show here")),
-        el("button", { type: "button", class: "secondary", onclick: () => openPersonSheet(view) }, "Change"))),
-  );
-
   const medSection = el("section", { class: "group" },
     el("h2", {}, "Medications"),
     meds.length
       ? el("div", { class: "panel" }, meds.map((t) => settingsRow(t, all, view)))
-      : el("div", { class: "empty", style: "margin-top:0" }, el("p", {}, "No medications added yet.")),
+      : el("div", { class: "empty", style: "margin-top:0" }, el("p", {}, "No medications yet. Add one to log doses and get reminders.")),
     el("div", { class: "actions", style: "margin-top:12px" },
       el("button", { type: "button", class: "secondary", onclick: () => openTrackerSheet({ kind: "medication" }, view) }, "Add medication")),
+  );
+
+  const phones = person ? person.devices.length : 0;
+  const ci = person ? person.checkins : null;
+  const notifySection = el("section", { class: "group" },
+    el("h2", {}, "Notifications"),
+    el("div", { class: "panel" },
+      settingRow("Phones and alerts",
+        phones ? `Sending to ${phones === 1 ? "1 phone" : phones + " phones"}` : "No phone chosen yet, so reminders only show in this app",
+        "Change", () => openPersonSheet(view)),
+      settingRow("Check-in reminders",
+        ci && ci.enabled ? `At ${joinNames(ci.times.map(niceTime))}, ${describeDays(ci.days)}` : "Off",
+        "Change", () => openCheckinSheet(view))),
   );
 
   const groups = new Map();
@@ -769,14 +799,17 @@ async function renderSettings(view) {
   ));
 
   const addRow = el("div", { class: "actions" },
-    el("button", { type: "button", class: "primary", onclick: () => openTrackerSheet({ kind: "rating" }, view) }, "Add tracker"));
+    el("button", { type: "button", class: "primary", onclick: () => openTrackerSheet({ kind: "rating" }, view) }, "Add something to track"));
 
   const hiddenSection = hidden.length ? el("section", { class: "group" },
     el("h2", {}, "Hidden"),
+    el("p", { class: "hint", style: "margin:0 0 8px 4px" }, "Not shown on Check-in. Their history is kept."),
     el("div", { class: "panel" }, hidden.map((t) => settingsRow(t, all, view))),
   ) : null;
 
-  view.replaceChildren(...[head, medSection, reminderSection, ...trackerSections, addRow, hiddenSection,
+  view.replaceChildren(...[head, medSection, notifySection,
+    el("h2", { class: "section-title" }, "What you track"),
+    ...trackerSections, addRow, hiddenSection,
     el("p", { class: "whoami" }, `Signed in to Home Assistant as ${state.me.display_name || state.me.username}`)].filter(Boolean));
 }
 
@@ -814,9 +847,9 @@ function settingsRow(t, all, view) {
           el("button", { type: "button", class: "iconbtn", "aria-label": `Move ${t.name} down`, disabled: i >= last, onclick: () => move(1) }, svgIcon(ICONS.down)),
         ],
     t.kind === "medication" && !t.hidden
-      ? el("button", { type: "button", class: "iconbtn", "aria-label": `Reminders for ${t.name}`, onclick: () => openScheduleSheet(t, view) }, svgIcon(ICONS.bell))
+      ? el("button", { type: "button", class: "iconbtn", "aria-label": `Reminders for ${t.name}`, title: "Reminders", onclick: () => openScheduleSheet(t, view) }, svgIcon(ICONS.bell))
       : null,
-    el("button", { type: "button", class: "iconbtn", "aria-label": `Edit ${t.name}`, onclick: () => openTrackerSheet(t, view) }, svgIcon(ICONS.edit)),
+    el("button", { type: "button", class: "iconbtn", "aria-label": `Edit ${t.name}`, title: "Edit", onclick: () => openTrackerSheet(t, view) }, svgIcon(ICONS.edit)),
   );
 }
 
@@ -824,20 +857,109 @@ function field(label, control, hint) {
   return el("label", { class: "field" }, el("span", {}, label), control, hint ? el("span", { class: "hint" }, hint) : null);
 }
 
+/* ---------- emoji picker ---------- */
+
+let emojiData = null;
+async function loadEmoji() {
+  if (!emojiData) {
+    try { emojiData = await (await fetch("static/emoji.json")).json(); }
+    catch { emojiData = []; }
+  }
+  return emojiData;
+}
+
+const EMOJI_SUGGEST = {
+  medication: "💊 💉 🩹 🧴 🩺 🌡️ 🫀 🧠 ⏰ 🍵 🥛 💧",
+  rating: "🙂 😊 😌 ⚡ 🔋 😴 💭 🧠 ❤️ 🌤️ 🎯 😤",
+  symptom: "🤕 🥱 🌫️ 😰 🤢 🤧 😵‍💫 🦴 🔥 💢 🫁 😖",
+  factor: "☕ 🍷 💧 🏃 🌳 👥 📱 🍎 🧘 🚶 🚭 🍫",
+  tags: "💭 🏷️ 😊 🎭 🌈 📋",
+  note: "📝 📓 ✏️ 💬 🗒️ 📖",
+  sleep: "😴 🛌 🌙 💤 🛏️ ⏰",
+};
+
+function emojiPicker(value, getKind) {
+  let current = value || "";
+  const preview = el("span", { class: "emoji-current", "aria-hidden": "true" });
+  const label = el("span", {});
+  const toggleBtn = el("button", { type: "button", class: "emoji-button", "aria-expanded": "false" }, preview, label);
+  const search = el("input", { type: "search", placeholder: "Search, for example pill, coffee, sleep", "aria-label": "Search icons", autocomplete: "off" });
+  const grid = el("div", { class: "emoji-grid" });
+  const status = el("p", { class: "hint", "aria-live": "polite" });
+  const panel = el("div", { class: "emoji-panel", hidden: true },
+    search, status, grid,
+    el("button", { type: "button", class: "link", onclick: () => choose("") }, "Use no icon"));
+
+  function show() {
+    preview.textContent = current || "＋";
+    label.textContent = current ? "Change icon" : "Choose an icon";
+  }
+  function choose(e) {
+    current = e;
+    show();
+    panel.hidden = true;
+    toggleBtn.setAttribute("aria-expanded", "false");
+    toggleBtn.focus();
+  }
+  function draw(list) {
+    grid.replaceChildren(...list.slice(0, 120).map(([e, name]) => el("button", {
+      type: "button", class: "emoji-cell", "aria-label": name, title: name,
+      "aria-pressed": String(e === current), onclick: () => choose(e),
+    }, e)));
+  }
+  async function update() {
+    const data = await loadEmoji();
+    const names = new Map(data.map((d) => [d[0], d[1]]));
+    const q = search.value.trim().toLowerCase();
+    if (!q) {
+      const picks = (EMOJI_SUGGEST[getKind()] || EMOJI_SUGGEST.rating).split(" ");
+      status.textContent = "Suggested. Search to see more.";
+      draw(picks.map((e) => [e, names.get(e) || e]));
+      return;
+    }
+    const terms = q.split(/\s+/);
+    const scored = [];
+    for (const [e, name, tags] of data) {
+      const words = `${name} ${tags}`.toLowerCase().split(/[\s:,-]+/);
+      if (!terms.every((t) => words.some((w) => w.startsWith(t)))) continue;
+      const inName = terms.every((t) => name.toLowerCase().split(/[\s:,-]+/).some((w) => w.startsWith(t)));
+      scored.push([inName ? 0 : 1, e, name]);
+    }
+    scored.sort((a, b) => a[0] - b[0]);
+    status.textContent = scored.length ? `${scored.length} found` : "No matches. Try another word.";
+    draw(scored.map(([, e, name]) => [e, name]));
+  }
+  toggleBtn.addEventListener("click", () => {
+    panel.hidden = !panel.hidden;
+    toggleBtn.setAttribute("aria-expanded", String(!panel.hidden));
+    if (!panel.hidden) { update(); search.focus(); }
+  });
+  search.addEventListener("input", update);
+  search.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") { ev.preventDefault(); grid.querySelector("button")?.click(); }
+    if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); choose(current); }
+  });
+  show();
+  return { node: el("div", { class: "emoji-field" }, toggleBtn, panel), get value() { return current || null; } };
+}
+
+/* ---------- add or edit something to track ---------- */
+
 function openTrackerSheet(t, view) {
   const isNew = !t.id;
   const sheet = document.getElementById("sheet");
   const c = t.config || {};
   let kind = t.kind;
 
-  const name = el("input", { type: "text", name: "name", required: true, maxlength: "60", value: t.name || "", autocomplete: "off" });
-  const emoji = el("input", { type: "text", name: "emoji", maxlength: "8", value: t.emoji || "", autocomplete: "off" });
+  const name = el("input", { type: "text", name: "name", required: true, maxlength: "60", value: t.name || "", autocomplete: "off",
+    placeholder: kind === "medication" ? "For example Vyvanse" : "For example Stress" });
+  const icon = emojiPicker(t.emoji, () => kind);
   const groupNames = [...new Set(state.trackers.map((x) => x.group_name).filter(Boolean))];
-  const group = el("input", { type: "text", name: "group", maxlength: "40", value: t.group_name ?? "", list: "group-names", autocomplete: "off" });
+  const group = el("input", { type: "text", name: "group", maxlength: "40", value: t.group_name ?? "", list: "group-names", autocomplete: "off", placeholder: "For example How you feel" });
   const groupList = el("datalist", { id: "group-names" }, groupNames.map((g) => el("option", { value: g })));
   const freq = el("select", { name: "frequency" },
-    el("option", { value: "many" }, "Every check-in (log several times a day)"),
-    el("option", { value: "daily" }, "Once a day (later answers replace it)"));
+    el("option", { value: "many" }, "As often as I like (every answer is kept)"),
+    el("option", { value: "daily" }, "Once a day (a new answer replaces the old one)"));
   freq.value = t.frequency || (["symptom", "factor", "sleep", "note"].includes(kind) ? "daily" : "many");
 
   const kindSelect = el("select", { name: "kind" },
@@ -853,28 +975,32 @@ function openTrackerSheet(t, view) {
     extra.replaceChildren();
     if (kind === "rating") {
       inputs.labels = el("input", { type: "text", value: (c.labels || []).join(", "), placeholder: "Awful, Bad, Okay, Good, Great" });
-      extra.append(field("Labels for 1 to 5", inputs.labels, "Optional. Five words separated by commas."));
+      extra.append(field("Words for 1 to 5", inputs.labels, "Optional. Five words, lowest first, separated by commas."));
     } else if (kind === "tags") {
-      inputs.options = el("textarea", { placeholder: "One option per line" });
+      inputs.options = el("textarea", { placeholder: "Happy\nCalm\nAnxious" });
       inputs.options.value = (c.options || []).join("\n");
-      extra.append(field("Options", inputs.options, "One per line."));
+      extra.append(field("Choices", inputs.options, "One per line. You can pick several at once."));
     } else if (kind === "factor") {
       inputs.mode = el("select", {},
         el("option", { value: "bool" }, "Yes or no"),
-        el("option", { value: "count" }, "Count (cups, drinks…)"),
-        el("option", { value: "amount" }, "Amount (minutes, km…)"));
+        el("option", { value: "count" }, "A count (cups, drinks…)"),
+        el("option", { value: "amount" }, "An amount (minutes, km…)"));
       inputs.mode.value = c.mode || "bool";
       inputs.unit = el("input", { type: "text", maxlength: "20", value: c.unit || "", placeholder: "cups" });
-      extra.append(field("Type", inputs.mode), field("Unit", inputs.unit, "Only for counts and amounts."));
+      const unitField = field("Unit", inputs.unit, "Shown next to the number, for example cups.");
+      const drawUnit = () => { unitField.hidden = inputs.mode.value === "bool"; };
+      inputs.mode.addEventListener("change", drawUnit);
+      drawUnit();
+      extra.append(field("Answer type", inputs.mode), unitField);
     } else if (kind === "medication") {
       inputs.dose = el("input", { type: "text", maxlength: "40", value: c.dose || "", placeholder: "30" });
       inputs.unit = el("input", { type: "text", maxlength: "20", value: c.unit || "", placeholder: "mg" });
       inputs.notes = el("input", { type: "text", maxlength: "200", value: c.notes || "", placeholder: "With breakfast" });
-      extra.append(
+      extra.append(...[
         el("div", { class: "field-pair" }, field("Dose", inputs.dose), field("Unit", inputs.unit)),
-        field("Notes", inputs.notes),
-        t.id ? el("button", { type: "button", class: "secondary", onclick: () => openScheduleSheet(t, view) }, "Reminders…") : null,
-      );
+        field("Instructions", inputs.notes, "Optional. Shown on the reminder."),
+        t.id ? el("button", { type: "button", class: "secondary", onclick: () => openScheduleSheet(t, view) }, "Set up reminders") : null,
+      ].filter(Boolean));
     }
   }
   drawExtra();
@@ -896,28 +1022,26 @@ function openTrackerSheet(t, view) {
   }
 
   const form = el("form", { method: "dialog" },
-    el("h2", {}, isNew ? (kind === "medication" ? "Add medication" : "Add tracker") : `Edit ${t.name}`),
+    el("h2", {}, isNew ? (kind === "medication" ? "Add medication" : "Add something to track") : `Edit ${t.name}`),
     err,
-    isNew && kind !== "medication" ? field("What kind of tracker?", kindSelect) : null,
+    isNew && kind !== "medication" ? field("What kind?", kindSelect) : null,
     field("Name", name),
-    el("div", { class: "field-pair" },
-      field("Emoji", emoji),
-      kind === "medication" ? el("span") : field("Section", group),
-    ),
+    el("div", { class: "field" }, el("span", {}, "Icon"), icon.node),
+    kind === "medication" ? null : field("Show it under", group, "The heading it appears under on Check-in."),
     groupList,
     extra,
-    ["sleep", "medication"].includes(kind) ? null : field("How often", freq),
+    ["sleep", "medication"].includes(kind) ? null : field("How often will you answer it?", freq),
     el("div", { class: "actions" },
       el("button", { type: "submit", class: "primary" }, isNew ? "Add" : "Save changes"),
       !isNew ? el("button", { type: "button", class: "secondary", onclick: async () => {
         await api("PATCH", `api/trackers/${t.id}`, { hidden: !t.hidden });
         sheet.close();
-        toast(t.hidden ? `${t.name} shown` : `${t.name} hidden`);
+        toast(t.hidden ? `${t.name} is back on Check-in` : `${t.name} hidden from Check-in`);
         await refreshTrackers();
         await renderSettings(view);
-      } }, t.hidden ? "Show" : "Hide") : null,
+      } }, t.hidden ? "Show on Check-in" : "Hide") : null,
       !isNew ? el("button", { type: "button", class: "secondary danger", onclick: async () => {
-        if (!confirm(`Delete ${t.name} and everything logged for it? Hide it instead to keep its history.`)) return;
+        if (!confirm(`Delete ${t.name} and everything logged for it? To keep its history, hide it instead.`)) return;
         await api("DELETE", `api/trackers/${t.id}`);
         sheet.close();
         toast(`${t.name} deleted`);
@@ -933,7 +1057,7 @@ function openTrackerSheet(t, view) {
     err.hidden = true;
     const payload = {
       name: name.value,
-      emoji: emoji.value.trim() || null,
+      emoji: icon.value,
       config: readConfig(),
     };
     if (kind !== "medication") payload.group_name = group.value.trim();
@@ -990,18 +1114,102 @@ function notice(...children) {
 }
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+// A list of clock times with add and remove.
+function timesEditor(times) {
+  const list = el("div", { class: "time-list" });
+  const add = (value) => {
+    const input = el("input", { type: "time", value, required: true, "aria-label": "Time" });
+    const row = el("div", { class: "time-row" }, input,
+      el("button", { type: "button", class: "iconbtn", "aria-label": "Remove this time", onclick: () => {
+        if (list.children.length > 1) row.remove();
+      } }, svgIcon(ICONS.close)));
+    list.append(row);
+  };
+  times.forEach(add);
+  const node = el("div", {}, list,
+    el("button", { type: "button", class: "secondary small", onclick: () => add("12:00") }, "Add a time"));
+  return { node, read: () => [...list.querySelectorAll("input")].map((i) => i.value).filter(Boolean) };
+}
+
+// Every day / some days / every few days.
+function daysEditor(days) {
+  let mode = days.mode;
+  const weekdays = new Set(days.weekdays);
+  const chips = el("div", { class: "chips" }, WEEKDAYS.map((w, i) => {
+    const b = el("button", { type: "button", class: "chip", "aria-pressed": String(weekdays.has(i)), onclick: () => {
+      if (weekdays.has(i)) weekdays.delete(i); else weekdays.add(i);
+      b.setAttribute("aria-pressed", String(weekdays.has(i)));
+    } }, w);
+    return b;
+  }));
+  const every = el("input", { type: "number", min: "2", max: "60", value: days.every, inputmode: "numeric", style: "width:5em", "aria-label": "Number of days" });
+  const start = el("input", { type: "date", value: days.start || isoDay(new Date()), "aria-label": "First day" });
+  const weekdayPanel = el("div", { class: "subpanel" }, chips);
+  const intervalPanel = el("div", { class: "subpanel inline-field" },
+    el("span", {}, "Every"), every, el("span", {}, "days, starting"), start);
+  const seg = el("div", { class: "seg", role: "group", "aria-label": "Which days" });
+  const draw = () => {
+    seg.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
+    weekdayPanel.hidden = mode !== "weekdays";
+    intervalPanel.hidden = mode !== "interval";
+  };
+  [["daily", "Every day"], ["weekdays", "Some days"], ["interval", "Every few days"]].forEach(([m, label]) =>
+    seg.append(el("button", { type: "button", "data-mode": m, onclick: () => { mode = m; draw(); } }, label)));
+  draw();
+  return {
+    node: el("div", {}, seg, weekdayPanel, intervalPanel),
+    read: () => ({ mode, weekdays: [...weekdays].sort(), every: Number(every.value), start: start.value }),
+  };
+}
+
+// What happens if a reminder isn't answered.
 const NAG_CHOICES = [
-  ["once", "Once only"],
-  ["gently", "Gently"],
-  ["firmly", "Firmly"],
-  ["custom", "My own pattern"],
+  ["once", "Don't remind me again"],
+  ["gently", "Remind me gently"],
+  ["firmly", "Remind me firmly"],
+  ["custom", "Choose my own"],
 ];
 const NAG_HINTS = {
-  once: "One reminder, no repeats.",
-  gently: "Every 30 minutes, up to 4 more times.",
-  firmly: "Every 10 minutes, up to 6 more times.",
+  once: "Just one notification.",
+  gently: "Again every 30 minutes, up to 4 more times.",
+  firmly: "Again every 10 minutes, up to 6 more times.",
   custom: "",
 };
+
+function nagEditor(s) {
+  const nag = selectOf(NAG_CHOICES, s.nag);
+  const everyInput = el("input", { type: "number", min: "1", max: "240", value: s.nag_every, inputmode: "numeric", style: "width:5em", "aria-label": "Minutes" });
+  const repeats = el("input", { type: "number", min: "0", max: "50", value: s.nag_repeats ?? "", inputmode: "numeric", style: "width:5em", placeholder: "∞", "aria-label": "Times" });
+  const hint = el("p", { class: "hint" });
+  const custom = el("div", { class: "subpanel" },
+    el("div", { class: "inline-field" }, el("span", {}, "Again every"), everyInput, el("span", {}, "minutes")),
+    el("div", { class: "inline-field" }, el("span", {}, "Up to"), repeats, el("span", {}, "more times")),
+    el("p", { class: "hint" }, "Leave the number of times blank to keep going until the latest time, or the end of the day."));
+  const draw = () => {
+    custom.hidden = nag.value !== "custom";
+    hint.textContent = NAG_HINTS[nag.value];
+    hint.hidden = !NAG_HINTS[nag.value];
+  };
+  nag.addEventListener("change", draw);
+  draw();
+  return {
+    node: el("div", {}, nag, hint, custom),
+    read: () => ({
+      nag: nag.value,
+      nag_every: Number(everyInput.value),
+      nag_repeats: repeats.value === "" ? null : Number(repeats.value),
+    }),
+  };
+}
+
+function noPhoneNotice(person, view) {
+  return person.devices.length ? null : notice(
+    "No phone is chosen yet, so reminders will only show in this app. ",
+    el("button", { type: "button", class: "link inline", onclick: () => openPersonSheet(view) }, "Choose phones"));
+}
+
+/* ---------- medication reminders ---------- */
 
 async function openScheduleSheet(t, view, opts = {}) {
   const sheet = document.getElementById("sheet");
@@ -1016,45 +1224,10 @@ async function openScheduleSheet(t, view, opts = {}) {
   const body = el("div", { class: "sched-body" });
   const err = el("p", { class: "form-error", hidden: true });
 
-  // ----- times -----
-  const timeList = el("div", { class: "time-list" });
-  const addTime = (value) => {
-    const input = el("input", { type: "time", value, required: true, "aria-label": "Reminder time" });
-    const row = el("div", { class: "time-row" }, input,
-      el("button", { type: "button", class: "iconbtn", "aria-label": "Remove this time", onclick: () => {
-        if (timeList.children.length > 1) row.remove();
-      } }, svgIcon(ICONS.close)));
-    timeList.append(row);
-  };
-  s.times.forEach(addTime);
-  const addTimeBtn = el("button", { type: "button", class: "secondary small", onclick: () => addTime("12:00") }, "Add a time");
+  const times = timesEditor(s.times);
+  const days = daysEditor(s.days);
 
-  // ----- days -----
-  let mode = s.days.mode;
-  const weekdays = new Set(s.days.weekdays);
-  const dayChips = el("div", { class: "chips" }, WEEKDAYS.map((w, i) => {
-    const b = el("button", { type: "button", class: "chip", "aria-pressed": String(weekdays.has(i)), onclick: () => {
-      if (weekdays.has(i)) weekdays.delete(i); else weekdays.add(i);
-      b.setAttribute("aria-pressed", String(weekdays.has(i)));
-    } }, w);
-    return b;
-  }));
-  const everyInput = el("input", { type: "number", min: "2", max: "60", value: s.days.every, inputmode: "numeric", style: "width:5em" });
-  const startInput = el("input", { type: "date", value: s.days.start || isoDay(new Date()) });
-  const weekdayPanel = el("div", { class: "subpanel" }, dayChips);
-  const intervalPanel = el("div", { class: "subpanel inline-field" },
-    el("span", {}, "Every"), everyInput, el("span", {}, "days, starting"), startInput);
-  const modeSeg = el("div", { class: "seg", role: "group", "aria-label": "Which days" });
-  const drawMode = () => {
-    modeSeg.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
-    weekdayPanel.hidden = mode !== "weekdays";
-    intervalPanel.hidden = mode !== "interval";
-  };
-  [["daily", "Every day"], ["weekdays", "Some days"], ["interval", "Every few days"]].forEach(([m, label]) =>
-    modeSeg.append(el("button", { type: "button", "data-mode": m, onclick: () => { mode = m; drawMode(); } }, label)));
-  drawMode();
-
-  // ----- after another dose -----
+  // ----- timed from another dose -----
   const meds = state.trackers.filter((x) => x.kind === "medication");
   if (!meds.some((x) => x.id === t.id)) meds.unshift(t);
   const medOptions = meds.map((x) => [x.id, x.id === t.id ? `${x.name} (this one)` : x.name]);
@@ -1073,17 +1246,17 @@ async function openScheduleSheet(t, view, opts = {}) {
   };
   const firstOther = meds.find((x) => x.id !== t.id);
   (s.after.length ? s.after : [{ tracker_id: (firstOther || t).id, minutes: 180 }]).forEach(addRule);
-  const addRuleBtn = el("button", { type: "button", class: "secondary small", onclick: () => addRule({ tracker_id: t.id, minutes: 180 }) }, "Add another");
-  const maxPerDay = el("input", { type: "number", min: "1", max: "24", inputmode: "numeric", value: s.max_per_day ?? "", placeholder: "No limit", style: "width:6em" });
+  const maxPerDay = el("input", { type: "number", min: "1", max: "24", inputmode: "numeric", value: s.max_per_day ?? "", placeholder: "No limit", style: "width:6em", "aria-label": "Most reminders a day" });
   const afterBlock = el("div", {},
-    field("Remind me", el("div", {}, ruleList, addRuleBtn),
-      "Timed from when you actually take it: tapping Taken, logging it here, or a linked toggle. Pick this medication to repeat it, like every 3 hours."),
-    field("At most", el("div", { class: "inline-field" }, maxPerDay, el("span", {}, "reminders a day")),
-      "Stops the chain. Leave blank for no limit."),
+    field("Remind me", el("div", {}, ruleList,
+      el("button", { type: "button", class: "secondary small", onclick: () => addRule({ tracker_id: t.id, minutes: 180 }) }, "Add another")),
+      "Timed from when you actually take it: tapping Taken, logging it in the app, or a linked toggle. Choose this medication to repeat it, for example every 3 hours."),
+    field("Stop after", el("div", { class: "inline-field" }, maxPerDay, el("span", {}, "reminders a day")),
+      "Leave blank for no limit."),
   );
 
   let schedMode = s.mode;
-  const timesBlock = el("div", {});
+  const timesBlock = el("div", {}, field("Times", times.node), field("Days", days.node));
   const whenSeg = el("div", { class: "seg", role: "group", "aria-label": "How to time it" });
   const drawWhen = () => {
     whenSeg.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === schedMode)));
@@ -1092,80 +1265,59 @@ async function openScheduleSheet(t, view, opts = {}) {
   };
   [["times", "At set times"], ["after", "After another dose"]].forEach(([m, label]) =>
     whenSeg.append(el("button", { type: "button", "data-mode": m, onclick: () => { schedMode = m; drawWhen(); } }, label)));
+  drawWhen();
 
-  // ----- nagging -----
-  const nag = selectOf(NAG_CHOICES, s.nag);
-  const nagEvery = el("input", { type: "number", min: "1", max: "240", value: s.nag_every, inputmode: "numeric", style: "width:5em" });
-  const nagRepeats = el("input", { type: "number", min: "0", max: "50", value: s.nag_repeats ?? "", inputmode: "numeric", style: "width:5em", placeholder: "∞" });
-  const customPanel = el("div", { class: "subpanel" },
-    el("div", { class: "inline-field" }, el("span", {}, "Every"), nagEvery, el("span", {}, "minutes")),
-    el("div", { class: "inline-field" }, el("span", {}, "Up to"), nagRepeats, el("span", {}, "more times")),
-    el("p", { class: "hint" }, "Leave blank to keep going until the latest time or the end of the day."));
-  const nagHint = el("p", { class: "hint" });
-  const drawNag = () => {
-    customPanel.hidden = nag.value !== "custom";
-    nagHint.textContent = NAG_HINTS[nag.value];
-    nagHint.hidden = !NAG_HINTS[nag.value];
-  };
-  nag.addEventListener("change", drawNag);
-  drawNag();
+  const nag = nagEditor(s);
 
   // ----- latest time -----
-  const latestOn = switchField("Stop at a latest time", !!s.latest_time,
-    "No new reminders after this. Anything still waiting gets one last question: skip today, or take it anyway?");
+  const latestOn = switchField("Set a latest time", !!s.latest_time,
+    "No reminders after this. If it still isn't taken, you get one last question: skip today, or take it anyway?");
   const latestInput = el("input", { type: "time", value: s.latest_time || "11:00", "aria-label": "Latest time" });
   const latestPanel = el("div", { class: "subpanel" }, latestInput);
   const drawLatest = () => { latestPanel.hidden = !latestOn.input.checked; };
   latestOn.input.addEventListener("change", drawLatest);
   drawLatest();
 
-  // ----- hard to miss -----
-  const hard = switchField("Make it hard to miss", s.hard_to_miss, "Step it up if a reminder goes unanswered.");
-  const hardAfter = selectOf([2, 3, 4, 5, 6].map((n) => [n, `From reminder ${n}`]), s.hard_after);
-  const alarm = switchField("Ring like an alarm", s.alarm_sound, "Sounds even on Do Not Disturb, except in your quiet hours.");
+  // ----- getting louder -----
+  const hard = switchField("Get louder if I don't answer", s.hard_to_miss, "Steps it up after a few unanswered reminders.");
+  const hardAfter = selectOf([[2, "The 2nd reminder"], [3, "The 3rd reminder"], [4, "The 4th reminder"], [5, "The 5th reminder"], [6, "The 6th reminder"]], s.hard_after);
+  const alarm = switchField("Ring like an alarm", s.alarm_sound, "Plays even on Do Not Disturb, but not during your quiet hours.");
   const speakersReady = person.speakers.length && person.tts_entity;
   const announce = switchField("Announce it on speakers", s.announce, speakersReady
-    ? "Uses the speakers in Reminder settings."
-    : "Choose speakers and a voice in Reminder settings first.");
-  const hardPanel = el("div", { class: "subpanel" }, field("Starting", hardAfter), alarm.node, announce.node);
+    ? "Uses the speakers chosen in Phones and alerts."
+    : "Choose speakers and a voice in Phones and alerts first.");
+  const hardPanel = el("div", { class: "subpanel" }, field("Starting from", hardAfter), alarm.node, announce.node);
   const drawHard = () => { hardPanel.hidden = !hard.input.checked; };
   hard.input.addEventListener("change", drawHard);
   drawHard();
 
-  // ----- Home Assistant link -----
+  // ----- early doses and Home Assistant -----
+  const early = selectOf([[0, "Don't count early doses"], [30, "Up to 30 minutes before"], [60, "Up to 1 hour before"],
+    [120, "Up to 2 hours before"], [180, "Up to 3 hours before"], [360, "Up to 6 hours before"]], s.early_window);
   const linked = selectOf([["", "None"], ...ha.toggles.map((x) => [x.entity_id, x.name])], s.linked_entity);
   const linkedTime = selectOf([["", "None"], ...ha.datetimes.map((x) => [x.entity_id, x.name])], s.linked_time_entity);
-  const early = selectOf([[0, "Not at all"], [30, "30 minutes"], [60, "1 hour"], [120, "2 hours"], [180, "3 hours"], [360, "6 hours"]], s.early_window);
   const linkDetails = el("details", { class: "more", open: !!(s.linked_entity || s.linked_time_entity) },
-    el("summary", {}, "Home Assistant link and early doses"),
-    field("Keep this toggle in sync", linked, "Turning it on counts as taken; taking it turns it on."),
-    field("Set this date and time when taken", linkedTime),
-    field("Count it if I log it early, up to", early));
+    el("summary", {}, "Link to Home Assistant"),
+    field("Toggle to keep in sync", linked, "Switching it on counts as taken, and taking it here switches it on."),
+    field("Date and time to update", linkedTime, "Set to the time you take it."));
 
-  timesBlock.append(
-    field("Times", el("div", {}, timeList, addTimeBtn)),
-    field("Days", el("div", {}, modeSeg, weekdayPanel, intervalPanel)));
-  drawWhen();
   body.append(
     field("When", whenSeg),
     timesBlock,
     afterBlock,
-    field("Until I answer, remind me", el("div", {}, nag, nagHint, customPanel)),
+    field("If I don't answer", nag.node),
     latestOn.node, latestPanel,
     hard.node, hardPanel,
+    field("Already taken it before the reminder?", early, "A dose you log this early counts, so you won't be reminded."),
     linkDetails,
   );
   const drawEnabled = () => { body.classList.toggle("dimmed", !enabled.input.checked); };
   enabled.input.addEventListener("change", drawEnabled);
   drawEnabled();
 
-  const noPhone = !person.devices.length ? notice(
-    "No phone is chosen yet, so reminders will only show on the Check-in screen. ",
-    el("button", { type: "button", class: "link inline", onclick: () => openPersonSheet(view) }, "Choose phones")) : null;
-
   const form = el("form", { method: "dialog" },
     el("h2", {}, `Reminders for ${t.name}`),
-    err, noPhone, enabled.node, body,
+    err, noPhoneNotice(person, view), enabled.node, body,
     el("div", { class: "actions" },
       el("button", { type: "submit", class: "primary" }, "Save reminders"),
       el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Cancel")));
@@ -1180,11 +1332,9 @@ async function openScheduleSheet(t, view, opts = {}) {
         minutes: Math.round(Number(r.querySelector("input").value) * 60),
       })),
       max_per_day: maxPerDay.value === "" ? null : Number(maxPerDay.value),
-      times: [...timeList.querySelectorAll("input")].map((i) => i.value).filter(Boolean),
-      days: { mode, weekdays: [...weekdays].sort(), every: Number(everyInput.value), start: startInput.value },
-      nag: nag.value,
-      nag_every: Number(nagEvery.value),
-      nag_repeats: nagRepeats.value === "" ? null : Number(nagRepeats.value),
+      times: times.read(),
+      days: days.read(),
+      ...nag.read(),
       latest_time: latestOn.input.checked ? latestInput.value : null,
       hard_to_miss: hard.input.checked,
       hard_after: Number(hardAfter.value),
@@ -1197,7 +1347,7 @@ async function openScheduleSheet(t, view, opts = {}) {
     try {
       await api("PUT", `api/trackers/${t.id}/schedule`, { enabled: enabled.input.checked, settings });
       sheet.close();
-      toast(enabled.input.checked ? `Reminders for ${t.name} saved` : `Reminders for ${t.name} off`);
+      toast(enabled.input.checked ? `Reminders for ${t.name} saved` : `Reminders for ${t.name} turned off`);
       if (currentTab() === "settings") await renderSettings(view);
     } catch (e) {
       err.textContent = e.message;
@@ -1209,6 +1359,73 @@ async function openScheduleSheet(t, view, opts = {}) {
   sheet.replaceChildren(form);
   if (!sheet.open) sheet.showModal();
 }
+
+/* ---------- check-in reminders ---------- */
+
+async function openCheckinSheet(view) {
+  const sheet = document.getElementById("sheet");
+  let person;
+  try { person = await api("GET", "api/reminders/settings"); }
+  catch (err) { toast(err.message); return; }
+  const c = person.checkins;
+  const err = el("p", { class: "form-error", hidden: true });
+
+  const enabled = switchField("Remind me to check in", c.enabled, "A nudge to note how you're doing.");
+  const times = timesEditor(c.times);
+  const days = daysEditor(c.days);
+  const nag = nagEditor(c);
+  const buttons = selectOf([["mood", "Mood: Good, Okay, Bad"], ["snooze", "Snooze, Not now"]], c.buttons);
+  const recent = selectOf([[0, "Always remind me"], [30, "In the last 30 minutes"], [60, "In the last hour"],
+    [120, "In the last 2 hours"], [180, "In the last 3 hours"]], c.skip_if_recent);
+  const expire = selectOf([[60, "1 hour"], [120, "2 hours"], [180, "3 hours"], [360, "6 hours"]], c.expire_after);
+
+  const body = el("div", { class: "sched-body" },
+    field("Times", times.node),
+    field("Days", days.node),
+    field("Buttons on the notification", buttons, "Quick mood answers log your mood without opening the app."),
+    field("If I don't answer", nag.node),
+    field("Skip the reminder if I've checked in", recent),
+    field("Remove the reminder after", expire, "Unanswered check-in reminders tidy themselves away."),
+  );
+  const drawEnabled = () => { body.classList.toggle("dimmed", !enabled.input.checked); };
+  enabled.input.addEventListener("change", drawEnabled);
+  drawEnabled();
+
+  const form = el("form", { method: "dialog" },
+    el("h2", {}, "Check-in reminders"),
+    err, noPhoneNotice(person, view), enabled.node, body,
+    el("div", { class: "actions" },
+      el("button", { type: "submit", class: "primary" }, "Save"),
+      el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Cancel")));
+
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    err.hidden = true;
+    try {
+      await api("PUT", "api/reminders/settings", { checkins: {
+        enabled: enabled.input.checked,
+        times: times.read(),
+        days: days.read(),
+        ...nag.read(),
+        buttons: buttons.value,
+        skip_if_recent: Number(recent.value),
+        expire_after: Number(expire.value),
+      } });
+      sheet.close();
+      toast(enabled.input.checked ? "Check-in reminders saved" : "Check-in reminders turned off");
+      if (currentTab() === "settings") await renderSettings(view);
+    } catch (e) {
+      err.textContent = e.message;
+      err.hidden = false;
+      err.scrollIntoView({ block: "nearest" });
+    }
+  });
+
+  sheet.replaceChildren(form);
+  if (!sheet.open) sheet.showModal();
+}
+
+/* ---------- phones and alerts ---------- */
 
 async function openPersonSheet(view) {
   const sheet = document.getElementById("sheet");
@@ -1226,7 +1443,7 @@ async function openPersonSheet(view) {
   });
   const phones = ha.phones.length ? el("div", { class: "checks" }, phoneBoxes)
     : notice(ha.connected
-      ? "No phones with the Home Assistant app were found. Install the Companion app and sign in, then come back."
+      ? "No phones with the Home Assistant app were found. Install the Companion app, sign in, then come back."
       : "Can't reach Home Assistant right now, so phones can't be listed.");
   const testBtn = el("button", { type: "button", class: "secondary small", onclick: async () => {
     try {
@@ -1236,12 +1453,12 @@ async function openPersonSheet(view) {
     } catch (e) { toast(e.message); }
   } }, "Send a test");
 
-  const group = switchField("Combine medications due at the same time", s.group_doses, "One reminder instead of several.");
-  const undo = switchField("Offer Undo after I answer", s.undo, "For a minute, in case of a mis-tap.");
-  const swipe = switchField("Let me swipe reminders away", s.swipe_away, "When off, reminders stay until you answer them.");
+  const group = switchField("Combine medications due at the same time", s.group_doses, "One notification instead of several.");
+  const undo = switchField("Show an Undo button after I answer", s.undo, "Stays for a minute, in case you tapped the wrong thing.");
+  const swipe = switchField("Let me swipe medication reminders away", s.swipe_away, "When this is off, they stay until you answer them.");
   const snooze = selectOf([5, 10, 15, 20, 30, 45, 60].map((n) => [n, `${n} minutes`]), s.snooze_minutes);
 
-  const quiet = switchField("Quiet hours", s.quiet.enabled, "No alarm sounds or speaker announcements. Reminders still arrive.");
+  const quiet = switchField("Quiet hours", s.quiet.enabled, "No alarm sounds or speaker announcements. Notifications still arrive.");
   const qStart = el("input", { type: "time", value: s.quiet.start, "aria-label": "Quiet hours start" });
   const qEnd = el("input", { type: "time", value: s.quiet.end, "aria-label": "Quiet hours end" });
   const quietPanel = el("div", { class: "subpanel inline-field" }, el("span", {}, "From"), qStart, el("span", {}, "to"), qEnd);
@@ -1256,10 +1473,10 @@ async function openPersonSheet(view) {
   });
   const voice = selectOf([["", "Choose a voice"], ...ha.voices.map((v) => [v.entity_id, v.name])], s.tts_entity);
   const onlyHome = switchField("Only when I'm home", s.announce_only_home,
-    ha.people.some((p) => p.is_you) ? "Uses your Home Assistant person." : "Needs a Home Assistant person linked to your user.");
+    ha.people.some((p) => p.is_you) ? "Uses your Home Assistant person to tell if you're home." : "Needs a Home Assistant person linked to your user.");
   const speakerDetails = el("details", { class: "more", open: !!s.speakers.length },
     el("summary", {}, "Speaker announcements"),
-    el("p", { class: "hint" }, "Used when a medication is set to announce. Pick where and which voice."),
+    el("p", { class: "hint" }, "Used when a medication reminder is set to be announced."),
     speakerBoxes.length ? el("div", { class: "checks" }, speakerBoxes) : notice("No speakers found."),
     field("Voice", voice), onlyHome.node);
 
@@ -1274,23 +1491,22 @@ async function openPersonSheet(view) {
       speakers: speakerBoxes.map((l) => l.querySelector("input")).filter((b) => b.checked).map((b) => b.value),
       tts_entity: voice.value || null,
       announce_only_home: onlyHome.input.checked,
-      person_entity: s.person_entity,
     };
     await api("PUT", "api/reminders/settings", payload);
     if (close) {
       sheet.close();
-      toast("Reminder settings saved");
+      toast("Phones and alerts saved");
       if (currentTab() === "settings") await renderSettings(view);
     }
   }
 
   const form = el("form", { method: "dialog" },
-    el("h2", {}, "Reminder settings"),
+    el("h2", {}, "Phones and alerts"),
     err,
-    field("Send reminders to", el("div", {}, phones, ha.phones.length ? testBtn : null),
-      "Answering on one phone clears the reminder on the others."),
+    field("Send notifications to", el("div", {}, phones, ha.phones.length ? testBtn : null),
+      "Answering on one phone clears it from the others."),
     group.node, undo.node, swipe.node,
-    field("Snooze for", snooze),
+    field("Snooze length", snooze),
     quiet.node, quietPanel,
     speakerDetails,
     el("div", { class: "actions" },

@@ -87,6 +87,7 @@ def build_router(current_user) -> APIRouter:
         logged = [e for e in result["saved"] if e["tracker_id"] in meds]
         if logged:
             await request.app.state.engine.medication_logged(user["id"], logged)
+        await request.app.state.engine.checkin_logged(user["id"])
         return result
 
     # ----- reminders -----
@@ -126,6 +127,10 @@ def build_router(current_user) -> APIRouter:
     async def doses_today(user: dict = Depends(current_user), e=Depends(engine)) -> list[dict]:
         await e.tick()
         return e.doses_today(user["id"])
+
+    @router.get("/checkins/next")
+    def next_checkin(user: dict = Depends(current_user), e=Depends(engine)) -> dict:
+        return {"time": e.next_checkin(user["id"])}
 
     @router.post("/doses/{dose_id}")
     async def answer_dose(

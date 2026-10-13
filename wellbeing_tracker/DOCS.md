@@ -10,7 +10,7 @@ Open **Wellbeing** in the Home Assistant sidebar (or the Companion app menu). Ea
 
 Reminders are off until you switch them on for a medication.
 
-1. **Settings → Reminder settings → Change**: tick the phones that should get your reminders (any phone signed in to the Home Assistant Companion app) and tap **Send a test**.
+1. **Settings → Notifications → Phones and alerts → Change**: tick the phones that should get your reminders (any phone signed in to the Home Assistant Companion app) and tap **Send a test**.
 2. **Settings → Medications**: tap the bell next to a medication, turn on **Remind me**, and pick the times and days.
 
 Each reminder has **Taken**, **Snooze** and **Skip** buttons. Answering on one phone clears it on the others. You can also answer from the **Due now** card on the Check-in screen, by logging the medication there, or by switching on a linked Home Assistant toggle. Logging a dose shortly before its time means the reminder never goes off.
@@ -21,31 +21,37 @@ In a medication's reminders, choose **When → After another dose** to time it f
 
 - **7** hours after I take **Vyvanse**
 - **3** hours after I take **Dex (this one)**
-- At most **2** reminders a day
+- Stop after **2** reminders a day
 
 Taking Vyvanse at 7:04 schedules Dex for 2:04. Taking that Dex at 2:10 schedules the next one for 5:10, and the chain stops at the daily limit or the latest time. It counts however you record a dose: the Taken button, the Check-in screen, or a linked toggle. Undoing the earlier dose removes the follow-up.
 
 ### Optional extras, per medication
 
-- **Until I answer**: once only, gently (every 30 minutes), firmly (every 10 minutes) or your own pattern.
-- **Latest time**: after it, nagging stops and you get one "skip today, or take it anyway?" question.
-- **Make it hard to miss**: from the reminder number you choose, ring like an alarm (through Do Not Disturb) and/or announce it on speakers.
-- **Home Assistant link**: keep an `input_boolean` in sync with "taken", set an `input_datetime` to the time taken, and choose how early a logged dose still counts.
+- **If I don't answer**: don't remind me again, remind me gently (every 30 minutes), firmly (every 10 minutes), or choose my own.
+- **Set a latest time**: after it, reminders stop and you get one "skip today, or take it anyway?" question.
+- **Get louder if I don't answer**: from the reminder you choose, ring like an alarm (through Do Not Disturb) and/or announce it on speakers.
+- **Already taken it before the reminder?**: how early a logged dose still counts.
+- **Link to Home Assistant**: keep an `input_boolean` in sync with "taken", and set an `input_datetime` to the time taken.
 
-### Optional extras, per person
+### Phones and alerts (per person)
 
 Combine medications due at the same time into one reminder, offer **Undo** for a minute after answering, allow swiping reminders away, snooze length, quiet hours (no alarm sounds or announcements), and which speakers and voice to use for announcements, optionally only when you're home.
 
-### Using reminders in your own automations
+## Check-in reminders
+
+**Settings → Notifications → Check-in reminders** sends a nudge to fill in your check-in at the times and days you choose. The notification can either have quick mood answers (**Good**, **Okay**, **Bad**, which log your mood straight away) or **Snooze** and **Not now**. Saving a check-in in the app clears it, and you can skip the reminder if you checked in recently. Unanswered check-in reminders remove themselves after the time you choose.
+
+## Using reminders in your own automations
 
 Every step fires a Home Assistant event, `wellbeing_tracker_reminder`, with:
 
 | Field | Example |
 | --- | --- |
-| `stage` | `sent`, `repeated`, `escalated`, `last_call`, `snoozed`, `taken`, `skipped`, `undone`, `missed` |
+| `type` | `medication` or `checkin` |
+| `stage` | `sent`, `repeated`, `escalated`, `last_call`, `snoozed`, `taken`, `skipped`, `undone`, `missed`; for check-ins also `checked_in` and `expired` |
 | `person` | `Matthew Poppell` |
 | `user_id` | the Home Assistant user id |
-| `medications` | `["Vyvanse"]` |
+| `medications` | `["Vyvanse"]` (empty for check-ins) |
 | `due` | `07:00` |
 | `reminder_id` | `12` |
 

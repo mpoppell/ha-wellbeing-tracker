@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+- **Check-in reminders.** Settings → Notifications → Check-in reminders: choose times and days, answer your mood straight from the notification (Good, Okay, Bad) or use Snooze and Not now, skip the reminder if you've checked in recently, and let unanswered ones tidy themselves away.
+- **Search for icons.** Choosing an icon for a medication or tracker now opens a searchable emoji picker with suggestions, instead of a text box.
+- **Clearer wording throughout.** Settings now groups **Phones and alerts** and **Check-in reminders** under **Notifications**, reminders are summarised in plain words ("Reminds you at 7am, every day"), and labels in the reminder editors say what they do ("If I don't answer", "Get louder if I don't answer", "Set a latest time").
+- Saving one group of settings no longer resets the others.
+- Home Assistant events now include a `type` (`medication` or `checkin`).
+
 ## 0.3.1
 
 - **Time a medication from another dose.** In a medication's reminders, choose **After another dose**, for example "7 hours after I take Vyvanse" and "3 hours after I take Dex", with a daily limit. Reminders are timed from when you actually take the earlier dose, and the notification says what it was timed from.

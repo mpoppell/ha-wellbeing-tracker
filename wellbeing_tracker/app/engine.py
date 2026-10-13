@@ -91,7 +91,17 @@ class Engine:
         return person_settings(json.loads(row["settings"]) if row else None)
 
     def save_person(self, user_id: str, data: dict) -> dict:
-        clean = normalise_person_settings(data)
+        """Save person settings. Anything not included keeps its current value."""
+        current = self.get_person(user_id)
+        merged = {**current, **data}
+        if isinstance(data.get("checkins"), dict):
+            merged["checkins"] = {**current["checkins"], **data["checkins"]}
+        clean = normalise_person_settings(merged)
+        clean["checkins_from"] = current.get("checkins_from")
+        if clean["checkins"] != current["checkins"] or (clean["checkins"]["enabled"] and not clean["checkins_from"]):
+            clean["checkins_from"] = iso(self.clock())
+            with self.db.connect() as conn:
+                conn.execute("DELETE FROM checkins WHERE user_id = ? AND status = 'scheduled'", (user_id,))
         with self.db.connect() as conn:
             conn.execute(
                 "INSERT INTO person_settings (user_id, settings) VALUES (?, ?) "
@@ -175,6 +185,9 @@ class Engine:
                 self._activate(conn, now, out)
                 self._last_calls(conn, now, out)
                 self._expire(conn, now, out)
+                self._generate_checkins(conn, now)
+                self._activate_checkins(conn, now, out)
+                self._expire_checkins(conn, now, out)
             await self._flush(out)
             await self._send_due(now)
 
@@ -433,6 +446,9 @@ class Engine:
 
     def _send_one(self, conn, rid: int, now: datetime, out: Outbox) -> None:
         r = conn.execute("SELECT * FROM reminders WHERE id = ?", (rid,)).fetchone()
+        if r["kind"] == "checkin":
+            self._send_checkin(conn, r, now, out)
+            return
         doses = self._due_doses(conn, rid)
         if not doses:
             self._close(conn, r, now, out)
@@ -624,6 +640,8 @@ class Engine:
                     self._undo(conn, r, now, out)
                 elif r["status"] not in ("active", "snoozed"):
                     out.add("clear", r["user_id"], self._tag(rid))  # already handled elsewhere
+                elif r["kind"] == "checkin":
+                    self._answer_checkin(conn, r, verb, now, source, out)
                 elif verb == "SNOOZE" and r["kind"] == "dose":
                     person = self._person_for(conn, r["user_id"])
                     until = now + timedelta(minutes=person["snooze_minutes"])
@@ -696,6 +714,9 @@ class Engine:
     def _undo(self, conn, r, now: datetime, out: Outbox) -> None:
         out.add("clear", r["user_id"], f"wbt-undo-{r['id']}")
         if not r["answered_at"] or now - parse(r["answered_at"]) > UNDO_WINDOW:
+            return
+        if r["kind"] == "checkin":
+            self._undo_checkin(conn, r, now, out)
             return
         doses = conn.execute(
             "SELECT * FROM doses WHERE reminder_id = ? AND status IN ('taken', 'skipped') AND resolved_at >= ?",
@@ -854,6 +875,237 @@ class Engine:
                 })
             return out
 
+    # ================= check-in reminders =================
+
+    def _generate_checkins(self, conn, now: datetime) -> None:
+        today = self._local_today(now)
+        for row in conn.execute("SELECT user_id, settings FROM person_settings").fetchall():
+            p = person_settings(json.loads(row["settings"]))
+            c = p["checkins"]
+            if not c["enabled"] or not p["checkins_from"]:
+                continue
+            rule = {"days": c["days"], "times": c["times"], "latest_time": None}
+            for day in (today, today + timedelta(days=1)):
+                for hhmm, due, _ in due_times(rule, day, self.tz):
+                    if iso(due) < p["checkins_from"]:
+                        continue
+                    conn.execute(
+                        "INSERT OR IGNORE INTO checkins (user_id, due_at, local_day, local_time, status) "
+                        "VALUES (?, ?, ?, ?, 'scheduled')",
+                        (row["user_id"], iso(due), day.isoformat(), hhmm),
+                    )
+
+    def _activate_checkins(self, conn, now: datetime, out: Outbox) -> None:
+        today = self._local_today(now).isoformat()
+        rows = conn.execute(
+            "SELECT * FROM checkins WHERE status = 'scheduled' AND due_at <= ? ORDER BY due_at", (iso(now),)
+        ).fetchall()
+        for ck in rows:
+            c = self._person_for(conn, ck["user_id"])["checkins"]
+            if ck["local_day"] < today or not c["enabled"]:
+                self._end_checkin(conn, ck, "expired", now, "auto", out, quiet=True)
+                continue
+            if c["skip_if_recent"]:
+                since = iso(parse(ck["due_at"]) - timedelta(minutes=c["skip_if_recent"]))
+                recent = conn.execute(
+                    "SELECT 1 FROM entries WHERE user_id = ? AND source = 'app' AND created_at >= ? LIMIT 1",
+                    (ck["user_id"], since),
+                ).fetchone()
+                if recent:
+                    self._end_checkin(conn, ck, "done", now, "early", out, quiet=True)
+                    continue
+            # An earlier check-in still waiting gives way to this one.
+            for old in conn.execute(
+                "SELECT * FROM checkins WHERE user_id = ? AND status = 'due'", (ck["user_id"],)
+            ).fetchall():
+                self._end_checkin(conn, old, "expired", now, "auto", out)
+            cur = conn.execute(
+                "INSERT INTO reminders (user_id, kind, due_at, status, next_at, created_at, updated_at) "
+                "VALUES (?, 'checkin', ?, 'active', ?, ?, ?)",
+                (ck["user_id"], ck["due_at"], iso(now), iso(now), iso(now)),
+            )
+            conn.execute("UPDATE checkins SET status = 'due', reminder_id = ? WHERE id = ?", (cur.lastrowid, ck["id"]))
+
+    def _expire_checkins(self, conn, now: datetime, out: Outbox) -> None:
+        today = self._local_today(now).isoformat()
+        for ck in conn.execute("SELECT * FROM checkins WHERE status = 'due'").fetchall():
+            c = self._person_for(conn, ck["user_id"])["checkins"]
+            too_old = parse(ck["due_at"]) + timedelta(minutes=c["expire_after"]) <= now
+            if not c["enabled"] or ck["local_day"] < today or too_old:
+                self._end_checkin(conn, ck, "expired", now, "auto", out)
+
+    def _end_checkin(self, conn, ck, status: str, now: datetime, by: str, out: Outbox,
+                     quiet: bool = False, entry_id: int | None = None) -> None:
+        conn.execute(
+            "UPDATE checkins SET status = ?, resolved_at = ?, resolved_by = ?, entry_id = COALESCE(?, entry_id) "
+            "WHERE id = ?",
+            (status, iso(now), by, entry_id, ck["id"]),
+        )
+        if ck["reminder_id"]:
+            r = conn.execute("SELECT * FROM reminders WHERE id = ?", (ck["reminder_id"],)).fetchone()
+            if r and r["status"] in ("active", "snoozed"):
+                self._close(conn, r, now, out)
+        if not quiet:
+            stage = {"done": "checked_in", "skipped": "skipped", "expired": "expired"}[status]
+            out.add("event", ck["user_id"], ck["reminder_id"], stage,
+                    [{"name": "Check-in", "time": ck["local_time"]}], "checkin")
+
+    def _mood_tracker(self, conn, user_id: str):
+        row = conn.execute(
+            "SELECT * FROM trackers WHERE user_id = ? AND key = 'mood' AND kind = 'rating' AND hidden = 0",
+            (user_id,),
+        ).fetchone()
+        return dict(row, config=json.loads(row["config"])) if row else None
+
+    @staticmethod
+    def _mood_choices(mood: dict) -> list[tuple[int, str]]:
+        """Three quick answers that fit Android's three buttons: good, middle, bad."""
+        cfg = mood["config"]
+        lo, hi = cfg["min"], cfg["max"]
+        values = [hi - 1, round((lo + hi) / 2), lo + 1] if hi - lo >= 4 else [hi, round((lo + hi) / 2), lo]
+        labels = cfg.get("labels") or []
+        out = []
+        for v in dict.fromkeys(values):
+            out.append((v, labels[v - lo] if labels else str(v)))
+        return out
+
+    def _send_checkin(self, conn, r, now: datetime, out: Outbox) -> None:
+        ck = conn.execute("SELECT * FROM checkins WHERE reminder_id = ?", (r["id"],)).fetchone()
+        if not ck or ck["status"] != "due":
+            self._close(conn, r, now, out)
+            return
+        person = self._person_for(conn, r["user_id"])
+        c = person["checkins"]
+        sends = r["sends"] + 1
+        rid = r["id"]
+        mood = self._mood_tracker(conn, r["user_id"]) if c["buttons"] == "mood" else None
+        data = {
+            "tag": self._tag(rid),
+            "group": "wellbeing-checkins",
+            "channel": "Check-in reminders",
+            "importance": "default",
+            "notification_icon": "mdi:emoticon-happy-outline",
+            "color": "#2c5d86",
+        }
+        if self.panel_path:
+            data["clickAction"] = self.panel_path
+        if mood:
+            message = "How are you feeling? Tap an answer to log your mood, or open the app to fill in the rest."
+            data["actions"] = [{"action": f"{ACTION_PREFIX}MOOD_{v}_{rid}", "title": label}
+                               for v, label in self._mood_choices(mood)]
+        else:
+            message = "How are you feeling? Tap to fill in your check-in."
+            data["actions"] = [
+                {"action": f"{ACTION_PREFIX}SNOOZE_{rid}", "title": f"Snooze {person['snooze_minutes']} min"},
+                {"action": f"{ACTION_PREFIX}SKIP_{rid}", "title": "Not now"},
+            ]
+        title = "Time to check in" if sends == 1 else "Reminder: time to check in"
+        out.add("notify", r["user_id"], {"title": title, "message": message, "data": data})
+        out.add("event", r["user_id"], rid, "sent" if sends == 1 else "repeated",
+                [{"name": "Check-in", "time": ck["local_time"]}], "checkin")
+        every, repeats = nag_params(c)
+        exhausted = every is None or (repeats is not None and sends - 1 >= repeats)
+        conn.execute(
+            "UPDATE reminders SET sends = ?, status = 'active', next_at = ?, updated_at = ? WHERE id = ?",
+            (sends, None if exhausted else iso(now + timedelta(minutes=every)), iso(now), rid),
+        )
+
+    def _answer_checkin(self, conn, r, verb: str, now: datetime, source: str, out: Outbox) -> None:
+        ck = conn.execute("SELECT * FROM checkins WHERE reminder_id = ?", (r["id"],)).fetchone()
+        if not ck or ck["status"] != "due":
+            out.add("clear", r["user_id"], self._tag(r["id"]))
+            return
+        person = self._person_for(conn, r["user_id"])
+        if verb == "SNOOZE":
+            until = now + timedelta(minutes=person["snooze_minutes"])
+            conn.execute(
+                "UPDATE reminders SET status = 'snoozed', next_at = ?, updated_at = ? WHERE id = ?",
+                (iso(until), iso(now), r["id"]),
+            )
+            out.add("clear", r["user_id"], self._tag(r["id"]))
+            out.add("event", r["user_id"], r["id"], "snoozed", [{"name": "Check-in", "time": ck["local_time"]}], "checkin")
+            return
+        conn.execute("UPDATE reminders SET answered_at = ? WHERE id = ?", (iso(now), r["id"]))
+        if verb == "SKIP":
+            self._end_checkin(conn, ck, "skipped", now, source, out)
+            return
+        if not verb.startswith("MOOD_"):
+            return
+        mood = self._mood_tracker(conn, r["user_id"])
+        try:
+            value = int(verb[len("MOOD_"):])
+        except ValueError:
+            return
+        if not mood or not mood["config"]["min"] <= value <= mood["config"]["max"]:
+            self._end_checkin(conn, ck, "done", now, source, out)
+            return
+        local = now.astimezone(self.tz)
+        cur = conn.execute(
+            """
+            INSERT INTO entries (user_id, tracker_id, day, logged_at, value_num, source, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 'notification', ?, ?)
+            """,
+            (r["user_id"], mood["id"], local.date().isoformat(), local.isoformat(timespec="seconds"),
+             value, iso(now), iso(now)),
+        )
+        self._end_checkin(conn, ck, "done", now, source, out, entry_id=cur.lastrowid)
+        if person["undo"]:
+            labels = mood["config"].get("labels") or []
+            label = labels[value - mood["config"]["min"]] if labels else str(value)
+            out.add("notify", r["user_id"], {
+                "title": f"Mood logged: {label}",
+                "message": "Open the app to add more, or tap Undo if that was a mistake.",
+                "data": {
+                    "tag": f"wbt-undo-{r['id']}",
+                    "group": "wellbeing-checkins",
+                    "channel": "Check-in reminders",
+                    "importance": "low",
+                    "timeout": 60,
+                    "notification_icon": "mdi:check",
+                    **({"clickAction": self.panel_path} if self.panel_path else {}),
+                    "actions": [{"action": f"{ACTION_PREFIX}UNDO_{r['id']}", "title": "Undo"}],
+                },
+            })
+
+    def _undo_checkin(self, conn, r, now: datetime, out: Outbox) -> None:
+        ck = conn.execute("SELECT * FROM checkins WHERE reminder_id = ?", (r["id"],)).fetchone()
+        if not ck or ck["status"] not in ("done", "skipped") or ck["resolved_by"] != "notification":
+            return
+        if ck["entry_id"]:
+            conn.execute("DELETE FROM entries WHERE id = ?", (ck["entry_id"],))
+        conn.execute(
+            "UPDATE checkins SET status = 'due', entry_id = NULL, resolved_at = NULL, resolved_by = NULL WHERE id = ?",
+            (ck["id"],),
+        )
+        conn.execute(
+            "UPDATE reminders SET status = 'active', next_at = ?, answered_at = NULL, updated_at = ? WHERE id = ?",
+            (iso(now), iso(now), r["id"]),
+        )
+        out.add("event", r["user_id"], r["id"], "undone", [{"name": "Check-in", "time": ck["local_time"]}], "checkin")
+
+    async def checkin_logged(self, user_id: str) -> None:
+        """Something was saved on the Check-in screen: that answers any check-in reminder waiting."""
+        async with self.lock:
+            now = self.clock()
+            out = Outbox()
+            with self.db.connect() as conn:
+                for ck in conn.execute(
+                    "SELECT * FROM checkins WHERE user_id = ? AND status = 'due'", (user_id,)
+                ).fetchall():
+                    self._end_checkin(conn, ck, "done", now, "app", out)
+            await self._flush(out)
+
+    def next_checkin(self, user_id: str) -> str | None:
+        """Local time of the next check-in reminder today, for the app."""
+        now = self.clock()
+        with self.db.connect() as conn:
+            row = conn.execute(
+                "SELECT local_time FROM checkins WHERE user_id = ? AND status = 'scheduled' AND local_day = ? "
+                "ORDER BY due_at LIMIT 1",
+                (user_id, self._local_today(now).isoformat()),
+            ).fetchone()
+        return row["local_time"] if row else None
+
     # ================= Home Assistant side effects =================
 
     async def _flush(self, out: Outbox) -> None:
@@ -865,7 +1117,7 @@ class Engine:
                 elif kind == "clear":
                     await self._notify(call[1], {"message": "clear_notification", "data": {"tag": call[2]}})
                 elif kind == "event":
-                    await self._fire(call[1], call[2], call[3], call[4])
+                    await self._fire(call[1], call[2], call[3], call[4], call[5] if len(call) > 5 else "medication")
                 elif kind == "toggle":
                     self._toggle_echo[call[1]] = self.clock()
                     await self.ha.call_service("input_boolean", "turn_on" if call[2] else "turn_off",
@@ -883,15 +1135,17 @@ class Engine:
         for service in person["devices"]:
             await self.ha.call_service("notify", service, payload)
 
-    async def _fire(self, user_id: str, rid: int | None, stage: str, infos: list[dict]) -> None:
+    async def _fire(self, user_id: str, rid: int | None, stage: str, infos: list[dict],
+                    kind: str = "medication") -> None:
         with self.db.connect() as conn:
             u = conn.execute("SELECT display_name, username FROM users WHERE id = ?", (user_id,)).fetchone()
         await self.ha.fire_event(EVENT_TYPE, {
+            "type": kind,
             "user_id": user_id,
             "person": (u["display_name"] or u["username"]) if u else None,
             "reminder_id": rid,
             "stage": stage,
-            "medications": [i["name"] for i in infos],
+            "medications": [i["name"] for i in infos] if kind == "medication" else [],
             "due": infos[0]["time"] if infos else None,
         })
 

@@ -39,6 +39,19 @@ PERSON_DEFAULTS = {
     "tts_entity": None,         # e.g. tts.home_assistant_cloud
     "announce_only_home": True,
     "person_entity": None,      # None = find the person linked to this HA user
+    # Reminders to fill in a check-in (mood, symptoms and so on).
+    "checkins": {
+        "enabled": False,
+        "times": ["09:00", "20:00"],
+        "days": {"mode": "daily", "weekdays": [0, 1, 2, 3, 4, 5, 6], "every": 2, "start": None},
+        "nag": "once",          # once | gently | firmly | custom, as for medications
+        "nag_every": 30,
+        "nag_repeats": 1,
+        "buttons": "mood",      # mood: Good / Okay / Bad log your mood | snooze: Snooze / Not now
+        "skip_if_recent": 60,   # no reminder if you checked in within this many minutes
+        "expire_after": 180,    # take the reminder away after this many minutes
+    },
+    "checkins_from": None,      # set by the app when check-in times change
 }
 
 SCHEDULE_DEFAULTS = {
@@ -120,11 +133,91 @@ def normalise_person_settings(data: dict) -> dict:
     s["speakers"] = [_entity(x, "media_player", "Speaker") for x in speakers if x]
     s["tts_entity"] = _entity(s["tts_entity"], "tts", "Voice")
     s["person_entity"] = _entity(s["person_entity"], "person", "Person")
+    s["checkins"] = normalise_checkins(s["checkins"])
     return s
 
 
 def schedule_settings(saved: dict | None) -> dict:
     return _merge(SCHEDULE_DEFAULTS, saved)
+
+
+def _days(d) -> dict:
+    if not isinstance(d, dict):
+        raise ValidationError("Choose which days")
+    mode = d.get("mode")
+    if mode not in ("daily", "weekdays", "interval"):
+        raise ValidationError("Choose which days")
+    weekdays = d.get("weekdays") or []
+    if mode == "weekdays":
+        if not weekdays or not all(isinstance(w, int) and 0 <= w <= 6 for w in weekdays):
+            raise ValidationError("Choose at least one day")
+    every = d.get("every") or 2
+    start = d.get("start")
+    if mode == "interval":
+        try:
+            every = int(every)
+        except (TypeError, ValueError):
+            raise ValidationError("Every how many days?") from None
+        if not 2 <= every <= 60:
+            raise ValidationError("Every 2–60 days")
+        try:
+            start = date.fromisoformat(start).isoformat()
+        except (TypeError, ValueError):
+            raise ValidationError("Choose the first day") from None
+    return {
+        "mode": mode,
+        "weekdays": sorted(set(weekdays)) if weekdays else [0, 1, 2, 3, 4, 5, 6],
+        "every": int(every),
+        "start": start,
+    }
+
+
+def _times(times) -> list[str]:
+    if not isinstance(times, list) or not times:
+        raise ValidationError("Add at least one time")
+    out = sorted(set(_time(t, "Reminder time") for t in times))
+    if len(out) > 12:
+        raise ValidationError("Up to 12 times a day")
+    return out
+
+
+def _nag(s: dict) -> None:
+    if s["nag"] not in ("once", "gently", "firmly", "custom"):
+        raise ValidationError("Choose what happens if you don't answer")
+    try:
+        s["nag_every"] = int(s["nag_every"])
+    except (TypeError, ValueError):
+        raise ValidationError("Remind again every how many minutes?") from None
+    if not 1 <= s["nag_every"] <= 240:
+        raise ValidationError("Remind again every 1–240 minutes")
+    if s["nag_repeats"] not in (None, ""):
+        try:
+            s["nag_repeats"] = int(s["nag_repeats"])
+        except (TypeError, ValueError):
+            raise ValidationError("How many more times?") from None
+        if not 0 <= s["nag_repeats"] <= 50:
+            raise ValidationError("Up to 50 more times")
+    else:
+        s["nag_repeats"] = None
+
+
+def normalise_checkins(data: dict | None) -> dict:
+    s = {**PERSON_DEFAULTS["checkins"], **(data or {})}
+    s["enabled"] = bool(s["enabled"])
+    s["times"] = _times(s["times"])
+    s["days"] = _days({**PERSON_DEFAULTS["checkins"]["days"], **(s["days"] or {})})
+    _nag(s)
+    if s["buttons"] not in ("mood", "snooze"):
+        raise ValidationError("Choose which buttons to show")
+    for key, lo, hi, label in (("skip_if_recent", 0, 720, "Skip if checked in within"),
+                               ("expire_after", 15, 1440, "Remove the reminder after")):
+        try:
+            s[key] = int(s[key])
+        except (TypeError, ValueError):
+            raise ValidationError(f"{label}: choose a number of minutes") from None
+        if not lo <= s[key] <= hi:
+            raise ValidationError(f"{label}: {lo}–{hi} minutes")
+    return {k: s[k] for k in PERSON_DEFAULTS["checkins"]}
 
 
 def normalise_schedule(data: dict) -> dict:
@@ -133,11 +226,7 @@ def normalise_schedule(data: dict) -> dict:
         raise ValidationError("Choose set times or after another dose")
     times = s["times"]
     if s["mode"] == "times":
-        if not isinstance(times, list) or not times:
-            raise ValidationError("Add at least one time")
-        s["times"] = sorted(set(_time(t, "Reminder time") for t in times))
-        if len(s["times"]) > 12:
-            raise ValidationError("Up to 12 times a day")
+        s["times"] = _times(times)
     elif not isinstance(times, list) or not all(isinstance(t, str) and TIME_RE.match(t) for t in times):
         s["times"] = list(SCHEDULE_DEFAULTS["times"])
 
@@ -173,49 +262,9 @@ def normalise_schedule(data: dict) -> dict:
     else:
         s["max_per_day"] = None
 
-    d = s["days"]
-    mode = d.get("mode")
-    if mode not in ("daily", "weekdays", "interval"):
-        raise ValidationError("Choose which days")
-    weekdays = d.get("weekdays") or []
-    if mode == "weekdays":
-        if not weekdays or not all(isinstance(w, int) and 0 <= w <= 6 for w in weekdays):
-            raise ValidationError("Choose at least one day")
-    every = d.get("every") or 2
-    start = d.get("start")
-    if mode == "interval":
-        try:
-            every = int(every)
-        except (TypeError, ValueError):
-            raise ValidationError("Every how many days?") from None
-        if not 2 <= every <= 60:
-            raise ValidationError("Every 2–60 days")
-        try:
-            start = date.fromisoformat(start).isoformat()
-        except (TypeError, ValueError):
-            raise ValidationError("Choose the first day") from None
-    s["days"] = {
-        "mode": mode,
-        "weekdays": sorted(set(weekdays)) if weekdays else [0, 1, 2, 3, 4, 5, 6],
-        "every": int(every),
-        "start": start,
-    }
+    s["days"] = _days(s["days"])
 
-    if s["nag"] not in ("once", "gently", "firmly", "custom"):
-        raise ValidationError("Choose how often to remind")
-    try:
-        s["nag_every"] = int(s["nag_every"])
-    except (TypeError, ValueError):
-        raise ValidationError("Repeat every how many minutes?") from None
-    if not 1 <= s["nag_every"] <= 240:
-        raise ValidationError("Repeat every 1–240 minutes")
-    if s["nag_repeats"] is not None:
-        try:
-            s["nag_repeats"] = int(s["nag_repeats"])
-        except (TypeError, ValueError):
-            raise ValidationError("How many repeats?") from None
-        if not 0 <= s["nag_repeats"] <= 50:
-            raise ValidationError("Up to 50 repeats")
+    _nag(s)
 
     for key in ("hard_to_miss", "alarm_sound", "announce"):
         s[key] = bool(s[key])
