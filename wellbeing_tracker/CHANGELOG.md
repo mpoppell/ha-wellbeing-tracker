@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- Updates now download a ready-made image instead of building on your Home Assistant machine, so they install in seconds.
+- New icon and logo in the app store.
+
 ## 0.2.0
 
 - **Check-in screen:** answer everything in one place: mood, emotions, energy, symptoms, medications, sleep, lifestyle factors and a journal note. Unsaved answers are marked with a dot and saved together.
