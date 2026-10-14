@@ -149,6 +149,10 @@ function dayLabel(day) {
   return dayToDate(day).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
 }
 
+function shortDate(day) {
+  return dayToDate(day).toLocaleDateString(undefined, { day: "numeric", month: "short", year: day.slice(0, 4) === String(new Date().getFullYear()) ? undefined : "numeric" });
+}
+
 function longDate(day) {
   return dayToDate(day).toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
 }
@@ -295,13 +299,15 @@ function updateSaveBar() { /* no save bar */ }
 async function loadDay() {
   const isToday = state.day === isoDay(new Date());
   const prev = addDays(state.day, -1);
-  const [entries, prevEntries, doses, person, all] = await Promise.all([
+  const [entries, prevEntries, doses, person, all, supply] = await Promise.all([
     api("GET", `api/entries?from=${state.day}&to=${state.day}`),
     api("GET", `api/entries?from=${prev}&to=${prev}`).catch(() => []),
     isToday ? api("GET", "api/doses/today").catch(() => []) : Promise.resolve([]),
     api("GET", "api/reminders/settings").catch(() => state.person),
     api("GET", "api/trackers?include_hidden=true"),
+    api("GET", "api/supply").catch(() => []),
   ]);
+  state.supply = new Map(supply.map((x) => [x.tracker_id, x]));
   state.dayEntries = entries;
   state.prevEntries = prevEntries;
   state.doses = doses;
@@ -962,7 +968,8 @@ function medRow(t, view) {
   const strength = strengthText(t);
   const title = el("div", { class: "brow-text" },
     el("div", { class: "med-title" },
-      el("span", { class: "brow-name" }, t.emoji ? el("span", { class: "emoji", "aria-hidden": "true" }, t.emoji) : null, t.name),
+      el("button", { type: "button", class: "brow-name name-btn", title: "Details and supply", onclick: () => openMedSheet(t) },
+        t.emoji ? el("span", { class: "emoji", "aria-hidden": "true" }, t.emoji) : null, t.name),
       strength ? el("span", { class: "med-strength" }, ` (${strength})`) : null,
       el("button", { type: "button", class: "iconbtn plain med-bell", "aria-label": `Reminders for ${t.name}`, title: "Reminders",
         onclick: () => openScheduleSheet(t, view) }, svgIcon(ICONS.bell))),
@@ -979,7 +986,8 @@ function medRow(t, view) {
               d.status === "taken" ? el("span", { class: "plan-mark", "aria-label": "taken" }, " ✓")
                 : el("span", { class: "plan-mark" }, ` (${d.status})`));
           }))
-      : el("div", { class: "row-sub" }, usualText(t)));
+      : el("div", { class: "row-sub" }, usualText(t)),
+    supplyCallout(t));
   if (!taken.length) {
     return el("div", { class: "med-row" }, el("div", { class: "brow-main" }, title, add));
   }
@@ -989,6 +997,190 @@ function medRow(t, view) {
       el("div", { class: "med-total", "aria-label": "Total today" },
         el("strong", {}, qtyText(t, totalQty)),
         totalStrength ? el("span", {}, `${fmtNum(totalStrength)}${c.unit || ""}`) : null)));
+}
+
+/* ---------- supply and refills ---------- */
+
+// The one thing that most needs doing, or nothing.
+function supplyCallout(t) {
+  const sup = state.supply && state.supply.get(t.id);
+  const alert = sup && sup.status && sup.status.alerts[0];
+  if (!alert) return null;
+  const more = sup.status.alerts.length - 1;
+  return el("button", { type: "button", class: `callout ${alert.level}`, onclick: () => openMedSheet(t) },
+    alert.text, more ? el("span", { class: "callout-more" }, ` · ${more} more`) : null);
+}
+
+const plainNum = (n) => fmtNum(n);
+
+function supplyLine(st) {
+  const parts = [`${plainNum(st.stock)} ${st.word} left`];
+  if (st.runs_out_text) parts.push(`runs out around ${st.runs_out_text}`);
+  return parts.join(" · ");
+}
+
+async function openMedSheet(t) {
+  const sheet = document.getElementById("sheet");
+  let sup;
+  try { sup = await api("GET", `api/trackers/${t.id}/supply`); } catch (err) { toast(err.message); return; }
+  const strength = strengthText(t);
+  const head = el("div", { class: "med-sheet-head" },
+    el("h2", {}, t.name, strength ? el("span", { class: "med-strength" }, ` ${strength}`) : null),
+    el("button", { type: "button", class: "iconbtn plain", "aria-label": "Close", onclick: () => sheet.close() }, svgIcon(ICONS.close)));
+  const s = sup.settings;
+  const st = sup.status;
+  let body;
+  if (!s.enabled) {
+    body = [
+      el("p", { class: "row-sub" }, "Keep count of how many you have, and get a heads-up before you run out or need a new script."),
+      el("div", { class: "actions" },
+        el("button", { type: "button", class: "primary", onclick: () => openSupplyEditor(t, sup) }, "Track supply"),
+        el("button", { type: "button", class: "link", onclick: () => openScheduleSheet(t, viewEl()) }, "Reminders")),
+    ];
+  } else {
+    const full = Math.max(s.pack || 0, st.stock, 1);
+    const days = st.days_left;
+    const lines = [];
+    // "About 6 days left" is already the headline, so only the other warnings are listed.
+    for (const a of st.alerts) if (a.kind !== "low") lines.push(el("li", { class: `callout ${a.level}` }, a.text));
+    if (st.refill_from_text && st.alerts.some((a) => a.kind === "low")) lines.push(el("li", {}, `Refill from ${st.refill_from_text}`));
+    if (st.refill_from_text && !st.alerts.some((a) => a.kind === "low")) lines.push(el("li", {}, `Refill from ${st.refill_from_text}`));
+    if (st.repeats != null && st.repeats > 0) lines.push(el("li", {}, st.repeats === 1 ? "1 repeat left" : `${st.repeats} repeats left`));
+    const perDay = st.per_day ? `${plainNum(st.per_day)} ${plural(t.config.counted_as || "dose", st.per_day > 1 ? 2 : 1)} a day` : null;
+    body = [
+      el("div", { class: "supply-big" }, days != null ? (days === 1 ? "About 1 day left" : `About ${days} days left`) : `${plainNum(st.stock)} ${st.word} left`),
+      el("div", { class: "supply-bar", role: "img", "aria-label": `${plainNum(st.stock)} of ${plainNum(full)}` },
+        el("span", { class: st.alerts.length ? st.alerts[0].level : "", style: `width:${Math.min(100, Math.round((st.stock / full) * 100))}%` })),
+      el("p", { class: "row-sub supply-line" }, days != null ? supplyLine(st) : "Add how many you take a day to see when you'll run out."),
+      lines.length ? el("ul", { class: "supply-lines" }, lines) : null,
+      el("div", { class: "supply-actions" },
+        el("button", { type: "button", class: "secondary small", onclick: () => openRefillSheet(t, sup) }, svgIcon(ICONS.plus), "Refill"),
+        el("button", { type: "button", class: "link", onclick: () => openSupplyEditor(t, sup) }, "Edit")),
+      el("details", { class: "more" },
+        el("summary", {}, "Prescription details"),
+        el("dl", { class: "facts" },
+          perDay ? [el("dt", {}, "Prescribed"), el("dd", {}, perDay)] : null,
+          s.pack ? [el("dt", {}, "Usual refill"), el("dd", {}, `${plainNum(s.pack)} ${plural(t.config.counted_as || "dose", s.pack)}`)] : null,
+          s.last_refill ? [el("dt", {}, "Last refill"), el("dd", {}, shortDate(s.last_refill))] : null,
+          s.refill_gap ? [el("dt", {}, "Early supply"), el("dd", {}, `${s.refill_gap} days between refills`)] : null,
+          st.repeats != null ? [el("dt", {}, "Repeats left"), el("dd", {}, String(st.repeats))] : null,
+          st.expires_text ? [el("dt", {}, "Script valid to"), el("dd", {}, st.expires_text)] : null)),
+    ];
+  }
+  sheet.replaceChildren(el("div", { class: "sheet-body med-sheet" }, head, body));
+  if (!sheet.open) sheet.showModal();
+}
+
+function openRefillSheet(t, sup) {
+  const sheet = document.getElementById("sheet");
+  const s = sup.settings;
+  const word = t.config.counted_as || "dose";
+  const qty = el("input", { type: "number", min: "1", step: "any", inputmode: "decimal", value: s.pack ?? "", required: true, style: "width:7em" });
+  const day = el("input", { type: "date", value: isoDay(new Date()), max: isoDay(new Date()) });
+  const tracked = s.repeats != null;
+  const repeat = switchField("Used a repeat", tracked && s.repeats > 0,
+    tracked ? (s.repeats > 0 ? `${s.repeats} left before this one` : "None left on this script") : null);
+  const newScript = switchField("New script", tracked && s.repeats === 0);
+  const repeats = el("input", { type: "number", min: "0", max: "99", step: "1", inputmode: "numeric", style: "width:5em" });
+  const expires = el("input", { type: "date" });
+  const scriptPanel = el("div", { class: "subpanel" },
+    el("div", { class: "field-pair" }, field("Repeats", repeats), field("Valid until", expires)));
+  const drawScript = () => {
+    scriptPanel.hidden = !newScript.input.checked;
+    repeat.node.hidden = !tracked || newScript.input.checked;
+  };
+  newScript.input.addEventListener("change", drawScript);
+  drawScript();
+  const go = el("button", { type: "submit", class: "primary" });
+  const drawGo = () => { const n = Number(qty.value) || 0; go.textContent = n ? `Add ${fmtNum(n)} ${plural(word, n)}` : "Add"; };
+  qty.addEventListener("input", drawGo);
+  drawGo();
+  const err = el("p", { class: "form-error", hidden: true });
+  const form = el("form", { method: "dialog", class: "even-pairs" },
+    el("h2", {}, `Refill ${t.name}`), err,
+    el("div", { class: "field-pair" }, field("How many", qty), field("Collected", day)),
+    repeat.node, newScript.node, scriptPanel,
+    el("div", { class: "actions" }, go, el("button", { type: "button", class: "link", onclick: () => openMedSheet(t) }, "Cancel")));
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const body = { quantity: Number(qty.value), day: day.value || null, used_repeat: repeat.input.checked && !newScript.input.checked };
+    if (newScript.input.checked) body.new_script = { repeats: repeats.value === "" ? null : Number(repeats.value), expires: expires.value || null };
+    try {
+      const r = await api("POST", `api/trackers/${t.id}/supply/refill`, body);
+      sheet.close();
+      await redraw();
+      toast(`Now ${fmtNum(r.status.stock)} ${r.status.word}`, "Undo", async () => {
+        await api("PUT", `api/trackers/${t.id}/supply`, r.previous);
+        await redraw();
+        toast("Refill undone");
+      });
+    } catch (e) { err.textContent = e.message; err.hidden = false; }
+  });
+  sheet.replaceChildren(form);
+  if (!sheet.open) sheet.showModal();
+  qty.focus();
+}
+
+function openSupplyEditor(t, sup) {
+  const sheet = document.getElementById("sheet");
+  const s = sup.settings;
+  const st = sup.status;
+  const word = plural(t.config.counted_as || "dose", 2);
+  const num = (value, attrs = {}) => el("input", { type: "number", min: "0", step: "any", inputmode: "decimal", value: value ?? "", style: "width:6em", ...attrs });
+  const enabled = switchField("Track supply", s.enabled || !s.count_at);
+  const count = num(st ? st.stock : "", { required: true });
+  const guess = sup.guess && sup.guess.per_day;
+  const perDay = num(s.per_day ?? guess ?? "");
+  const pack = num(s.pack);
+  const lastRefill = el("input", { type: "date", value: s.last_refill || "", max: isoDay(new Date()) });
+  const gap = num(s.refill_gap, { step: "1", placeholder: "None" });
+  const repeats = num(s.repeats, { step: "1", placeholder: "Not tracked" });
+  const expires = el("input", { type: "date", value: s.expires || "" });
+  const warn = (key, label) => {
+    const input = num(s[key], { step: "1", style: "width:4.5em", "aria-label": `Days before ${label}` });
+    return { key, input, node: el("label", { class: "warn-row" }, input, el("span", {}, `days before ${label}`)) };
+  };
+  const warns = [warn("warn_low", "I run out"), warn("warn_script", "I need a new script"), warn("warn_expiry", "the script ends")];
+  const unit = (input, text) => el("div", { class: "inline-field" }, input, el("span", {}, text));
+  const body = el("div", {},
+    field("How many do you have now?", unit(count, word)),
+    field("Prescribed per day", unit(perDay, `${word} a day`),
+      s.per_day == null && guess ? `Worked out from your ${sup.guess.source === "reminders" ? "reminders" : "recent doses"}. Change it if your script says otherwise.` : null),
+    field("Usual refill", unit(pack, word)),
+    el("details", { class: "more", open: !!(s.repeats != null || s.expires || s.refill_gap) },
+      el("summary", {}, "Prescription"),
+      el("div", { class: "field-pair" }, field("Repeats", repeats), field("Valid to", expires)),
+      el("div", { class: "field-pair" }, field("Last refill", lastRefill), field("Early supply", unit(gap, "days"))),
+      el("p", { class: "hint" }, "The early supply rule is the shortest time allowed between refills.")),
+    el("div", { class: "field" }, el("span", {}, "Warn me"), warns.map((w) => w.node)));
+  const drawEnabled = () => body.classList.toggle("dimmed", !enabled.input.checked);
+  enabled.input.addEventListener("change", drawEnabled);
+  drawEnabled();
+  const err = el("p", { class: "form-error", hidden: true });
+  const form = el("form", { method: "dialog", class: "even-pairs" },
+    el("h2", {}, `${t.name} supply`), err, enabled.node, body,
+    el("div", { class: "actions" },
+      el("button", { type: "submit", class: "primary" }, "Save"),
+      el("button", { type: "button", class: "link", onclick: () => (s.enabled ? openMedSheet(t) : sheet.close()) }, "Cancel")));
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const val = (i) => (i.value === "" ? null : Number(i.value));
+    const data = {
+      enabled: enabled.input.checked,
+      per_day: guess != null && Number(perDay.value) === guess && s.per_day == null ? null : val(perDay),
+      pack: val(pack), repeats: val(repeats), expires: expires.value || null,
+      last_refill: lastRefill.value || null, refill_gap: val(gap),
+    };
+    for (const w of warns) data[w.key] = val(w.input);
+    if (!st || Number(count.value) !== Number(st.stock)) data.count = val(count);
+    try {
+      await api("PUT", `api/trackers/${t.id}/supply`, data);
+      await redraw();
+      if (data.enabled) openMedSheet(t); else { sheet.close(); toast("Supply tracking off"); }
+    } catch (e) { err.textContent = e.message; err.hidden = false; }
+  });
+  sheet.replaceChildren(form);
+  if (!sheet.open) sheet.showModal();
 }
 
 // The dose dialog: ×N with −1/−0.5/+0.5/+1, strength, time, delete, Confirm.
@@ -1594,6 +1786,21 @@ async function renderSettings(view) {
       el("button", { type: "button", class: "secondary", onclick: () => openTrackerSheet({ kind: "medication" }, view) }, "Add medication")),
   );
 
+  let supply = [];
+  try { supply = await api("GET", "api/supply"); } catch { /* not important enough to stop Settings */ }
+  const byMed = new Map(supply.map((x) => [x.tracker_id, x]));
+  const supplySection = meds.length ? el("section", { class: "group" },
+    el("h2", {}, "Supply"),
+    el("div", { class: "panel" }, meds.map((t) => {
+      const sup = byMed.get(t.id);
+      const st = sup && sup.status;
+      const alert = st && st.alerts[0];
+      return el("button", { type: "button", class: "supply-row", onclick: () => openMedSheet(t) },
+        el("span", { class: "row-name" }, t.emoji ? el("span", { class: "emoji", "aria-hidden": "true" }, t.emoji) : null, t.name),
+        st ? el("span", { class: "row-sub" }, supplyLine(st))
+          : el("span", { class: "row-sub" }, "Not tracked"),
+        alert ? el("span", { class: `callout ${alert.level}` }, alert.text) : null);
+    }))) : null;
   const phones = person ? person.devices.length : 0;
   const ci = person ? person.checkins : null;
   const notifySection = el("section", { class: "group" },
@@ -1635,7 +1842,7 @@ async function renderSettings(view) {
     el("div", { class: "panel" }, hidden.map((t) => settingsRow(t, all, view))),
   ) : null;
 
-  view.replaceChildren(...[head, medSection, notifySection,
+  view.replaceChildren(...[head, medSection, supplySection, notifySection,
     el("h2", { class: "section-title" }, "What you track"),
     ...trackerSections, addRow, hiddenSection,
     el("p", { class: "whoami" }, `Signed in to Home Assistant as ${state.me.display_name || state.me.username}`)].filter(Boolean));
@@ -1908,7 +2115,9 @@ function openTrackerSheet(t, view) {
         el("datalist", { id: "counted-as" }, ["dose", "tablet", "capsule", "application", "drop", "puff", "spray", "scoop"].map((u) => el("option", { value: u }))),
         el("p", { class: "hint", style: "margin:-6px 0 14px" }, "For example tablet, puff or drop. Shown as \"1 dose\" or \"2 tablets\". You can change the amount and strength each time you log it."),
         field("Instructions", inputs.notes, "Optional. Shown on the reminder."),
-        t.id ? el("button", { type: "button", class: "secondary", onclick: () => openScheduleSheet(t, view) }, "Set up reminders") : null,
+        t.id ? el("div", { class: "actions", style: "margin-top:0" },
+          el("button", { type: "button", class: "secondary", onclick: () => openScheduleSheet(t, view) }, "Reminders"),
+          el("button", { type: "button", class: "secondary", onclick: () => openMedSheet(t) }, "Supply and refills")) : null,
       ].filter(Boolean));
     }
   }

@@ -183,6 +183,22 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE doses ADD COLUMN quantity REAL;
     """,
+    # 9: medication supply (how many are left, refills, repeats, script expiry) and which
+    # supply warnings have already been sent, so each is sent once.
+    """
+    CREATE TABLE supplies (
+        tracker_id   INTEGER PRIMARY KEY REFERENCES trackers(id) ON DELETE CASCADE,
+        user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        settings     TEXT NOT NULL DEFAULT '{}',
+        updated_at   TEXT NOT NULL
+    );
+    CREATE TABLE supply_alerts (
+        tracker_id   INTEGER NOT NULL REFERENCES trackers(id) ON DELETE CASCADE,
+        kind         TEXT NOT NULL,
+        sent_at      TEXT NOT NULL,
+        PRIMARY KEY (tracker_id, kind)
+    );
+    """,
 ]
 
 

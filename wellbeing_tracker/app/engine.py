@@ -41,6 +41,7 @@ from .schedule import (
     person_settings,
     schedule_settings,
 )
+from .supply import normalise_supply, status as supply_status, supply_settings
 from .trackers import ValidationError
 
 log = logging.getLogger(__name__)
@@ -241,6 +242,7 @@ class Engine:
                 self._activate_checkins(conn, now, out)
                 self._expire_checkins(conn, now, out)
                 self._hydration(conn, now, out)
+                self._supply_alerts(conn, now, out)
             await self._flush(out)
             await self._send_due(now)
 
@@ -1454,7 +1456,7 @@ class Engine:
             "person": (u["display_name"] or u["username"]) if u else None,
             "reminder_id": rid,
             "stage": stage,
-            "medications": [i["name"] for i in infos] if kind == "medication" else [],
+            "medications": [i["name"] for i in infos] if kind in ("medication", "supply") else [],
             "due": infos[0]["time"] if infos else None,
             "paused": is_paused(self.get_person(user_id), self.clock()),
         })
@@ -1523,6 +1525,174 @@ class Engine:
         payload["data"]["sticky"] = False
         await self._notify(user_id, payload, force=True)
         return len(person["devices"])
+
+
+    # ================= supply and refills =================
+
+    def _supply_settings(self, conn, tracker_id: int) -> dict:
+        row = conn.execute("SELECT settings FROM supplies WHERE tracker_id = ?", (tracker_id,)).fetchone()
+        return supply_settings(json.loads(row["settings"]) if row else None)
+
+    def _per_day_guess(self, conn, tracker_id: int, cfg: dict, now: datetime) -> tuple[float | None, str | None]:
+        """How many a day: from the reminder times and amounts, or else from what was logged lately."""
+        usual = float(cfg.get("quantity") or 1)
+        row = conn.execute("SELECT enabled, settings FROM schedules WHERE tracker_id = ?", (tracker_id,)).fetchone()
+        if row and row["enabled"]:
+            s = schedule_settings(json.loads(row["settings"]))
+            if s["mode"] == "times" and s["times"]:
+                per_day = sum(float(amount_at(s, t) or usual) for t in s["times"])
+                d = s["days"]
+                if d["mode"] == "weekdays":
+                    per_day *= len(d["weekdays"]) / 7
+                elif d["mode"] == "interval":
+                    per_day /= d["every"]
+                return round(per_day, 2), "reminders"
+        today = self._local_today(now)
+        since = (today - timedelta(days=14)).isoformat()
+        rows = conn.execute(
+            "SELECT day, value_num FROM entries WHERE tracker_id = ? AND day >= ? AND day < ?",
+            (tracker_id, since, today.isoformat()),
+        ).fetchall()
+        if rows and min(r["day"] for r in rows) <= (today - timedelta(days=7)).isoformat():
+            return round(sum(float(r["value_num"] or 0) for r in rows) / 14, 2), "logged"
+        return None, None
+
+    def _used_since(self, conn, tracker_id: int, count_at: str | None) -> float:
+        if not count_at:
+            return 0.0
+        start = parse(count_at)
+        rows = conn.execute(
+            "SELECT logged_at, value_num FROM entries WHERE tracker_id = ? AND day >= ?",
+            (tracker_id, (start.astimezone(self.tz).date() - timedelta(days=1)).isoformat()),
+        ).fetchall()
+        return sum(float(r["value_num"] or 0) for r in rows if parse(r["logged_at"]) > start)
+
+    def _supply_view(self, conn, tracker: dict, now: datetime) -> dict:
+        s = self._supply_settings(conn, tracker["id"])
+        cfg = tracker["config"]
+        guess = self._per_day_guess(conn, tracker["id"], cfg, now)
+        view = {"tracker_id": tracker["id"], "settings": s, "guess": {"per_day": guess[0], "source": guess[1]}}
+        if s["enabled"]:
+            view["status"] = supply_status(s, self._used_since(conn, tracker["id"], s["count_at"]), guess,
+                                           cfg.get("counted_as") or "dose", self._local_today(now))
+        return view
+
+    def get_supply(self, user_id: str, tracker_id: int) -> dict:
+        tracker = self.db.get_tracker(user_id, tracker_id)
+        if tracker["kind"] != "medication":
+            raise ValidationError("Supply is for medications")
+        with self.db.connect() as conn:
+            return self._supply_view(conn, tracker, self.clock())
+
+    def supply_overview(self, user_id: str) -> list[dict]:
+        """Every medication that's tracking its supply, with what's left and any warnings."""
+        out = []
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                "SELECT t.* FROM trackers t JOIN supplies s ON s.tracker_id = t.id WHERE t.user_id = ?", (user_id,)
+            ).fetchall()
+            for r in rows:
+                tracker = {**dict(r), "config": json.loads(r["config"] or "{}")}
+                view = self._supply_view(conn, tracker, self.clock())
+                if view["settings"]["enabled"]:
+                    out.append(view)
+        return out
+
+    def save_supply(self, user_id: str, tracker_id: int, data: dict) -> dict:
+        tracker = self.db.get_tracker(user_id, tracker_id)
+        if tracker["kind"] != "medication":
+            raise ValidationError("Supply is for medications")
+        now = self.clock()
+        with self.db.connect() as conn:
+            current = self._supply_settings(conn, tracker_id)
+            merged = {**current, **data}
+            if "count" in data and not data.get("count_at"):
+                merged["count_at"] = iso(now)  # "how many do you have now?" means now
+            clean = normalise_supply(merged)
+            conn.execute(
+                "INSERT INTO supplies (tracker_id, user_id, settings, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(tracker_id) DO UPDATE SET settings = excluded.settings, updated_at = excluded.updated_at",
+                (tracker_id, user_id, json.dumps(clean), iso(now)),
+            )
+            return self._supply_view(conn, tracker, now)
+
+    def refill(self, user_id: str, tracker_id: int, data: dict) -> dict:
+        """Add a refill: tops up what's left, starts the early-supply wait, and uses a repeat."""
+        tracker = self.db.get_tracker(user_id, tracker_id)
+        now = self.clock()
+        with self.db.connect() as conn:
+            s = self._supply_settings(conn, tracker_id)
+            if not s["enabled"]:
+                raise ValidationError("Turn on supply tracking first")
+            try:
+                quantity = float(data.get("quantity"))
+            except (TypeError, ValueError):
+                raise ValidationError("How many did you get?") from None
+            if not 0 < quantity <= 10000:
+                raise ValidationError("How many did you get?")
+            day = data.get("day") or self._local_today(now).isoformat()
+            stock = max(0.0, float(s["count"] or 0) - self._used_since(conn, tracker_id, s["count_at"]))
+            new = {**s, "count": stock + quantity, "count_at": iso(now), "last_refill": day}
+            script = data.get("new_script")
+            if isinstance(script, dict):
+                new["repeats"] = script.get("repeats")
+                new["expires"] = script.get("expires") or s["expires"]
+            elif data.get("used_repeat") and s["repeats"] is not None:
+                if s["repeats"] <= 0:
+                    raise ValidationError("There are no repeats left. Add the new script instead")
+                new["repeats"] = s["repeats"] - 1
+            if not s["pack"]:
+                new["pack"] = quantity
+            clean = normalise_supply(new)
+            conn.execute("UPDATE supplies SET settings = ?, updated_at = ? WHERE tracker_id = ?",
+                         (json.dumps(clean), iso(now), tracker_id))
+            conn.execute("DELETE FROM supply_alerts WHERE tracker_id = ? AND kind IN ('out', 'low')", (tracker_id,))
+            if isinstance(script, dict):
+                conn.execute("DELETE FROM supply_alerts WHERE tracker_id = ?", (tracker_id,))
+            return {**self._supply_view(conn, tracker, now), "previous": s}
+
+    SUPPLY_TITLES = {
+        "out": "You're out of {name}",
+        "low": "{name} is running low",
+        "script": "New script needed for {name}",
+        "expiring": "{name} script ends soon",
+        "expired": "{name} script has expired",
+    }
+
+    def _supply_alerts(self, conn, now: datetime, out: Outbox) -> None:
+        """Send each supply warning once, in the daytime, and again only after it has cleared."""
+        local = now.astimezone(self.tz)
+        if not "09:00" <= local.strftime("%H:%M") < "20:00":
+            return
+        rows = conn.execute(
+            "SELECT t.*, s.settings AS supply FROM trackers t JOIN supplies s ON s.tracker_id = t.id "
+            "WHERE t.hidden = 0"
+        ).fetchall()
+        for r in rows:
+            if not json.loads(r["supply"]).get("enabled"):
+                continue
+            tracker = {**dict(r), "config": json.loads(r["config"] or "{}")}
+            st = self._supply_view(conn, tracker, now)["status"]
+            active = {a["kind"]: a for a in st["alerts"]}
+            sent = {x["kind"] for x in conn.execute("SELECT kind FROM supply_alerts WHERE tracker_id = ?", (r["id"],))}
+            for kind in sent - set(active):
+                conn.execute("DELETE FROM supply_alerts WHERE tracker_id = ? AND kind = ?", (r["id"], kind))
+            for kind, alert in active.items():
+                if kind in sent:
+                    continue
+                conn.execute("INSERT INTO supply_alerts (tracker_id, kind, sent_at) VALUES (?, ?, ?)",
+                             (r["id"], kind, iso(now)))
+                left = f"{st['stock']:g} {st['word']} left" + (
+                    f", about {st['days_left']} days" if st["days_left"] is not None and kind != "low" else "")
+                message = alert["text"] + "." if kind == "low" else f"{alert['text']}. {left}."
+                data = {"tag": f"wbt-supply-{r['id']}-{kind}", "group": "wellbeing-supply",
+                        "channel": "Medication supply", "importance": "default", "notification_icon": "mdi:pill",
+                        "color": "#2c5d86"}
+                if self.panel_path:
+                    data["clickAction"] = self.panel_path
+                out.add("notify", r["user_id"], {"title": self.SUPPLY_TITLES[kind].format(name=r["name"]),
+                                                 "message": message, "data": data})
+                out.add("event", r["user_id"], None, kind, [{"name": r["name"], "time": None}], "supply")
 
 
 def _hours(gap: timedelta) -> str:

@@ -52,6 +52,17 @@ Each reminder has **Taken**, **Snooze** and **Skip** buttons. Answering on one p
 
 **Send me a test** in a medication's reminders sends one example to your devices, exactly as it will look (its buttons don't log anything).
 
+### Supply and refills
+
+Tap a medication's name on Check-in, then **Track supply**:
+
+- **How many do you have now?** Each dose you log takes its amount off.
+- **Prescribed per day** works out when you'll run out. It starts from your reminder times and amounts; type your own to override it.
+- **Usual refill**, and under **Prescription**: repeats left, when the script is valid to, the last refill and the early supply rule (the shortest time allowed between refills).
+- **Warn me** X days before you run out, before you need a new script, and before the script ends.
+
+The medication's sheet shows "About 28 days left", a bar, and when it runs out, with a small **Refill** button. Check-in shows one warning under the medication, and only when something needs doing. Warnings are also sent to your devices once (between 9am and 8pm) and fire a `wellbeing_tracker_reminder` event with `type: supply` and `stage` set to `low`, `out`, `script`, `expiring` or `expired`. **Settings → Supply** lists every medication.
+
 ### Pausing and checking reminders
 
 - **Settings → Notifications → Pause reminders**: for an hour, until tomorrow morning, a few days, a week or a time you choose. Nothing is sent to phones or speakers until then, but doses still show in the app, and anything still due comes back afterwards. Check-in shows a banner with **Resume**.
@@ -97,7 +108,7 @@ Every step fires a Home Assistant event, `wellbeing_tracker_reminder`, with:
 
 | Field | Example |
 | --- | --- |
-| `type` | `medication`, `checkin` or `hydration` |
+| `type` | `medication`, `checkin`, `hydration` or `supply` |
 | `stage` | `sent`, `repeated`, `escalated`, `last_call`, `snoozed`, `taken`, `skipped`, `undone`, `missed`; for check-ins also `checked_in` and `expired` |
 | `person` | `Matthew Poppell` |
 | `user_id` | the Home Assistant user id |

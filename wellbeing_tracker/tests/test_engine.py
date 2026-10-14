@@ -1096,3 +1096,85 @@ def test_choosing_targets_is_validated(env):
     assert saved["devices"] == ["notify.my_phone", "persistent_notification"]
     with pytest.raises(ValidationError):
         engine.save_person("u1", {"devices": ["light.lounge; rm -rf"]})
+
+
+# ----- supply and refills -----
+
+def supply_env(env, **settings):
+    db, ha, clock, engine, med = env
+    c = med("Clonidine", dose="100", unit="mcg", counted_as="tablet")
+    engine.save_supply("u1", c["id"], {"enabled": True, "count": 56, "count_at": "2026-10-14T06:00:00+11:00",
+                                        "per_day": 2, **settings})
+    return c
+
+
+def test_supply_counts_down_with_logged_doses(env):
+    db, ha, clock, engine, med = env
+    c = supply_env(env, pack=100, last_refill="2026-09-22", refill_gap=20, repeats=1, expires="2027-06-11")
+    db.save_checkin("u1", "2026-10-14T07:00:00+11:00", [{"tracker_id": c["id"], "value_num": 2}])
+    st = engine.get_supply("u1", c["id"])["status"]
+    assert (st["stock"], st["word"], st["days_left"], st["runs_out_text"]) == (54, "tablets", 27, "10 Nov")
+    assert st["refill_from"] is None  # 22 Sep + 20 days has passed
+    assert st["alerts"] == []
+
+
+def test_supply_warnings_follow_your_settings(env):
+    db, ha, clock, engine, med = env
+    c = supply_env(env, count=16, repeats=0, expires="2026-11-01", warn_low=10, warn_script=14, warn_expiry=30,
+                   last_refill="2026-10-10", refill_gap=20)
+    st = engine.get_supply("u1", c["id"])["status"]
+    assert [(a["kind"], a["level"], a["text"]) for a in st["alerts"]] == [
+        ("low", "warning", "8 days left. Refill from 30 Oct"),
+        ("expiring", "warning", "Script ends 1 Nov"),
+        ("script", "warning", "Last repeat. New script needed by 22 Oct"),
+    ]
+    engine.save_supply("u1", c["id"], {"warn_low": 5, "warn_expiry": 7, "warn_script": 3})
+    assert engine.get_supply("u1", c["id"])["status"]["alerts"] == []
+
+
+def test_per_day_comes_from_reminders_until_you_set_it(env):
+    db, ha, clock, engine, med = env
+    c = supply_env(env, per_day=None)
+    schedule(engine, c["id"], times=["19:00", "22:00"], amounts={"19:00": 0.5})
+    view = engine.get_supply("u1", c["id"])
+    assert view["guess"] == {"per_day": 1.5, "source": "reminders"}
+    assert view["status"]["days_left"] == 37
+    engine.save_supply("u1", c["id"], {"per_day": 2})
+    assert engine.get_supply("u1", c["id"])["status"]["per_day_source"] == "set"
+
+
+def test_refill_tops_up_and_uses_a_repeat(env):
+    db, ha, clock, engine, med = env
+    c = supply_env(env, repeats=1, refill_gap=20)
+    r = engine.refill("u1", c["id"], {"quantity": 100, "used_repeat": True})
+    assert r["status"]["stock"] == 156 and r["settings"]["repeats"] == 0 and r["settings"]["pack"] == 100
+    assert r["settings"]["last_refill"] == "2026-10-14"
+    assert r["status"]["refill_from_text"] == "3 Nov"
+    assert r["previous"]["count"] == 56  # for Undo
+    with pytest.raises(ValidationError):
+        engine.refill("u1", c["id"], {"quantity": 100, "used_repeat": True})
+    r = engine.refill("u1", c["id"], {"quantity": 100, "new_script": {"repeats": 5, "expires": "2027-10-01"}})
+    assert (r["settings"]["repeats"], r["settings"]["expires"]) == (5, "2027-10-01")
+
+
+def test_supply_warnings_are_sent_once_in_the_daytime(env):
+    db, ha, clock, engine, med = env
+    c = supply_env(env, count=10)
+    clock.set("2026-10-14T06:30")
+    run(engine.tick())
+    assert ha.notifications() == []  # not before 9am
+    clock.set("2026-10-14T09:00")
+    run(engine.tick())
+    [n] = ha.notifications()
+    assert n["title"] == "Clonidine is running low"
+    assert n["message"] == "5 days left."
+    assert ha.events[-1]["type"] == "supply" and ha.events[-1]["stage"] == "low"
+    assert ha.events[-1]["medications"] == ["Clonidine"]
+    clock.advance(60)
+    run(engine.tick())
+    assert len(ha.notifications()) == 1
+    # a refill clears it, so it can warn again next time
+    engine.refill("u1", c["id"], {"quantity": 100})
+    run(engine.tick())
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM supply_alerts").fetchone()[0] == 0

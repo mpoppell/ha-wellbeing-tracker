@@ -140,6 +140,24 @@ def build_router(current_user) -> APIRouter:
     async def preview_schedule(tracker_id: int, user: dict = Depends(current_user), e=Depends(engine)) -> dict:
         return {"sent_to": await e.send_preview(user["id"], tracker_id)}
 
+    @router.get("/supply")
+    def supply_overview(user: dict = Depends(current_user), e=Depends(engine)) -> list[dict]:
+        return e.supply_overview(user["id"])
+
+    @router.get("/trackers/{tracker_id}/supply")
+    def get_supply(tracker_id: int, user: dict = Depends(current_user), e=Depends(engine)) -> dict:
+        return e.get_supply(user["id"], tracker_id)
+
+    @router.put("/trackers/{tracker_id}/supply")
+    def put_supply(tracker_id: int, payload: dict = Body(...), user: dict = Depends(current_user),
+                   e=Depends(engine)) -> dict:
+        return e.save_supply(user["id"], tracker_id, payload)
+
+    @router.post("/trackers/{tracker_id}/supply/refill")
+    def refill(tracker_id: int, payload: dict = Body(...), user: dict = Depends(current_user),
+               e=Depends(engine)) -> dict:
+        return e.refill(user["id"], tracker_id, payload)
+
     @router.get("/doses/today")
     async def doses_today(user: dict = Depends(current_user), e=Depends(engine)) -> list[dict]:
         await e.tick()

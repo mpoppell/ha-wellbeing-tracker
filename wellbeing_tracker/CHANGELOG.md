@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.10.0
+
+**Supply and refills**, optional for each medication.
+
+- Tap a medication's name on Check-in to see how many you have left, about how many days that is, and when it runs out. Doses you log count it down.
+- **Refill** adds what you collected, uses a repeat, or starts a new script. Undo is in the message.
+- One warning at a time on Check-in, only when something needs doing: running low, a new script needed (no repeats left), or the script ending or expired. They're also sent to your devices once, in the daytime, and as a Home Assistant event (`type: supply`).
+- Choose when to be warned: "Warn me 10 days before I run out", "14 days before I need a new script", "30 days before the script ends".
+- **Prescribed per day** starts from your reminder times and amounts. Type your own to override it.
+- The early supply rule shows "Refill from 30 Oct" until you're allowed to refill.
+- Settings has a **Supply** overview of every medication.
+
 ## 0.9.1
 
 - **Send reminders anywhere Home Assistant can notify.** Settings → Notifications → **Devices and alerts** now lists Companion app phones (with Taken, Snooze and Skip buttons) and everything else: notify entities, other notify services such as Telegram, and Home Assistant's own notification bell. Those get the message with "Open Wellbeing to answer". Reminders in the bell are removed when you answer.
