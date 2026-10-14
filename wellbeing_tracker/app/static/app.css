@@ -1192,3 +1192,9 @@ details.more[open] > summary { margin-bottom: 8px; }
 
   .sheet form, .sheet .sheet-body { padding: 24px 24px 22px; }
 }
+
+.doctor-line { margin: 0 4px 10px; font-size: 0.98rem; }
+
+.doctor-line.danger strong { color: var(--danger); }
+
+.ask .actions { flex-wrap: wrap; }

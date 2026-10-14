@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.11.0
+
+- **When to see your doctor.** Settings → **Supply and scripts** now starts with "See your doctor by 4 Nov for a new Vyvanse script. Then Clonidine by 12 Dec." It's worked out from what you have left, your repeats and when each script ends.
+- Each medication's sheet shows **New script needed by**, and the warning, notification and Home Assistant event for it now say the same thing ("Book a doctor's visit for Clonidine"). Script expiry and last repeats are one warning instead of three, with one "Warn me X days before I need a new script" setting.
+- **Save your changes?** Tapping outside a sheet (or pressing Escape) after changing something now asks: Save, Discard or Keep editing.
+- **Words that match what you're doing**: "Set up", "Keep count", "How many a day?", "How many in a refill?", "Your script", "Refill again after", "Script ends".
+- **Settings in the order you'll need it**: supply and scripts first, then reminders (Today's reminders, Pause), then setting up medicines and what you track. "Notifications" is now **Reminders**.
+- The Check-in header says "next check-in 9am" instead of "next reminder".
+
 ## 0.10.1
 
 - On wider screens (tablets in landscape, computers), sheets and pickers open as a panel near the top of the screen instead of rising from the bottom. Phones keep the bottom sheet.

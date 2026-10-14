@@ -1654,9 +1654,7 @@ class Engine:
     SUPPLY_TITLES = {
         "out": "You're out of {name}",
         "low": "{name} is running low",
-        "script": "New script needed for {name}",
-        "expiring": "{name} script ends soon",
-        "expired": "{name} script has expired",
+        "script": "Book a doctor's visit for {name}",
     }
 
     def _supply_alerts(self, conn, now: datetime, out: Outbox) -> None:

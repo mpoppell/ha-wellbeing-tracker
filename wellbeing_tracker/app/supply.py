@@ -23,8 +23,8 @@ SUPPLY_DEFAULTS = {
     "repeats": None,       # repeats left on the script; None = not tracked
     "expires": None,       # date the script is valid until
     "warn_low": 10,        # warn me this many days before I run out
-    "warn_script": 14,     # ... before I need a new script (no repeats left)
-    "warn_expiry": 30,     # ... before the script ends
+    "warn_script": 21,     # ... before I need a new script (repeats used up, or the script ends)
+    "warn_expiry": 30,     # no longer used: script expiry is part of warn_script
 }
 
 
@@ -120,6 +120,16 @@ def status(s: dict, used_since: float, per_day_guess: tuple[float | None, str | 
             refill_from = allowed
     expires = date.fromisoformat(s["expires"]) if s["expires"] else None
 
+    # When you'll need a new script: when the script ends, or when this supply plus the
+    # repeats left would run out, whichever comes first. This is when to see the doctor.
+    script_by = reason = None
+    if s["repeats"] is not None and per_day and (s["repeats"] == 0 or s["pack"]):
+        total = stock + s["repeats"] * float(s["pack"] or 0)
+        script_by = today + timedelta(days=int(total // per_day))
+        reason = "last repeat" if s["repeats"] == 0 else "repeats run out"
+    if expires and (script_by is None or expires < script_by):
+        script_by, reason = expires, "script ends"
+
     alerts = []
     if stock <= 0:
         alerts.append({"kind": "out", "level": "danger", "text": "None left"})
@@ -128,16 +138,11 @@ def status(s: dict, used_since: float, per_day_guess: tuple[float | None, str | 
         if refill_from:
             text += f". Refill from {nice_date(refill_from, today)}"
         alerts.append({"kind": "low", "level": "danger" if days_left <= 3 else "warning", "text": text})
-    if expires and expires < today:
-        alerts.append({"kind": "expired", "level": "danger", "text": f"Script expired {nice_date(expires, today)}"})
-    elif expires and (expires - today).days <= s["warn_expiry"]:
-        alerts.append({"kind": "expiring", "level": "warning", "text": f"Script ends {nice_date(expires, today)}"})
-    if s["repeats"] == 0 and not (expires and expires < today):
-        if runs_out is None:
-            alerts.append({"kind": "script", "level": "warning", "text": "Last repeat. You'll need a new script"})
-        elif days_left <= s["warn_script"]:
-            alerts.append({"kind": "script", "level": "warning",
-                           "text": f"Last repeat. New script needed by {nice_date(runs_out, today)}"})
+    if script_by and script_by <= today:
+        alerts.append({"kind": "script", "level": "danger",
+                       "text": "Script expired. See your doctor" if reason == "script ends" else "New script needed now"})
+    elif script_by and (script_by - today).days <= s["warn_script"]:
+        alerts.append({"kind": "script", "level": "warning", "text": f"New script needed by {nice_date(script_by, today)}"})
     alerts.sort(key=lambda a: 0 if a["level"] == "danger" else 1)
 
     return {
@@ -153,5 +158,8 @@ def status(s: dict, used_since: float, per_day_guess: tuple[float | None, str | 
         "repeats": s["repeats"],
         "expires": s["expires"],
         "expires_text": nice_date(expires, today) if expires else None,
+        "script_by": script_by.isoformat() if script_by else None,
+        "script_by_text": nice_date(script_by, today) if script_by else None,
+        "script_reason": reason,
         "alerts": alerts,
     }

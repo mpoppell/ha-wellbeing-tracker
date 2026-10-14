@@ -6,6 +6,8 @@ Track mood, energy, symptoms, medications, sleep and other factors for everyone 
 
 Open **Wellbeing** in the Home Assistant sidebar (or the Companion app menu). Each person sees only their own log, based on the Home Assistant user they're signed in as.
 
+Tapping outside a sheet you've changed asks whether to save first.
+
 The Check-in screen is a dashboard of sections, each a card you can open or close. Everything saves the moment you tap it. The bar under the date shows how many questions you've answered today (medications, notes and yes/no habits aren't counted, because leaving them blank is a normal answer).
 
 - **Other days**: use the arrows or swipe left and right. A banner shows which day you're changing, with **Back to today**.
@@ -36,7 +38,7 @@ Each medication shows its usual strength and how many you usually take ("1 dose"
 
 Reminders are off until you switch them on for a medication.
 
-1. **Settings → Notifications → Devices and alerts → Change**: tick where your reminders should go, and tap **Send a test**. Phones signed in to the Home Assistant Companion app get **Taken**, **Snooze** and **Skip** buttons. Anything else Home Assistant can notify (a notify entity, Telegram, a TV, Home Assistant's own notification bell) gets the message with "Open Wellbeing to answer".
+1. **Settings → Reminders → Devices and alerts → Change**: tick where your reminders should go, and tap **Send a test**. Phones signed in to the Home Assistant Companion app get **Taken**, **Snooze** and **Skip** buttons. Anything else Home Assistant can notify (a notify entity, Telegram, a TV, Home Assistant's own notification bell) gets the message with "Open Wellbeing to answer".
 2. **Settings → Meds/Supplements**: tap the bell next to a medication, turn on **Remind me**, and pick the times and days.
 
 ### A different amount at each time
@@ -52,21 +54,26 @@ Each reminder has **Taken**, **Snooze** and **Skip** buttons. Answering on one p
 
 **Send me a test** in a medication's reminders sends one example to your devices, exactly as it will look (its buttons don't log anything).
 
-### Supply and refills
+### Supply, refills and when to see your doctor
 
-Tap a medication's name on Check-in, then **Track supply**:
+Tap a medication's name on Check-in, then **Set up**:
 
-- **How many do you have now?** Each dose you log takes its amount off.
-- **Prescribed per day** works out when you'll run out. It starts from your reminder times and amounts; type your own to override it.
-- **Usual refill**, and under **Prescription**: repeats left, when the script is valid to, the last refill and the early supply rule (the shortest time allowed between refills).
-- **Warn me** X days before you run out, before you need a new script, and before the script ends.
+- **How many do you have now?** Each dose you log comes off what's left.
+- **How many a day?** Starts from your reminder times and amounts. Change it to match your script.
+- **How many in a refill?**
+- **Your script**: repeats left, when the script ends, the last refill, and **Refill again after** (for medicines that can't be refilled too soon).
+- **Warn me** X days before you run out, and X days before you need a new script.
 
-The medication's sheet shows "About 28 days left", a bar, and when it runs out, with a small **Refill** button. Check-in shows one warning under the medication, and only when something needs doing. Warnings are also sent to your devices once (between 9am and 8pm) and fire a `wellbeing_tracker_reminder` event with `type: supply` and `stage` set to `low`, `out`, `script`, `expiring` or `expired`. **Settings → Supply** lists every medication.
+The medication's sheet shows "About 28 days left", when it runs out, repeats left and **New script needed by**, with a small **Refill** button. A new script is needed when your supply plus the repeats left would run out, or when the script ends, whichever comes first.
+
+**Settings → Supply and scripts** puts it together: "See your doctor by 4 Nov for a new Vyvanse script. Then Clonidine by 12 Dec." Use it to plan your next appointment.
+
+Check-in shows one warning under a medication, only when something needs doing. Warnings are also sent to your devices once (between 9am and 8pm) and fire a `wellbeing_tracker_reminder` event with `type: supply` and `stage` set to `low`, `out` or `script`.
 
 ### Pausing and checking reminders
 
-- **Settings → Notifications → Pause reminders**: for an hour, until tomorrow morning, a few days, a week or a time you choose. Nothing is sent to phones or speakers until then, but doses still show in the app, and anything still due comes back afterwards. Check-in shows a banner with **Resume**.
-- **Settings → Notifications → Today's reminders** lists every medication and check-in reminder for today in time order, with what's been taken.
+- **Settings → Reminders → Pause reminders**: for an hour, until tomorrow morning, a few days, a week or a time you choose. Nothing is sent to phones or speakers until then, but doses still show in the app, and anything still due comes back afterwards. Check-in shows a banner with **Resume**.
+- **Settings → Reminders → Today's reminders** lists every medication and check-in reminder for today in time order, with what's been taken.
 
 ### Timing one medication from another
 
@@ -92,11 +99,11 @@ Combine medications due at the same time into one reminder, offer **Undo** for a
 
 ## Check-in reminders
 
-**Settings → Notifications → Check-in reminders** sends a nudge to fill in your check-in at the times and days you choose. The notification can either have quick mood answers (**Good**, **Okay**, **Bad**, which log your mood straight away) or **Snooze** and **Not now**. Saving a check-in in the app clears it, and you can skip the reminder if you checked in recently. Unanswered check-in reminders remove themselves after the time you choose.
+**Settings → Reminders → Check-in reminders** sends a nudge to fill in your check-in at the times and days you choose. The notification can either have quick mood answers (**Good**, **Okay**, **Bad**, which log your mood straight away) or **Snooze** and **Not now**. Saving a check-in in the app clears it, and you can skip the reminder if you checked in recently. Unanswered check-in reminders remove themselves after the time you choose.
 
 ## Water reminders
 
-Give **Water** (or any count or amount you track) a **daily goal** in Settings, then turn on **Settings → Notifications → Water reminders**. You'll get a nudge when you haven't logged any water for the time you choose, between the hours you choose, with buttons to log one or two drinks straight from the notification. Reminders stop once you reach your goal.
+Give **Water** (or any count or amount you track) a **daily goal** in Settings, then turn on **Settings → Reminders → Water reminders**. You'll get a nudge when you haven't logged any water for the time you choose, between the hours you choose, with buttons to log one or two drinks straight from the notification. Reminders stop once you reach your goal.
 
 ## Appearance
 

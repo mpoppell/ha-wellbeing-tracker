@@ -1125,9 +1125,9 @@ def test_supply_warnings_follow_your_settings(env):
     st = engine.get_supply("u1", c["id"])["status"]
     assert [(a["kind"], a["level"], a["text"]) for a in st["alerts"]] == [
         ("low", "warning", "8 days left. Refill from 30 Oct"),
-        ("expiring", "warning", "Script ends 1 Nov"),
-        ("script", "warning", "Last repeat. New script needed by 22 Oct"),
+        ("script", "warning", "New script needed by 22 Oct"),
     ]
+    assert (st["script_by_text"], st["script_reason"]) == ("22 Oct", "last repeat")
     engine.save_supply("u1", c["id"], {"warn_low": 5, "warn_expiry": 7, "warn_script": 3})
     assert engine.get_supply("u1", c["id"])["status"]["alerts"] == []
 
@@ -1178,3 +1178,18 @@ def test_supply_warnings_are_sent_once_in_the_daytime(env):
     run(engine.tick())
     with db.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM supply_alerts").fetchone()[0] == 0
+
+
+def test_when_to_see_the_doctor(env):
+    db, ha, clock, engine, med = env
+    # 56 left + 2 repeats of 100 = 256 tablets at 2 a day = 128 days, but the script ends first
+    c = supply_env(env, repeats=2, pack=100, expires="2027-01-31")
+    st = engine.get_supply("u1", c["id"])["status"]
+    assert (st["script_by_text"], st["script_reason"]) == ("31 Jan 2027", "script ends")
+    engine.save_supply("u1", c["id"], {"expires": "2027-12-31"})
+    st = engine.get_supply("u1", c["id"])["status"]
+    assert (st["script_by"], st["script_reason"]) == ("2027-02-19", "repeats run out")
+    assert st["alerts"] == []
+    engine.save_supply("u1", c["id"], {"expires": "2026-10-01"})
+    [alert] = engine.get_supply("u1", c["id"])["status"]["alerts"]
+    assert (alert["level"], alert["text"]) == ("danger", "Script expired. See your doctor")
