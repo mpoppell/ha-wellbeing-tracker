@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.1
+
+- On wider screens (tablets in landscape, computers), sheets and pickers open as a panel near the top of the screen instead of rising from the bottom. Phones keep the bottom sheet.
+
 ## 0.10.0
 
 **Supply and refills**, optional for each medication.

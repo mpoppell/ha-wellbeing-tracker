@@ -1177,3 +1177,18 @@ details.more[open] > summary { margin-bottom: 8px; }
 .field-pair input[type="date"] { width: 100%; min-width: 0; max-width: none; padding-right: 4px; }
 
 .even-pairs .field-pair { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+
+/* ---------- wider screens: dialogs open near the top, like most desktop apps ---------- */
+
+@media (min-width: 720px) {
+  .sheet, .sheet.center {
+    margin: 8vh auto auto;
+    width: min(560px, calc(100% - 48px));
+    max-height: 84vh;
+    border-radius: 18px;
+  }
+
+  .sheet.center { width: min(460px, calc(100% - 48px)); }
+
+  .sheet form, .sheet .sheet-body { padding: 24px 24px 22px; }
+}
