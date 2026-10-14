@@ -1,5 +1,5 @@
 name: Wellbeing Tracker
-version: "0.9.0"
+version: "0.9.1"
 slug: wellbeing_tracker
 image: ghcr.io/mpoppell/{arch}-wellbeing-tracker
 description: Track mood, energy, symptoms, medications, sleep and other factors for everyone in your home.

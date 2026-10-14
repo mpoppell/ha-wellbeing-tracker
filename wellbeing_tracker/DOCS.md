@@ -36,7 +36,7 @@ Each medication shows its usual strength and how many you usually take ("1 dose"
 
 Reminders are off until you switch them on for a medication.
 
-1. **Settings → Notifications → Phones and alerts → Change**: tick the phones that should get your reminders (any phone signed in to the Home Assistant Companion app) and tap **Send a test**.
+1. **Settings → Notifications → Devices and alerts → Change**: tick where your reminders should go, and tap **Send a test**. Phones signed in to the Home Assistant Companion app get **Taken**, **Snooze** and **Skip** buttons. Anything else Home Assistant can notify (a notify entity, Telegram, a TV, Home Assistant's own notification bell) gets the message with "Open Wellbeing to answer".
 2. **Settings → Meds/Supplements**: tap the bell next to a medication, turn on **Remind me**, and pick the times and days.
 
 ### A different amount at each time
@@ -50,7 +50,7 @@ The notification says how much to take ("Clonidine ½ dose (50 mcg)"), tapping *
 
 Each reminder has **Taken**, **Snooze** and **Skip** buttons. Answering on one phone clears it on the others. You can also answer from the **Due now** card on the Check-in screen, by logging the medication there, or by switching on a linked Home Assistant toggle. Logging a dose shortly before its time means the reminder never goes off.
 
-**Send me a test** in a medication's reminders sends one example to your phones, exactly as it will look (its buttons don't log anything).
+**Send me a test** in a medication's reminders sends one example to your devices, exactly as it will look (its buttons don't log anything).
 
 ### Pausing and checking reminders
 
@@ -75,7 +75,7 @@ Taking Vyvanse at 7:04 schedules Dex for 2:04. Taking that Dex at 2:10 schedules
 - **Already taken it before the reminder?**: how early a logged dose still counts.
 - **Link to Home Assistant**: keep an `input_boolean` in sync with "taken", and set an `input_datetime` to the time taken.
 
-### Phones and alerts (per person)
+### Devices and alerts (per person)
 
 Combine medications due at the same time into one reminder, offer **Undo** for a minute after answering, allow swiping reminders away, snooze length, quiet hours (no alarm sounds or announcements), and which speakers and voice to use for announcements, optionally only when you're home.
 

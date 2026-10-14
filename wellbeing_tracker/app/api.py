@@ -173,14 +173,25 @@ def build_router(current_user) -> APIRouter:
             return slug.replace("_", " ").strip().title()
 
         notify = next((s.get("services", {}) for s in services if s.get("domain") == "notify"), {})
-        phones = []
+        has_bell = any(s.get("domain") == "persistent_notification" for s in services) or "persistent_notification" in notify
+        phones, others = [], []
         for svc in sorted(notify):
-            if not svc.startswith("mobile_app_"):
-                continue
-            suffix = svc[len("mobile_app_"):]
-            tracker = by_id.get(f"device_tracker.{suffix}")
-            label = tracker.get("attributes", {}).get("friendly_name") if tracker else None
-            phones.append({"service": svc, "name": label or humanise(suffix)})
+            if svc.startswith("mobile_app_"):
+                suffix = svc[len("mobile_app_"):]
+                tracker = by_id.get(f"device_tracker.{suffix}")
+                label = tracker.get("attributes", {}).get("friendly_name") if tracker else None
+                phones.append({"service": svc, "name": label or humanise(suffix)})
+            elif svc not in ("notify", "send_message", "persistent_notification"):
+                others.append({"id": svc, "name": humanise(svc), "kind": "service", "buttons": False})
+        # Every place a reminder can go. Only Companion app phones can show buttons.
+        targets = [{"id": p["service"], "name": p["name"], "kind": "phone", "buttons": True} for p in phones]
+        targets += [{"id": s["entity_id"], "name": name_of(s["entity_id"]), "kind": "entity", "buttons": False}
+                    for s in sorted(states, key=lambda x: x.get("entity_id", ""))
+                    if s.get("entity_id", "").startswith("notify.")]
+        targets += others
+        if has_bell:
+            targets.append({"id": "persistent_notification", "name": "Home Assistant notifications",
+                            "kind": "ha", "buttons": False})
 
         def entities(domain: str) -> list[dict]:
             return sorted(
@@ -200,6 +211,7 @@ def build_router(current_user) -> APIRouter:
         return {
             "connected": bool(states or services),
             "phones": phones,
+            "targets": targets,
             "speakers": entities("media_player"),
             "voices": entities("tts"),
             "toggles": entities("input_boolean"),

@@ -25,8 +25,10 @@ def setup(tmp_path):
          "attributes": {"friendly_name": "Vyvanse - Taken time", "has_date": True, "has_time": True}},
         {"entity_id": "input_datetime.alarm", "state": "x", "attributes": {"has_date": False, "has_time": True}},
     ]
+    ha.states.append({"entity_id": "notify.my_phone", "state": "x", "attributes": {"friendly_name": "My Phone"}})
     ha.services = [{"domain": "notify", "services": {
-        "mobile_app_s26u": {}, "mobile_app_pixel_tablet": {}, "notify": {}, "persistent_notification": {}}}]
+        "mobile_app_s26u": {}, "mobile_app_pixel_tablet": {}, "notify": {}, "persistent_notification": {},
+        "send_message": {}, "telegram_me": {}}}]
 
     async def get_services():
         return ha.services
@@ -52,6 +54,13 @@ def test_ha_options(setup):
     assert opts["phones"] == [
         {"service": "mobile_app_pixel_tablet", "name": "Pixel Tablet"},
         {"service": "mobile_app_s26u", "name": "S26 Ultra"},
+    ]
+    assert [(t["id"], t["kind"], t["buttons"]) for t in opts["targets"]] == [
+        ("mobile_app_pixel_tablet", "phone", True),
+        ("mobile_app_s26u", "phone", True),
+        ("notify.my_phone", "entity", False),
+        ("telegram_me", "service", False),
+        ("persistent_notification", "ha", False),
     ]
     assert [s["entity_id"] for s in opts["speakers"]] == ["media_player.echo_show"]
     assert [v["entity_id"] for v in opts["voices"]] == ["tts.piper"]

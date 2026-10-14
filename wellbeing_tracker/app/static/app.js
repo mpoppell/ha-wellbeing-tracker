@@ -708,7 +708,7 @@ function openSectionMenu(s, view) {
       meds ? item("Add a medication", () => openTrackerSheet({ kind: "medication", group_name: s.name }, view))
         : item(`Add something to ${s.name}`, () => openTrackerSheet({ kind: "rating", group_name: s.name }, view)),
       meds ? item("Create a group", () => openGroupSheet(null, view)) : null,
-      meds ? item("Reminders and phones", () => { location.hash = "#/settings"; }) : null,
+      meds ? item("Reminders and devices", () => { location.hash = "#/settings"; }) : null,
       !meds ? item("Copy yesterday's answers", () => copyYesterday(s)) : null,
       item("Hide this section", () => hideSection(s)),
       item("Edit dashboard", () => { state.editing = true; drawCheckin(view); })),
@@ -1602,8 +1602,8 @@ async function renderSettings(view) {
       settingRow("Today's reminders", "Everything due today, in time order", "See", () => openTodaySheet(view)),
       settingRow("Pause reminders", paused ? `Paused until ${paused}` : "Take a break from notifications, for example on holiday",
         paused ? "Resume" : "Pause", () => (paused ? setPause(null) : openPauseSheet())),
-      settingRow("Phones and alerts",
-        phones ? `Sending to ${phones === 1 ? "1 phone" : phones + " phones"}` : "No phone chosen yet, so reminders only show in this app",
+      settingRow("Devices and alerts",
+        phones ? `Sending to ${phones === 1 ? "1 device" : phones + " devices"}` : "Nowhere chosen yet, so reminders only show in this app",
         "Change", () => openPersonSheet(view)),
       settingRow("Check-in reminders",
         ci && ci.enabled ? `At ${joinNames(ci.times.map(niceTime))}, ${describeDays(ci.days)}` : "Off",
@@ -2160,8 +2160,8 @@ function nagEditor(s) {
 
 function noPhoneNotice(person, view) {
   return person.devices.length ? null : notice(
-    "No phone is chosen yet, so reminders will only show in this app. ",
-    el("button", { type: "button", class: "link inline", onclick: () => openPersonSheet(view) }, "Choose phones"));
+    "Nowhere is chosen to send reminders yet, so they only show in this app. ",
+    el("button", { type: "button", class: "link inline", onclick: () => openPersonSheet(view) }, "Choose devices"));
 }
 
 /* ---------- medication reminders ---------- */
@@ -2241,8 +2241,8 @@ async function openScheduleSheet(t, view, opts = {}) {
   const alarm = switchField("Ring like an alarm", s.alarm_sound, "Plays even on Do Not Disturb, but not during your quiet hours.");
   const speakersReady = person.speakers.length && person.tts_entity;
   const announce = switchField("Announce it on speakers", s.announce, speakersReady
-    ? "Uses the speakers chosen in Phones and alerts."
-    : "Choose speakers and a voice in Phones and alerts first.");
+    ? "Uses the speakers chosen in Devices and alerts."
+    : "Choose speakers and a voice in Devices and alerts first.");
   const hardPanel = el("div", { class: "subpanel" }, field("Starting from", hardAfter), alarm.node, announce.node);
   const drawHard = () => { hardPanel.hidden = !hard.input.checked; };
   hard.input.addEventListener("change", drawHard);
@@ -2280,7 +2280,7 @@ async function openScheduleSheet(t, view, opts = {}) {
       sched.enabled ? el("button", { type: "button", class: "secondary", title: "Uses your saved settings", onclick: async () => {
         try {
           const r = await api("POST", `api/trackers/${t.id}/schedule/preview`);
-          toast(`Test sent to ${r.sent_to === 1 ? "1 phone" : r.sent_to + " phones"}`);
+          toast(`Test sent to ${r.sent_to === 1 ? "1 device" : r.sent_to + " devices"}`);
         } catch (e) { toast(e.message); }
       } }, "Send me a test") : null,
       el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Cancel")));
@@ -2480,20 +2480,32 @@ async function openPersonSheet(view) {
   } catch (err) { toast(err.message); return; }
   const err = el("p", { class: "form-error", hidden: true });
 
-  const phoneBoxes = ha.phones.map((p) => {
-    const box = el("input", { type: "checkbox", value: p.service });
-    box.checked = s.devices.includes(p.service);
-    return el("label", { class: "check" }, box, el("span", {}, p.name));
-  });
-  const phones = ha.phones.length ? el("div", { class: "checks" }, phoneBoxes)
+  // Everywhere a reminder can go. Anything chosen before but not found now stays listed, so it isn't lost.
+  const targets = (ha.targets || ha.phones.map((p) => ({ id: p.service, name: p.name, kind: "phone", buttons: true }))).slice();
+  for (const id of s.devices) {
+    if (!targets.some((x) => x.id === id)) targets.push({ id, name: `${id} (not found right now)`, kind: "missing", buttons: id.startsWith("mobile_app_") });
+  }
+  const box = (x) => {
+    const b = el("input", { type: "checkbox", value: x.id });
+    b.checked = s.devices.includes(x.id);
+    return el("label", { class: "check" }, b, el("span", {}, x.name));
+  };
+  const withButtons = targets.filter((x) => x.buttons).map(box);
+  const textOnly = targets.filter((x) => !x.buttons).map(box);
+  const phoneBoxes = [...withButtons, ...textOnly];
+  const phones = targets.length ? el("div", {},
+    withButtons.length ? el("div", { class: "target-group" }, el("span", { class: "row-sub" }, "Phones with the Home Assistant app (with Taken, Snooze and Skip buttons)"),
+      el("div", { class: "checks" }, withButtons)) : null,
+    textOnly.length ? el("div", { class: "target-group" }, el("span", { class: "row-sub" }, "Other places (the message only, with \"Open Wellbeing to answer\")"),
+      el("div", { class: "checks" }, textOnly)) : null)
     : notice(ha.connected
-      ? "No phones with the Home Assistant app were found. Install the Companion app, sign in, then come back."
-      : "Can't reach Home Assistant right now, so phones can't be listed.");
+      ? "Nothing that can receive notifications was found. Install the Home Assistant Companion app on your phone, sign in, then come back."
+      : "Can't reach Home Assistant right now, so devices can't be listed.");
   const testBtn = el("button", { type: "button", class: "secondary small", onclick: async () => {
     try {
       await saveIt(false);
       const r = await api("POST", "api/reminders/test");
-      toast(`Test sent to ${r.sent_to === 1 ? "1 phone" : r.sent_to + " phones"}`);
+      toast(`Test sent to ${r.sent_to === 1 ? "1 device" : r.sent_to + " devices"}`);
     } catch (e) { toast(e.message); }
   } }, "Send a test");
 
@@ -2539,16 +2551,17 @@ async function openPersonSheet(view) {
     await api("PUT", "api/reminders/settings", payload);
     if (close) {
       sheet.close();
-      toast("Phones and alerts saved");
+      toast("Devices and alerts saved");
       if (currentTab() === "settings") await renderSettings(view);
     }
   }
 
   const form = el("form", { method: "dialog" },
-    el("h2", {}, "Phones and alerts"),
+    el("h2", {}, "Devices and alerts"),
     err,
-    field("Send notifications to", el("div", {}, phones, ha.phones.length ? testBtn : null),
-      "Answering on one phone clears it from the others."),
+    el("div", { class: "field", role: "group", "aria-label": "Send reminders to" }, el("span", {}, "Send reminders to"),
+      phones, targets.length ? testBtn : null,
+      el("span", { class: "hint" }, "Answering on one clears it from the others where it can.")),
     group.node, undo.node, swipe.node,
     field("Snooze length", snooze),
     quiet.node, quietPanel,

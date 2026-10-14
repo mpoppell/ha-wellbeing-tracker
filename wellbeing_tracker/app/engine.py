@@ -1404,11 +1404,45 @@ class Engine:
 
     async def _notify(self, user_id: str, payload: dict, force: bool = False) -> None:
         person = self.get_person(user_id)
+        clearing = payload.get("message") == "clear_notification"
         # While reminders are paused nothing new arrives, but old ones can still be cleared.
-        if not force and payload.get("message") != "clear_notification" and is_paused(person, self.clock()):
+        if not force and not clearing and is_paused(person, self.clock()):
             return
-        for service in person["devices"]:
-            await self.ha.call_service("notify", service, payload)
+        for target in person["devices"]:
+            try:
+                await self._send_to(target, payload, clearing)
+            except Exception:
+                log.exception("Sending to %s failed", target)
+
+    async def _send_to(self, target: str, payload: dict, clearing: bool) -> None:
+        """Companion app phones get everything, including buttons. Anything else that can receive a
+        notification gets the words, with a pointer to the app, since it can't show buttons."""
+        if target.startswith("mobile_app_"):
+            await self.ha.call_service("notify", target, payload)
+            return
+        data = payload.get("data") or {}
+        tag = data.get("tag")
+        if target == "persistent_notification":
+            if clearing:
+                if tag:
+                    await self.ha.call_service("persistent_notification", "dismiss", {"notification_id": tag})
+                return
+        elif clearing:
+            return  # other services can't take a notification back
+        actions = data.get("actions") or []
+        if actions and all("_UNDO_" in a.get("action", "") for a in actions):
+            return  # an "Undo" offer is no use without its button
+        message = payload.get("message", "")
+        if actions:
+            message += "\nOpen Wellbeing to answer."
+        if target == "persistent_notification":
+            await self.ha.call_service("persistent_notification", "create", {
+                "title": payload.get("title"), "message": message, **({"notification_id": tag} if tag else {})})
+        elif target.startswith("notify."):
+            await self.ha.call_service("notify", "send_message",
+                                       {"entity_id": target, "title": payload.get("title"), "message": message})
+        else:
+            await self.ha.call_service("notify", target, {"title": payload.get("title"), "message": message})
 
     async def _fire(self, user_id: str, rid: int | None, stage: str, infos: list[dict],
                     kind: str = "medication") -> None:

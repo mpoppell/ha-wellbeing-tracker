@@ -1101,3 +1101,6 @@ details.more[open] > summary { margin-bottom: 8px; }
 .today-time { color: var(--muted); }
 
 .med-title .med-strength { margin-left: 4px; }
+
+.target-group + .target-group { margin-top: 12px; }
+.target-group > .row-sub { display: block; margin-bottom: 6px; }

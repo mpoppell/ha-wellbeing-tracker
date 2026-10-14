@@ -887,6 +887,8 @@ def test_water_adds_to_todays_count(env):
     water_on(engine, every=60)
     clock.set("2026-10-14T09:30")
     db.save_checkin("u1", "2026-10-14T09:30:00+11:00", [{"tracker_id": water(db)["id"], "value_num": 3}])
+    with db.connect() as conn:  # the database stamps with the real clock; use the test's 9:30am
+        conn.execute("UPDATE entries SET created_at = ?, updated_at = ?", ("2026-10-13T22:30:00+00:00",) * 2)
     clock.set("2026-10-14T10:30")
     run(engine.tick())
     rid = int(ha.notifications()[0]["data"]["tag"].rsplit("-", 1)[1])
@@ -1059,3 +1061,38 @@ def test_preview_sends_the_real_wording(env):
     # tapping its buttons does nothing
     run(engine.handle_event("mobile_app_notification_action", {"action": "WBT_TAKEN_0"}))
     assert db.list_entries("u1", "2026-10-14", "2026-10-14") == []
+
+
+# ----- reminders to anything that can receive a notification -----
+
+def test_reminders_reach_every_kind_of_target(env):
+    db, ha, clock, engine, med = env
+    engine.save_person("u1", {"devices": ["mobile_app_s26u", "notify.my_phone", "telegram_me", "persistent_notification"]})
+    v = med("Vyvanse", dose="30", unit="mg")
+    schedule(engine, v["id"], times=["07:00"])
+    clock.set("2026-10-14T07:00")
+    run(engine.tick())
+    calls = {(d, s): data for d, s, data in ha.calls}
+    assert calls[("notify", "mobile_app_s26u")]["data"]["actions"]  # phones get buttons
+    assert calls[("notify", "send_message")] == {"entity_id": "notify.my_phone", "title": "Time for Vyvanse",
+                                                 "message": "Vyvanse 30 mg\nOpen Wellbeing to answer."}
+    assert calls[("notify", "telegram_me")] == {"title": "Time for Vyvanse", "message": "Vyvanse 30 mg\nOpen Wellbeing to answer."}
+    bell = calls[("persistent_notification", "create")]
+    rid = dose_rows(db, v["id"])[0]["reminder_id"]
+    assert bell["notification_id"] == f"wbt-reminder-{rid}"
+
+    # answering clears the phone and the bell; others can't be cleared, and get no Undo offer
+    ha.reset()
+    run(engine.handle_event("mobile_app_notification_action", {"action": f"WBT_TAKEN_{rid}"}))
+    sent = [(d, s) for d, s, _ in ha.calls]
+    assert ("persistent_notification", "dismiss") in sent
+    assert ("notify", "send_message") not in sent and ("notify", "telegram_me") not in sent
+    assert len(ha.notifications()) == 1  # the phone's Undo
+
+
+def test_choosing_targets_is_validated(env):
+    db, ha, clock, engine, med = env
+    saved = engine.save_person("u1", {"devices": ["notify.my_phone", "persistent_notification"]})
+    assert saved["devices"] == ["notify.my_phone", "persistent_notification"]
+    with pytest.raises(ValidationError):
+        engine.save_person("u1", {"devices": ["light.lounge; rm -rf"]})

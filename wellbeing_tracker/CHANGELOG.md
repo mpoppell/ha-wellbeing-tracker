@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.1
+
+- **Send reminders anywhere Home Assistant can notify.** Settings → Notifications → **Devices and alerts** now lists Companion app phones (with Taken, Snooze and Skip buttons) and everything else: notify entities, other notify services such as Telegram, and Home Assistant's own notification bell. Those get the message with "Open Wellbeing to answer". Reminders in the bell are removed when you answer.
+- A device chosen earlier that Home Assistant can't find right now stays ticked instead of being dropped.
+- Tapping the heading of the device list no longer ticks the first phone.
+
 ## 0.9.0
 
 Polish: easier to use and easier to understand.

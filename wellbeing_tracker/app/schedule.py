@@ -29,7 +29,9 @@ NAG_PRESETS = {
 }
 
 PERSON_DEFAULTS = {
-    "devices": [],              # notify services, e.g. "mobile_app_s26u"
+    # Where reminders go: notify services ("mobile_app_s26u", "telegram_me"), notify entities
+    # ("notify.my_phone") or "persistent_notification" (the bell in Home Assistant's sidebar).
+    "devices": [],
     "group_doses": True,        # one notification for medications due at the same time
     "undo": True,               # show "Undo" for a minute after answering
     "swipe_away": False,        # False = reminders stay until answered
@@ -125,9 +127,9 @@ def normalise_person_settings(data: dict) -> dict:
     s = person_settings(data)
     devices = s["devices"]
     if not isinstance(devices, list) or not all(
-        isinstance(d, str) and re.match(r"^[a-z0-9_]+$", d) for d in devices
+        isinstance(d, str) and re.match(r"^(notify\.)?[a-z0-9_]+$", d) for d in devices
     ):
-        raise ValidationError("Choose phones from the list")
+        raise ValidationError("Choose where to send reminders from the list")
     s["devices"] = list(dict.fromkeys(devices))
     for key in ("group_doses", "undo", "swipe_away", "announce_only_home"):
         s[key] = bool(s[key])
