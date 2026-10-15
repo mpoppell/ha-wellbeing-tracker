@@ -591,7 +591,60 @@ function drawCheckin(view) {
       el("p", {}, "Pick a few things to track. Start small: 3 to 5 is plenty, and you can add more any time."),
       el("button", { type: "button", class: "primary", onclick: () => openTrackerSheet({ kind: "rating" }, view) }, "Add something to track")));
   }
-  view.replaceChildren(...[head, ...banners, !editing && isToday ? dueCard(view) : null, ...cards, ...extra].filter(Boolean));
+  view.replaceChildren(...[head, ...banners, !editing && isToday ? dueCard(view) : null, ...cards, ...extra,
+    editing ? null : spotlight(view)].filter(Boolean));
+}
+
+/* ---------- desktop: one question at a time, beside Check-in ---------- */
+
+// Shown only on wide screens (CSS). One thing you haven't filled in today, picked at random.
+// Once everything's filled in, it starts again with things you might want to update.
+const spot = { id: null, shown: new Set(), day: null };
+
+function spotlightPool() {
+  return dashboardSections(false).filter((s) => !s.hidden).flatMap((s) => s.items)
+    .filter((t) => !isMeds(t) && t.kind !== "note" && t.kind !== "sleep");
+}
+
+function pickSpotlight(skip) {
+  const pool = spotlightPool();
+  if (!pool.length) return null;
+  if (spot.day !== state.day) { spot.day = state.day; spot.shown.clear(); }
+  let choices = pool.filter((t) => !entriesFor(t.id).length && t.id !== skip);
+  if (!choices.length) {
+    // all filled in: go round again, without repeating until we've shown them all
+    choices = pool.filter((t) => !spot.shown.has(t.id) && t.id !== skip);
+    if (!choices.length) { spot.shown.clear(); choices = pool.filter((t) => t.id !== skip); }
+    if (!choices.length) choices = pool;
+  }
+  const t = choices[Math.floor(Math.random() * choices.length)];
+  spot.shown.add(t.id);
+  return t.id;
+}
+
+function spotlight(view) {
+  const pool = spotlightPool();
+  if (!pool.length) return null;
+  let t = pool.find((x) => x.id === spot.id);
+  const allDone = pool.every((x) => entriesFor(x.id).length);
+  // stays put while you answer it (emotions can take several taps); "Next" moves on
+  if (!t || spot.day !== state.day) {
+    spot.id = pickSpotlight();
+    t = pool.find((x) => x.id === spot.id);
+  }
+  if (!t) return null;
+  const done = !!entriesFor(t.id).length;
+  const left = answerable().filter((x) => !entriesFor(x.id).length).length;
+  const row = t.kind === "factor" && t.config.mode === "bool"
+    ? el("div", { class: "brow" }, el("div", { class: "brow-text" }, rowName(t)), el("div", { class: "bchips" }, factorChip(t)))
+    : trackerRow(t, view);
+  const next = () => { spot.id = pickSpotlight(t.id); drawCheckin(view); };
+  return el("aside", { class: "spotlight card", "aria-label": "One quick question" },
+    el("p", { class: "spotlight-kicker" }, allDone ? "All done today. Anything changed?" : "One quick question"),
+    row,
+    el("div", { class: "spotlight-foot" },
+      el("span", { class: "row-sub" }, allDone ? "Everything's filled in" : done ? "Thanks" : left ? `${left} more on Check-in` : ""),
+      el("button", { type: "button", class: "link inline", onclick: next }, done ? "Next" : "Another one")));
 }
 
 // Items that count towards "7 of 12 answered": the questions on the screen. Medications, notes and
@@ -754,21 +807,33 @@ async function changeDay(delta) {
 
 /* ---------- a section card (accordion) ---------- */
 
-function answeredCount(items) {
-  if (items.some(isMeds)) return new Set(state.dayEntries.filter((e) => items.some((t) => t.id === e.tracker_id)).map((e) => e.tracker_id)).size;
-  return items.filter((t) => entriesFor(t.id).length).length;
+// What's left in a section today: doses still to take, or questions not answered yet.
+// null when the section has nothing to count (notes, or medicines with no reminders today).
+function sectionLeft(items) {
+  if (items.some(isMeds)) {
+    const ids = new Set(items.filter(isMeds).map((t) => t.id));
+    const today = state.doses.filter((d) => ids.has(d.tracker_id) && d.local_day === state.day && d.status !== "cancelled");
+    if (!today.length) return null;
+    return today.filter((d) => d.status === "scheduled" || d.status === "due").length;
+  }
+  const counted = items.filter((t) => t.kind !== "note" && !(t.kind === "factor" && t.config.mode === "bool"));
+  if (!counted.length) return null;
+  return counted.filter((t) => !entriesFor(t.id).length).length;
 }
 
 function sectionCard(s, view) {
   const key = `section:${s.name}`;
   const open = !collapsed.has(key);
   const meds = s.items.some(isMeds);
-  const count = answeredCount(s.items);
+  const left = sectionLeft(s.items);
   const header = el("div", { class: "card-head" },
     el("button", { type: "button", class: "card-toggle", "aria-expanded": String(open), onclick: () => toggleCollapsed(key) },
       el("span", { class: "card-icon" }, sectionIcon(s.name)),
       el("span", { class: "card-title" }, s.name),
-      count ? el("span", { class: "card-progress", title: "Done today" }, `${count} of ${meds ? s.items.filter(isMeds).length : s.items.length}`) : null,
+      left == null ? null : left === 0
+        ? el("span", { class: "card-done", title: "All done today", "aria-label": "All done today" }, svgIcon(ICONS.check))
+        : el("span", { class: "card-left", title: meds ? `${left} still to take today` : `${left} not filled in yet`,
+            "aria-label": meds ? `${left} still to take today` : `${left} not filled in yet` }, String(left)),
       el("span", { class: "card-chevron" }, svgIcon(open ? ICONS.up : ICONS.down))),
     el("button", { type: "button", class: "iconbtn plain", "aria-label": `${s.name} options`, title: "Options",
       onclick: () => openSectionMenu(s, view) }, svgIcon(ICONS.dots)));
@@ -1023,9 +1088,23 @@ async function addSection(sections) {
 
 /* ---------- due now ---------- */
 
+// Minutes from now until "HH:MM" today (negative if it's passed).
+function minutesUntil(hhmm) {
+  const [h, m] = hhmm.split(":").map(Number);
+  const now = new Date();
+  return h * 60 + m - (now.getHours() * 60 + now.getMinutes());
+}
+
+// Due: doses waiting and other reminders you've been sent (check-in, water), answerable here.
+// Coming up: only what's in the next 30 minutes.
 function dueCard(view) {
   const due = state.doses.filter((d) => d.status === "due");
-  if (!due.length) return null;
+  const waiting = (state.inbox || []).filter((x) => x.kind === "checkin" || x.kind === "hydration");
+  const soon = state.doses.filter((d) => d.status === "scheduled" && d.local_day === state.day
+    && minutesUntil(d.time) >= 0 && minutesUntil(d.time) <= 30);
+  const checkinSoon = state.nextCheckin && !waiting.some((x) => x.kind === "checkin")
+    && minutesUntil(state.nextCheckin) >= 0 && minutesUntil(state.nextCheckin) <= 30;
+  if (!due.length && !waiting.length && !soon.length && !checkinSoon) return null;
 
   const act = async (d, action, reason) => {
     if (action === "skip" && reason === undefined) { openSkipSheet(d, (r) => act(d, "skip", r)); return; }
@@ -1054,11 +1133,42 @@ function dueCard(view) {
         d.last_call ? null : el("button", { type: "button", class: "secondary small", onclick: () => act(d, "snooze") }, "Snooze"),
         el("button", { type: "button", class: "secondary small", onclick: () => act(d, "skip") }, "Skip")));
   });
-  return el("section", { class: "card due-card", "aria-label": "Medications due" },
-    el("div", { class: "card-head" },
-      el("span", { class: "card-icon" }, svgIcon(ICONS.bell)),
-      el("span", { class: "card-title" }, "Due now")),
-    el("div", { class: "card-body" }, rows));
+  for (const item of waiting) {
+    const buttons = item.actions.map((a, i) => el("button", { type: "button", class: i === 0 ? "primary small" : "secondary small",
+      onclick: () => answerInbox(item, a.verb) }, a.label));
+    if (item.kind === "checkin") {
+      buttons.unshift(el("button", { type: "button", class: "primary small", onclick: () => {
+        const first = document.querySelector(".card:not(.due-card) .card-body");
+        if (first) first.scrollIntoView({ behavior: "smooth", block: "start" });
+      } }, "Check in now"));
+      buttons.forEach((b, i) => { if (i) b.className = "secondary small"; });
+    }
+    rows.push(el("div", { class: "brow" },
+      el("div", { class: "brow-text" },
+        el("span", { class: "brow-name" }, item.title),
+        el("span", { class: "row-sub" }, item.snoozed_until ? `Snoozed until ${niceTime(item.snoozed_until)}`
+          : item.since ? `Since ${niceTime(item.since)}` : item.message)),
+      el("div", { class: "due-actions" }, buttons)));
+  }
+  const later = soon.map((d) => ({ time: d.time, text: `${d.name}${d.amount ? " " + d.amount : ""}`,
+    open: () => { const t = state.trackers.find((x) => x.id === d.tracker_id); if (t) openDoseDialog(t, null, { quantity: d.quantity }); } }));
+  if (checkinSoon) later.push({ time: state.nextCheckin, text: "Check-in" });
+  later.sort((a, b) => a.time.localeCompare(b.time));
+  const count = due.length + waiting.length;
+  return el("section", { class: `card due-card${count ? "" : " soon-only"}`, "aria-label": count ? "Due now" : "Coming up" },
+    count ? [
+      el("div", { class: "card-head" },
+        el("span", { class: "card-icon" }, svgIcon(ICONS.bell)),
+        el("span", { class: "card-title" }, "Due"),
+        el("span", { class: "card-count", "aria-label": `${count} waiting` }, String(count))),
+      el("div", { class: "card-body" }, rows),
+    ] : null,
+    later.length ? el("div", { class: "coming-up" },
+      el("span", { class: "coming-up-title" }, count ? "Next 30 minutes" : "Coming up in the next 30 minutes"),
+      el("ul", {}, later.map((x) => el("li", {},
+        el("span", { class: "why-time" }, niceTime(x.time)),
+        el("span", { class: "coming-up-what" }, x.text),
+        x.open ? el("button", { type: "button", class: "secondary small", onclick: x.open, "aria-label": `Log ${x.text} now` }, "Log now") : null)))) : null);
 }
 
 const SKIP_REASONS = ["Felt fine", "Side effects", "Ran out", "Not needed today", "Forgot, too late now"];

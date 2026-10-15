@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.17.0
+
+**What needs doing first, and one question at a time on a computer.**
+
+- **Due** sits at the top of Check-in: doses that are due, plus check-in and water reminders you've been sent, each with the same buttons as the notification.
+- **Coming up** only lists what's in the next 30 minutes, with **Log now**.
+- Section headings show how many are **still to fill in** (or doses still to take) in a small grey number, and a green tick once everything's done.
+- On a wide screen, a panel beside Check-in asks one thing you haven't filled in today, picked at random. **Another one** shuffles. Once everything's filled in, it goes round again so you can update anything that's changed.
+
 ## 0.16.0
 
 **Sleep from your bedroom and phone, and a cleaner, calmer Check-in.**

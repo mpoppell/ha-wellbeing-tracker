@@ -21,7 +21,11 @@ The Check-in screen is a dashboard of sections, each a card you can open or clos
 
 ### Arranging your dashboard
 
-Tap the pencil at the top of Check-in to edit it, much like a Home Assistant dashboard. Drag the grip handle (⠿) beside a section or anything in it to reorder it, or focus the handle and use the arrow keys. You can also rename sections, hide them, or add a new one. For anything in a section you can move it, edit it, send it to another section, or hide it. Tap **Done** when you're finished. Each section's ••• menu has shortcuts too. The small "2 of 5" beside a section's name is how many you've done today.
+Tap the pencil at the top of Check-in to edit it, much like a Home Assistant dashboard. Drag the grip handle (⠿) beside a section or anything in it to reorder it, or focus the handle and use the arrow keys. You can also rename sections, hide them, or add a new one. For anything in a section you can move it, edit it, send it to another section, or hide it. Tap **Done** when you're finished. Each section's ••• menu has shortcuts too. The small grey number beside a section's name is how many are still to fill in today (for medicines, doses still to take); a green tick means it's all done.
+
+At the top, **Due** lists doses that are due and any check-in or water reminders you've been sent, with the same buttons as the notification. Anything in the next 30 minutes shows under it as **Coming up**.
+
+On a computer with a wide window, a panel on the left asks one thing you haven't filled in today. Tap **Another one** for a different one. When everything's done, it goes round again so you can update anything that's changed.
 
 ## Meds/Supplements
 

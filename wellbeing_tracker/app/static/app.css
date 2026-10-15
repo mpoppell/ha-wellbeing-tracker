@@ -1419,3 +1419,35 @@ button.plan-due:hover, button.plan-due:focus-visible { color: var(--accent-ink);
 .phase-tile { min-width: 0; padding: 10px 8px; }
 .phase-tile .phase-name { font-size: 0.82rem; gap: 4px; }
 .phase-tile .dot { flex: none; }
+
+/* ---------- Due, section counts, side question (0.17) ---------- */
+
+.card-left {
+  min-width: 22px; padding: 0 7px; border-radius: 11px; line-height: 22px; text-align: center;
+  background: var(--sunken); color: var(--muted); font-size: 0.8rem; font-weight: 700;
+}
+.card-done { display: inline-grid; place-items: center; width: 22px; height: 22px; color: var(--r4); }
+.card-done svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+
+.due-card.soon-only { border-width: 1px; border-color: var(--line); }
+.coming-up { padding: 4px 16px 14px; }
+.due-card:not(.soon-only) .coming-up { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 2px; }
+.due-card.soon-only .coming-up { padding-top: 14px; }
+.coming-up-title { display: block; font-size: 0.85rem; font-weight: 700; color: var(--muted); margin-bottom: 4px; }
+.coming-up ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.coming-up li { display: flex; align-items: baseline; gap: 4px; }
+
+.spotlight { display: none; }
+@media (min-width: 1220px) {
+  .spotlight {
+    display: block; position: fixed; top: 24px; width: 290px;
+    left: max(16px, calc(50% - 280px - 32px - 290px));
+    max-height: calc(100vh - 48px - var(--tabs-h)); overflow: auto; padding: 14px 16px;
+  }
+  .spotlight .brow { border-top: 0; padding: 4px 0; }
+  .spotlight .brow-main { flex-wrap: wrap; }
+}
+.spotlight-kicker { margin: 0 0 6px; font-size: 0.85rem; font-weight: 700; color: var(--muted); }
+.spotlight-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.coming-up li { align-items: center; min-height: 36px; }
+.coming-up-what { flex: 1; min-width: 0; }
