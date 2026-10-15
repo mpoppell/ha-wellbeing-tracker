@@ -173,8 +173,53 @@ function toast(msg, actionLabel, onAction) {
   t.classList.toggle("has-action", !!actionLabel);
   t.classList.add("show");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove("show"), actionLabel ? 6000 : 2200);
+  const hide = () => t.classList.remove("show");
+  const wait = actionLabel ? 10000 : 3000;
+  toastTimer = setTimeout(hide, wait);
+  // WCAG 2.2.1: don't take an Undo away while someone's reaching for it
+  t.onmouseenter = t.onfocusin = () => clearTimeout(toastTimer);
+  t.onmouseleave = t.onfocusout = () => { clearTimeout(toastTimer); toastTimer = setTimeout(hide, 4000); };
 }
+
+// Keep keyboard and screen reader users where they were when the screen redraws after a save.
+function focusSnapshot(root) {
+  const a = document.activeElement;
+  if (!root || !a || a === document.body || !root.contains(a)) return () => {};
+  const tag = a.tagName;
+  const label = a.getAttribute("aria-label");
+  const text = a.textContent.trim();
+  const titleOf = (n) => {
+    const c = n.closest(".card"); const h = c && c.querySelector(".card-title");
+    const r = n.closest(".brow, .med-row, .edit-row"); const rn = r && r.querySelector(".brow-name, .row-name");
+    return `${h ? h.textContent : ""}|${rn ? rn.textContent : ""}`;
+  };
+  const where = titleOf(a);
+  const inSpot = !!a.closest(".spotlight");
+  return () => {
+    const now = document.activeElement;
+    if (now && now !== document.body && root.contains(now)) return;
+    const same = [...root.querySelectorAll(tag)].filter((x) => x.getAttribute("aria-label") === label && x.textContent.trim() === text);
+    let target = same.find((x) => titleOf(x) === where) || (same.length === 1 ? same[0] : null);
+    if (!target && inSpot) target = root.querySelector(".spotlight button, .spotlight input");
+    if (!target && label) target = [...root.querySelectorAll(`[aria-label="${CSS.escape(label)}"]`)][0];
+    if (target) target.focus({ preventScroll: true });
+  };
+}
+
+// Every dialog is named by its heading, for screen readers.
+{
+  const show = HTMLDialogElement.prototype.showModal;
+  let n = 0;
+  HTMLDialogElement.prototype.showModal = function showModal() {
+    if (!this.hasAttribute("aria-label")) {
+      const h = this.querySelector("h2");
+      if (h) { if (!h.id) h.id = `dialog-title-${++n}`; this.setAttribute("aria-labelledby", h.id); }
+    }
+    return show.call(this);
+  };
+}
+
+const motionOK = () => !(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
 
 /* ================= state ================= */
 
@@ -518,7 +563,8 @@ function levelLine(text, colour, onClear, note) {
   if (!text && !note) return null;
   return el("span", { class: "brow-level", style: colour ? `--lc:${colour}` : "" },
     onClear && text ? el("button", { type: "button", class: "clear", "aria-label": "Clear", title: "Clear", onclick: onClear }, svgIcon(ICONS.minus)) : null,
-    text ? el("span", {}, text) : null,
+    text && colour && colour !== "var(--muted)" ? el("span", { class: "level-dot", "aria-hidden": "true" }) : null,
+    text ? el("span", { class: colour === "var(--muted)" ? "level-muted" : "level-text" }, text) : null,
     note ? el("span", { class: "level-note" }, text ? ` · ${note}` : note) : null);
 }
 
@@ -543,6 +589,7 @@ function tile(content, attrs = {}) {
 /* ---------- the screen ---------- */
 
 function drawCheckin(view) {
+  const restoreFocus = focusSnapshot(view);
   const today = isoDay(new Date());
   const name = (state.me.display_name || state.me.username || "").split(" ")[0];
   const isToday = state.day === today;
@@ -602,6 +649,7 @@ function drawCheckin(view) {
   }
   view.replaceChildren(...[head, ...banners, !editing && isToday ? dueCard(view) : null, !editing ? newsCard(view) : null, ...cards, ...extra,
     editing ? null : spotlight(view)].filter(Boolean));
+  restoreFocus();
 }
 
 /* ---------- desktop: one question at a time, beside Check-in ---------- */
@@ -690,10 +738,12 @@ function spotlight(view) {
     spot.timer = setTimeout(() => { spot.saved = null; spot.id = pickSpotlight(t.id); drawCheckin(view); }, delay);
   };
   const save = async (items, said, advance = true) => {
+    const hadFocus = !!(document.activeElement && document.activeElement.closest(".spotlight"));
     try {
       await api("POST", "api/checkin", { logged_at: localISO(new Date()), items });
       spot.saved = { id: t.id, said };
       await refreshCheckin();
+      if (hadFocus) document.querySelector(".spotlight .spot-saved")?.focus();
       offerBreathing(items);
       if (advance) next(1400);
     } catch (err) { toast(err.message); }
@@ -749,7 +799,7 @@ function spotlight(view) {
   return el("aside", { class: "spotlight card", "aria-label": "One quick question" },
     el("p", { class: "spotlight-kicker" }, t.emoji ? el("span", { class: "emoji", "aria-hidden": "true" }, t.emoji) : null, question),
     saved && !multiSaved
-      ? el("p", { class: "spot-saved", role: "status" }, svgIcon(ICONS.check), t.kind === "gratitude" ? "Saved. Nice one." : `Saved: ${saved}`)
+      ? el("p", { class: "spot-saved", role: "status", tabindex: "-1" }, svgIcon(ICONS.check), t.kind === "gratitude" ? "Saved. Nice one." : `Saved: ${saved}`)
       : body,
     el("div", { class: "spotlight-foot" },
       multiSaved ? el("button", { type: "button", class: "secondary small", onclick: () => next() }, "Done")
@@ -818,7 +868,7 @@ function drawInbox() {
       onclick: () => (a.reason ? openSkipSheet({ name: item.title.replace(/^Time for (your )?/, "") }, (r) => answerInbox(item, a.verb, r)) : answerInbox(item, a.verb)) },
       a.label));
     if (item.kind === "checkin") {
-      buttons.push(el("button", { type: "button", class: "secondary small", onclick: () => { sheet.close(); window.scrollTo({ top: 0, behavior: "smooth" }); } }, "Check in now"));
+      buttons.push(el("button", { type: "button", class: "secondary small", onclick: () => { sheet.close(); window.scrollTo({ top: 0, behavior: motionOK() ? "smooth" : "auto" }); } }, "Check in now"));
     }
     return el("div", { class: "inbox-item" },
       el("div", { class: "inbox-text" },
@@ -846,7 +896,7 @@ setInterval(() => {
   const sheet = document.getElementById("sheet");
   if (document.visibilityState === "visible" && currentTab() === "checkin" && !state.editing && sheet && !sheet.open
       && state.day === isoDay(new Date()) && state.me
-      && !(document.activeElement && document.activeElement.matches("input, textarea, select"))) refreshCheckin().catch(() => {});
+      && !(document.activeElement && document.activeElement !== document.body && viewEl().contains(document.activeElement))) refreshCheckin().catch(() => {});
 }, 60000);
 
 /* ---------- pausing reminders ---------- */
@@ -873,7 +923,12 @@ function openPauseSheet() {
   const at = (days, h, m = 0) => { const d = new Date(); d.setDate(d.getDate() + days); d.setHours(h, m, 0, 0); return d; };
   const inHours = (h) => new Date(Date.now() + h * 3600 * 1000);
   const pick = (until) => { sheet.close(); setPause(until); };
-  const custom = el("input", { type: "datetime-local", "aria-label": "Pause until" });
+  const customDay = el("input", { type: "date", "aria-label": "Pause until, day", min: isoDay(new Date()), value: addDays(isoDay(new Date()), 1) });
+  const customTime = el("time-field", { value: "07:00", "aria-label": "Pause until, time" });
+  const custom = { get value() {
+    if (!customDay.value || !customTime.value) return "";
+    return `${customDay.value}T${customTime.value}`;
+  } };
   const item = (label, fn) => el("button", { type: "button", class: "menu-item", onclick: fn }, label);
   sheet.replaceChildren(el("div", { class: "sheet-body" },
     el("h2", {}, "Pause reminders"),
@@ -885,7 +940,7 @@ function openPauseSheet() {
       item("Until tomorrow morning (7am)", () => pick(at(1, 7))),
       item("For 3 days", () => pick(at(3, 7))),
       item("For a week", () => pick(at(7, 7)))),
-    field("Or until", el("div", { class: "inline-field" }, custom,
+    field("Or until", el("div", { class: "inline-field" }, customDay, customTime,
       el("button", { type: "button", class: "secondary small", onclick: () => { if (custom.value) pick(new Date(custom.value)); } }, "Pause"))),
     el("div", { class: "actions" },
       pausedUntil() ? el("button", { type: "button", class: "primary", onclick: () => pick(null) }, "Resume now") : null,
@@ -944,14 +999,14 @@ function sectionCard(s, view) {
   const meds = s.items.some(isMeds);
   const left = sectionLeft(s.items);
   const header = el("div", { class: "card-head" },
-    el("button", { type: "button", class: "card-toggle", "aria-expanded": String(open), onclick: () => toggleCollapsed(key) },
+    el("h2", { class: "card-h" }, el("button", { type: "button", class: "card-toggle", "aria-expanded": String(open), onclick: () => toggleCollapsed(key) },
       el("span", { class: "card-icon" }, sectionIcon(s.name)),
       el("span", { class: "card-title" }, s.name),
       left == null ? null : left === 0
         ? el("span", { class: "card-done", title: "All done today", "aria-label": "All done today" }, svgIcon(ICONS.check))
         : el("span", { class: "card-left", title: meds ? `${left} still to take today` : `${left} not filled in yet`,
             "aria-label": meds ? `${left} still to take today` : `${left} not filled in yet` }, String(left)),
-      el("span", { class: "card-chevron" }, svgIcon(open ? ICONS.up : ICONS.down))),
+      el("span", { class: "card-chevron" }, svgIcon(open ? ICONS.up : ICONS.down)))),
     el("button", { type: "button", class: "iconbtn plain", "aria-label": `${s.name} options`, title: "Options",
       onclick: () => openSectionMenu(s, view) }, svgIcon(ICONS.dots)));
 
@@ -1257,7 +1312,7 @@ function dueCard(view) {
     if (item.kind === "checkin") {
       buttons.unshift(el("button", { type: "button", class: "primary small", onclick: () => {
         const first = document.querySelector(".card:not(.due-card) .card-body");
-        if (first) first.scrollIntoView({ behavior: "smooth", block: "start" });
+        if (first) { first.scrollIntoView({ behavior: motionOK() ? "smooth" : "auto", block: "start" }); first.closest(".card").querySelector("button")?.focus({ preventScroll: true }); }
       } }, "Check in now"));
       buttons.forEach((b, i) => { if (i) b.className = "secondary small"; });
     }
@@ -1277,7 +1332,7 @@ function dueCard(view) {
     count ? [
       el("div", { class: "card-head" },
         el("span", { class: "card-icon" }, svgIcon(ICONS.bell)),
-        el("span", { class: "card-title" }, "Due"),
+        el("h2", { class: "card-title" }, "Due"),
         el("span", { class: "card-count", "aria-label": `${count} waiting` }, String(count))),
       el("div", { class: "card-body" }, rows),
     ] : null,
@@ -1380,7 +1435,7 @@ function medRow(t, view) {
           strength ? el("span", { class: "med-strength" }, strength) : null)),
       el("button", { type: "button", class: "secondary small log-dose", "aria-label": `Log ${t.name}`, onclick: () => openDoseDialog(t, null) },
         svgIcon(ICONS.plus), "Log")),
-    chips.length ? el("div", { class: "med-plan", role: "list", "aria-label": "Today" }, chips.map((x) => x.node))
+    chips.length ? el("div", { class: "med-plan", role: "group", "aria-label": `${t.name} today` }, chips.map((x) => x.node))
       : el("div", { class: "row-sub" }, `Usually ${usualText(t)}`),
     taken.length > 1 || supplyCallout(t) ? el("div", { class: "med-foot" },
       supplyCallout(t),
@@ -1505,7 +1560,7 @@ function openRefillSheet(t, sup) {
   const drawGo = () => { const n = Number(qty.value) || 0; go.textContent = n ? `Add ${fmtNum(n)} ${plural(word, n)}` : "Add"; };
   qty.addEventListener("input", drawGo);
   drawGo();
-  const err = el("p", { class: "form-error", hidden: true });
+  const err = el("p", { class: "form-error", role: "alert", hidden: true });
   const form = el("form", { method: "dialog", class: "even-pairs" },
     el("h2", {}, `Refill ${t.name}`), err,
     el("div", { class: "field-pair" }, field("How many", qty), field("Collected", day)),
@@ -1567,7 +1622,7 @@ function openSupplyEditor(t, sup) {
   const drawEnabled = () => body.classList.toggle("dimmed", !enabled.input.checked);
   enabled.input.addEventListener("change", drawEnabled);
   drawEnabled();
-  const err = el("p", { class: "form-error", hidden: true });
+  const err = el("p", { class: "form-error", role: "alert", hidden: true });
   const form = el("form", { method: "dialog", class: "even-pairs" },
     el("h2", {}, `${t.name}: supply and script`), err, enabled.node, body,
     el("div", { class: "actions" },
@@ -1618,13 +1673,12 @@ function openDoseDialog(t, entry, opts = {}) {
   drawStrength();
 
   const timeBtn = el("button", { type: "button", class: "time-pill" });
-  const timeInput = el("input", { type: "time", hidden: true, "aria-label": "Time taken" });
-  const drawTime = () => timeBtn.replaceChildren(niceTime(time));
-  timeBtn.addEventListener("click", () => { timeBtn.hidden = true; timeInput.hidden = false; timeInput.value = time; timeInput.focus(); });
-  timeInput.addEventListener("change", () => { time = timeInput.value || time; drawTime(); timeInput.hidden = true; timeBtn.hidden = false; });
+  const timeInput = null;
+  const drawTime = () => { timeBtn.replaceChildren(niceTime(time)); timeBtn.setAttribute("aria-label", `Taken at ${niceTime(time)}. Change the time`); };
+  timeBtn.addEventListener("click", () => openTimePicker({ value: time, label: "Time taken", onSave: (v) => { time = v; drawTime(); markSheetChanged(); timeBtn.focus(); } }));
   drawTime();
 
-  const err = el("p", { class: "form-error", hidden: true });
+  const err = el("p", { class: "form-error", role: "alert", hidden: true });
   const confirmIt = async () => {
     const [h, m] = time.split(":").map(Number);
     const when = dayToDate(day);
@@ -1729,7 +1783,7 @@ function openGroupSheet(g, view) {
         out,
         el("button", { type: "button", class: "iconbtn", "aria-label": `More ${t.name}`, onclick: () => step(0.5) }, svgIcon(ICONS.plus)))) };
   });
-  const err = el("p", { class: "form-error", hidden: true });
+  const err = el("p", { class: "form-error", role: "alert", hidden: true });
   const save = async (groups) => {
     try {
       state.person = await api("PUT", "api/reminders/settings", { med_groups: groups });
@@ -1951,10 +2005,9 @@ function openRatingDialog(t, entry = null) {
   const n = c.max - c.min + 1;
 
   const timeBtn = el("button", { type: "button", class: "time-edit" });
-  const timeInput = el("input", { type: "time", value: time, hidden: true, "aria-label": "Time" });
-  const drawTime = () => timeBtn.replaceChildren(el("span", {}, niceTime(time)), svgIcon(ICONS.edit));
-  timeBtn.addEventListener("click", () => { timeBtn.hidden = true; timeInput.hidden = false; timeInput.focus(); });
-  timeInput.addEventListener("change", () => { time = timeInput.value || time; drawTime(); timeInput.hidden = true; timeBtn.hidden = false; });
+  const timeInput = null;
+  const drawTime = () => { timeBtn.replaceChildren(el("span", {}, niceTime(time)), svgIcon(ICONS.edit)); timeBtn.setAttribute("aria-label", `At ${niceTime(time)}. Change the time`); };
+  timeBtn.addEventListener("click", () => openTimePicker({ value: time, label: `${t.name} at`, onSave: (v) => { time = v; drawTime(); timeBtn.focus(); } }));
   drawTime();
 
   const choose = async (v) => {
@@ -2053,7 +2106,7 @@ function hypnogram(n, opts = {}) {
   const t0 = msOf(n.start), t1 = msOf(n.end), span = Math.max(1, t1 - t0);
   const x = (iso) => labelW + ((msOf(iso) - t0) / span) * (W - labelW);
   const y = (p) => rows.indexOf(p) * (rowH + gap);
-  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: opts.mini ? "hypno mini" : "hypno", role: "img",
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: opts.mini ? "hypno mini" : "hypno", role: opts.mini ? "img" : "group",
     "aria-label": `Sleep from ${clockOf(n.start)} to ${clockOf(n.end)}: ${n.has_phases
       ? PHASE_ORDER.map((p) => `${PHASE_LABEL[p]} ${hm(n.totals[p])}`).join(", ") : `${hm(n.asleep)} asleep`}` });
   if (!opts.mini) {
@@ -2067,7 +2120,8 @@ function hypnogram(n, opts = {}) {
     const p = phaseOf(n, b.phase);
     const w = Math.max(1.5, x(b.end) - x(b.start) - (opts.mini ? 0 : 1));
     const rect = svgEl("rect", { x: x(b.start), y: y(p), width: w, height: rowH, rx: opts.mini ? 1 : 4,
-      class: `ph ph-${p}`, tabindex: opts.mini ? null : 0 },
+      class: `ph ph-${p}`, tabindex: opts.mini ? null : 0, role: opts.mini ? null : "button",
+      "aria-label": opts.mini ? null : `${PHASE_LABEL[p]}, ${clockOf(b.start)} to ${clockOf(b.end)}` },
       svgEl("title", {}, `${PHASE_LABEL[p]} ${clockOf(b.start)}–${clockOf(b.end)}`));
     if (caption) {
       const show = () => {
@@ -2107,13 +2161,15 @@ function sleepTrend(nights, goalH, selected, onPick) {
   const maxMin = Math.max(goalH * 60, ...nights.map((n) => n.asleep)) * 1.1;
   const yOf = (min) => base - (min / maxMin) * (base - top);
   const bw = W / days.length;
-  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: "sleep-trend", role: "img",
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: "sleep-trend", role: "group",
     "aria-label": `Sleep over the last 14 nights, against a goal of ${goalH} hours` });
   svg.append(svgEl("line", { x1: 0, x2: W, y1: base, y2: base, class: "trend-base" }));
   days.forEach((day, i) => {
     const n = byNight.get(day);
     const x0 = i * bw + 3, w = bw - 6;
-    const g = svgEl("g", { class: `trend-night${n ? "" : " none"}${n && n.night === selected ? " on" : ""}`, tabindex: n ? 0 : null },
+    const g = svgEl("g", { class: `trend-night${n ? "" : " none"}${n && n.night === selected ? " on" : ""}`, tabindex: n ? 0 : null,
+      role: n ? "button" : null, "aria-label": n ? `${dayLabel(n.night)}: ${hm(n.asleep)} asleep. Show this night` : null,
+      "aria-pressed": n ? String(n.night === selected) : null },
       svgEl("rect", { x: i * bw, y: 0, width: bw, height: H, class: "trend-hit" }));
     if (n) {
       let acc = 0;
@@ -2248,7 +2304,7 @@ function openSleepTimes(night, n, done) {
   const t = state.allTrackers.find((x) => x.kind === "sleep");
   const entry = t ? (state.dayEntries || []).find((e) => e.tracker_id === t.id && e.day === night) : null;
   const was = entry && entry.value_json ? entry.value_json : {};
-  const time = (value, label) => el("input", { type: "time", value, "aria-label": label });
+  const time = (value, label) => el("time-field", { value, "aria-label": label, placeholder: "Choose" });
   const bed = time(n && n.fell_asleep_after != null && n.phases[0] && n.phases[0].phase === "awake" ? hhmm(n.start) : "", "Went to bed");
   const asleep = time(asleepParts.length ? hhmm(asleepParts[0].start) : "", "Fell asleep");
   const woke = time(asleepParts.length ? hhmm(asleepParts[asleepParts.length - 1].end) : "", "Woke up");
@@ -2259,7 +2315,7 @@ function openSleepTimes(night, n, done) {
   const totalM = el("input", { type: "number", min: "0", max: "59", step: "1", inputmode: "numeric", "aria-label": "Minutes", style: "width:5em",
     value: was.hours != null ? Math.round((was.hours % 1) * 60) : "" });
   const summary = el("p", { class: "sleep-sum", "aria-live": "polite" });
-  const err = el("p", { class: "form-error", hidden: true });
+  const err = el("p", { class: "form-error", role: "alert", hidden: true });
   let mode = "times";
 
   // evening times belong to the night before; morning times to the day you woke
@@ -2359,7 +2415,7 @@ async function openSleepSetup(view) {
   const segments = pick(opt(ha.sensors, ICONS.phone, (i) => /sleep/.test(i)), was.segments, "Search sensors");
   const confidence = pick(opt(ha.sensors, ICONS.phone, (i) => /sleep/.test(i)), was.confidence, "Search sensors");
   const goal = el("input", { type: "number", min: "4", max: "14", step: "0.5", inputmode: "decimal", value: view.goal || 8, style: "width:6em" });
-  const err = el("p", { class: "form-error", hidden: true });
+  const err = el("p", { class: "form-error", role: "alert", hidden: true });
   const group = (title, intro, open, ...fields) => el("details", { class: "source-group", open },
     el("summary", {}, el("span", { class: "source-title" }, title), el("span", { class: "row-sub" }, intro)), ...fields);
   const hasHome = !!(was.lights?.length || was.charging || was.in_use);
@@ -2583,6 +2639,7 @@ function settingRow(title, sub, onclick) {
 }
 
 async function renderSettings(view) {
+  const restoreFocus = focusSnapshot(view);
   view.replaceChildren(el("p", { class: "loading" }, "Loading…"));
   const all = await api("GET", "api/trackers?include_hidden=true");
   const visible = all.filter((t) => !t.hidden);
@@ -2675,6 +2732,7 @@ async function renderSettings(view) {
     el("p", { class: "hint section-hint" }, "Tap one to change it. To reorder or regroup them, tap the pencil on Check-in."),
     ...trackerSections, addRow, hiddenSection,
     el("p", { class: "whoami" }, `Signed in to Home Assistant as ${state.me.display_name || state.me.username}`)].filter(Boolean));
+  restoreFocus();
 }
 
 // Does a check-in or water "days" setting include today?
@@ -2870,7 +2928,7 @@ function openTrackerSheet(t, view) {
   drawKindExample();
 
   const extra = el("div", {});
-  const err = el("p", { class: "form-error", hidden: true });
+  const err = el("p", { class: "form-error", role: "alert", hidden: true });
 
   // kind-specific inputs, rebuilt when the kind changes
   const inputs = {};
@@ -3126,7 +3184,7 @@ function timesEditor(times, opts = {}) {
   const amounts = opts.amounts || {};
   const list = el("div", { class: "time-list" });
   const add = (value, qty) => {
-    const input = el("input", { type: "time", value, required: true, class: "time-at", "aria-label": "Time" });
+    const input = el("time-field", { value, class: "time-at", "aria-label": "Time" });
     const parts = [input];
     if (t) {
       const amount = el("input", { type: "number", min: "0.25", max: "100", step: "0.25", inputmode: "decimal",
@@ -3256,7 +3314,7 @@ async function openScheduleSheet(t, view, opts = {}) {
 
   const enabled = switchField(`Remind me to take ${t.name}`, sched.enabled || opts.turnOn);
   const body = el("div", { class: "sched-body" });
-  const err = el("p", { class: "form-error", hidden: true });
+  const err = el("p", { class: "form-error", role: "alert", hidden: true });
 
   const times = timesEditor(s.times, { med: t, amounts: s.amounts || {} });
   const days = daysEditor(s.days);
@@ -3308,7 +3366,7 @@ async function openScheduleSheet(t, view, opts = {}) {
   // ----- latest time -----
   const latestOn = switchField("Set a latest time", !!s.latest_time,
     "No reminders after this. If it still isn't taken, you get one last question: skip today, or take it anyway?");
-  const latestInput = el("input", { type: "time", value: s.latest_time || "11:00", "aria-label": "Latest time" });
+  const latestInput = el("time-field", { value: s.latest_time || "11:00", "aria-label": "Latest time" });
   const latestPanel = el("div", { class: "subpanel" }, latestInput);
   const drawLatest = () => { latestPanel.hidden = !latestOn.input.checked; };
   latestOn.input.addEventListener("change", drawLatest);
@@ -3412,7 +3470,7 @@ async function openCheckinSheet(view) {
   try { person = await api("GET", "api/reminders/settings"); }
   catch (err) { toast(err.message); return; }
   const c = person.checkins;
-  const err = el("p", { class: "form-error", hidden: true });
+  const err = el("p", { class: "form-error", role: "alert", hidden: true });
 
   const enabled = switchField("Remind me to check in", c.enabled, "A nudge to note how you're doing.");
   const times = timesEditor(c.times);
@@ -3477,7 +3535,7 @@ async function openWaterSheet(view) {
   try { person = await api("GET", "api/reminders/settings"); }
   catch (err) { toast(err.message); return; }
   const h = person.hydration;
-  const err = el("p", { class: "form-error", hidden: true });
+  const err = el("p", { class: "form-error", role: "alert", hidden: true });
   const counts = state.trackers.filter((x) => x.kind === "factor" && ["count", "amount"].includes(x.config.mode));
   const waterDefault = counts.find((x) => x.key === "water");
 
@@ -3485,8 +3543,8 @@ async function openWaterSheet(view) {
   const tracker = selectOf(counts.map((x) => [x.id, `${x.name}${x.config.unit ? " (" + x.config.unit + ")" : ""}`]),
     h.tracker_id ?? (waterDefault ? waterDefault.id : ""));
   const every = selectOf([[60, "1 hour"], [90, "1.5 hours"], [120, "2 hours"], [180, "3 hours"], [240, "4 hours"]], h.every);
-  const start = el("input", { type: "time", value: h.start, "aria-label": "From" });
-  const end = el("input", { type: "time", value: h.end, "aria-label": "Until" });
+  const start = el("time-field", { value: h.start, "aria-label": "From" });
+  const end = el("time-field", { value: h.end, "aria-label": "Until" });
   const days = daysEditor(h.days);
   const amount = el("input", { type: "number", min: "1", max: "5000", value: h.amount, inputmode: "numeric", style: "width:7em", "aria-label": "One drink" });
   const amountField = field("One drink is", el("div", { class: "inline-field" }, amount, el("span", {}, "ml or your unit")),
@@ -3633,7 +3691,7 @@ async function openPersonSheet(view) {
     haOptionsCache = null; // phones may have been added since last time
     [s, ha] = await Promise.all([api("GET", "api/reminders/settings"), haOptions()]);
   } catch (err) { toast(err.message); return; }
-  const err = el("p", { class: "form-error", hidden: true });
+  const err = el("p", { class: "form-error", role: "alert", hidden: true });
 
   // Everywhere a reminder can go, straight from Home Assistant each time this opens.
   const SUBS = { phone: "Phone · with Taken, Snooze and Skip", entity: "Notify entity · message only",
@@ -3660,8 +3718,8 @@ async function openPersonSheet(view) {
   const snooze = selectOf([5, 10, 15, 20, 30, 45, 60].map((n) => [n, `${n} minutes`]), s.snooze_minutes);
 
   const quiet = switchField("Quiet hours", s.quiet.enabled, "No alarm sounds or speaker announcements. Notifications still arrive.");
-  const qStart = el("input", { type: "time", value: s.quiet.start, "aria-label": "Quiet hours start" });
-  const qEnd = el("input", { type: "time", value: s.quiet.end, "aria-label": "Quiet hours end" });
+  const qStart = el("time-field", { value: s.quiet.start, "aria-label": "Quiet hours start" });
+  const qEnd = el("time-field", { value: s.quiet.end, "aria-label": "Quiet hours end" });
   const quietPanel = el("div", { class: "subpanel inline-field" }, el("span", {}, "From"), qStart, el("span", {}, "to"), qEnd);
   const drawQuiet = () => { quietPanel.hidden = !quiet.input.checked; };
   quiet.input.addEventListener("change", drawQuiet);
@@ -3868,7 +3926,6 @@ async function start() {
   route();
 }
 
-start();
 
 
 /* ================= three good things ================= */
@@ -3933,7 +3990,8 @@ function goodThingsRow(t, view) {
   } else if (!isToday) ask = { prompt: written.length ? "Anything else from that day?" : "What went well that day?", slot: null, day: state.day };
 
   const composer = (a) => {
-    const input = el("input", { type: "text", maxlength: "280", placeholder: a.prompt, "aria-label": a.prompt, class: "good-input" });
+    const inputId = `good-${t.id}-${a.slot ?? "x"}`;
+    const input = el("input", { type: "text", maxlength: "280", id: inputId, class: "good-input", placeholder: "A coffee, a kind word, a walk…" });
     const save = async () => {
       const v = input.value.trim();
       if (!v) { input.focus(); return; }
@@ -3942,6 +4000,7 @@ function goodThingsRow(t, view) {
     };
     input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); save(); } });
     return el("div", { class: "good-compose" },
+      el("label", { for: inputId, class: "good-prompt" }, a.prompt),
       a.yesterday ? el("span", { class: "row-sub" }, "Nothing from yesterday yet. Looking back counts too.") : null,
       el("div", { class: "good-compose-row" }, input, el("button", { type: "button", class: "secondary small", onclick: save }, "Save")));
   };
@@ -3962,7 +4021,7 @@ function goodThingsRow(t, view) {
     el("button", { type: "button", class: "good-item", "aria-label": `${e.note}. Change or delete`, onclick: () => edit(e) },
       el("span", { class: "good-dot", "aria-hidden": "true" }), el("span", { class: "good-text" }, e.note),
       el("span", { class: "good-time" }, timeOf(e.logged_at)))))) : null;
-  const dots = isToday && times.length ? el("span", { class: "good-dots", "aria-label": `${Math.min(written.length, times.length)} of ${times.length} today` },
+  const dots = isToday && times.length ? el("span", { class: "good-dots", role: "img", "aria-label": `${Math.min(written.length, times.length)} of ${times.length} today` },
     times.map((_, i) => el("span", { class: i < written.length ? "on" : "" }))) : null;
   return el("div", { class: "brow good-row" },
     el("div", { class: "brow-main" }, el("div", { class: "brow-text" }, rowName(t)), dots),
@@ -4083,7 +4142,7 @@ function newsCard(view) {
   return el("section", { class: "card news-card", "aria-label": "Good news" },
     el("div", { class: "news-head" },
       el("span", { class: "news-icon", "aria-hidden": "true" }, svgIcon("M12 3l2.2 5.6L20 9.3l-4.4 3.9 1.3 5.8L12 16l-4.9 3 1.3-5.8L4 9.3l5.8-.7z")),
-      el("span", { class: "card-title" }, "Good news"),
+      el("h2", { class: "card-title" }, "Good news"),
       el("button", { type: "button", class: "iconbtn plain", "aria-label": "Hide for now", title: "Hide for now", onclick: dismiss }, svgIcon(ICONS.close))),
     el("ul", { class: "news-list" }, top.map((h) => el("li", {}, h.emoji ? el("span", { class: "emoji", "aria-hidden": "true" }, h.emoji) : null, el("span", {}, h.text)))),
     news.length > top.length ? el("a", { class: "link inline news-more", href: "#/history" }, "More in History") : null);
@@ -4101,8 +4160,202 @@ function weekCard() {
   if (w.doses_taken) facts.push(`${w.doses_taken} ${w.doses_taken === 1 ? "dose" : "doses"} taken when reminded`);
   if (w.best_day) facts.push(`Best day: ${dayLabel(w.best_day.day)} (${w.best_day.label.toLowerCase()})`);
   return el("section", { class: "card week-card" },
-    el("div", { class: "news-head" }, el("span", { class: "card-title" }, "Your week")),
+    el("div", { class: "news-head" }, el("h2", { class: "card-title" }, "Your week")),
     el("ul", { class: "week-facts" }, facts.map((f) => el("li", {}, f))),
     data.highlights.length ? [el("h3", { class: "sleep-h3" }, "Going well"),
       el("ul", { class: "news-list" }, data.highlights.map((h) => el("li", {}, h.emoji ? el("span", { class: "emoji", "aria-hidden": "true" }, h.emoji) : null, el("span", {}, h.text))))] : null);
 }
+
+/* ================= the clock-face time picker ================= */
+
+// One way to pick a time everywhere, like Android's clock: tap the hour on the dial, then the
+// minutes, or type them straight into the big numbers at the top. Follows your 12 or 24-hour
+// setting. Keyboard: the numbers at the top take typing; the dial is a slider (arrow keys).
+function openTimePicker({ value, label, onSave }) {
+  let [h, m] = (value || nowHHMM()).split(":").map(Number);
+  let mode = "hour"; // or "minute"
+  const dlg = el("dialog", { class: "picker", "aria-label": label || "Choose a time" });
+  const hourIn = el("input", { type: "text", inputmode: "numeric", maxlength: "2", class: "picker-num", "aria-label": "Hour", autocomplete: "off" });
+  const minIn = el("input", { type: "text", inputmode: "numeric", maxlength: "2", class: "picker-num", "aria-label": "Minutes", autocomplete: "off" });
+  const am = el("button", { type: "button", class: "picker-ampm" }, "AM");
+  const pm = el("button", { type: "button", class: "picker-ampm" }, "PM");
+  const dial = el("div", { class: "picker-dial", role: "slider", tabindex: "0" });
+  const SVG = "http://www.w3.org/2000/svg";
+  const hand = document.createElementNS(SVG, "svg");
+  hand.setAttribute("viewBox", "0 0 256 256");
+  hand.setAttribute("class", "picker-hand");
+  hand.setAttribute("aria-hidden", "true");
+  const faces = el("div", { class: "picker-faces", "aria-hidden": "true" });
+  dial.append(hand, faces);
+  const R_OUT = 100, R_IN = 66, C = 128;
+  const pos = (i, r) => ({ x: C + r * Math.sin((i / 12) * 2 * Math.PI), y: C - r * Math.cos((i / 12) * 2 * Math.PI) });
+
+  const hour12 = () => (h % 12) || 12;
+  const draw = () => {
+    if (document.activeElement !== hourIn) hourIn.value = clock24 ? pad(h) : String(hour12());
+    if (document.activeElement !== minIn) minIn.value = pad(m);
+    hourIn.classList.toggle("on", mode === "hour");
+    minIn.classList.toggle("on", mode === "minute");
+    am.setAttribute("aria-pressed", String(h < 12));
+    pm.setAttribute("aria-pressed", String(h >= 12));
+    // numbers on the face
+    faces.replaceChildren();
+    const marks = [];
+    if (mode === "hour") {
+      for (let i = 0; i < 12; i++) marks.push({ i, r: R_OUT, text: String(i === 0 ? 12 : i), v: clock24 ? (i === 0 ? 12 : i) : i });
+      if (clock24) for (let i = 0; i < 12; i++) marks.push({ i, r: R_IN, text: i === 0 ? "00" : String(i + 12), v: i === 0 ? 0 : i + 12, inner: true });
+    } else {
+      for (let i = 0; i < 12; i++) marks.push({ i, r: R_OUT, text: pad(i * 5), v: i * 5 });
+    }
+    const current = mode === "hour" ? (clock24 ? h : h % 12) : m;
+    for (const k of marks) {
+      const p = pos(k.i, k.r);
+      faces.append(el("span", { class: `picker-mark${k.inner ? " inner" : ""}${k.v === current ? " on" : ""}`,
+        style: `left:${(p.x / 256) * 100}%;top:${(p.y / 256) * 100}%` }, k.text));
+    }
+    // the hand
+    const unit = mode === "hour" ? (clock24 ? h % 12 : h % 12) : m / 5;
+    const r = mode === "hour" && clock24 && (h === 0 || h > 12) ? R_IN : R_OUT;
+    const tip = pos(unit, r);
+    const mk = (tag, attrs) => { const n = document.createElementNS(SVG, tag); for (const [a, v] of Object.entries(attrs)) n.setAttribute(a, v); return n; };
+    hand.replaceChildren(mk("circle", { cx: C, cy: C, r: 4, class: "picker-pivot" }), mk("line", { x1: C, y1: C, x2: tip.x, y2: tip.y, class: "picker-arm" }),
+      mk("circle", { cx: tip.x, cy: tip.y, r: 20, class: "picker-tip" }));
+    dial.setAttribute("aria-label", mode === "hour" ? "Hour" : "Minutes");
+    dial.setAttribute("aria-valuemin", mode === "hour" ? (clock24 ? "0" : "1") : "0");
+    dial.setAttribute("aria-valuemax", mode === "hour" ? (clock24 ? "23" : "12") : "59");
+    dial.setAttribute("aria-valuenow", String(mode === "hour" ? (clock24 ? h : hour12()) : m));
+    dial.setAttribute("aria-valuetext", niceTime(`${pad(h)}:${pad(m)}`));
+    dial.classList.toggle("minutes", mode === "minute");
+  };
+  const setMode = (next) => { mode = next; draw(); };
+
+  // dial: tap or drag
+  const fromPointer = (ev) => {
+    const box = dial.getBoundingClientRect();
+    const x = ((ev.clientX - box.left) / box.width) * 256 - C;
+    const y = ((ev.clientY - box.top) / box.height) * 256 - C;
+    let angle = Math.atan2(x, -y);
+    if (angle < 0) angle += 2 * Math.PI;
+    const dist = Math.hypot(x, y);
+    if (mode === "hour") {
+      let i = Math.round((angle / (2 * Math.PI)) * 12) % 12;
+      if (clock24) h = dist < (R_IN + R_OUT) / 2 ? (i === 0 ? 0 : i + 12) : (i === 0 ? 12 : i);
+      else h = (h >= 12 ? 12 : 0) + i;
+    } else {
+      m = Math.round((angle / (2 * Math.PI)) * 60) % 60;
+    }
+    draw();
+  };
+  let dragging = false;
+  dial.addEventListener("pointerdown", (ev) => { dragging = true; dial.setPointerCapture(ev.pointerId); fromPointer(ev); ev.preventDefault(); });
+  dial.addEventListener("pointermove", (ev) => { if (dragging) fromPointer(ev); });
+  dial.addEventListener("pointerup", () => {
+    if (!dragging) return;
+    dragging = false;
+    if (mode === "hour") setMode("minute");
+  });
+  dial.addEventListener("keydown", (ev) => {
+    const step = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1, PageUp: 5, PageDown: -5 }[ev.key];
+    if (ev.key === "Enter") { ev.preventDefault(); if (mode === "hour") setMode("minute"); else ok(); return; }
+    if (!step) return;
+    ev.preventDefault();
+    if (mode === "hour") h = (h + step + 24) % 24; else m = (m + step + 60) % 60;
+    draw();
+  });
+
+  // typing into the numbers at the top
+  // Type digits: the first one replaces what's there; when no more digits could fit, it moves on
+  // from the hour to the minutes, like a phone's clock.
+  const typed = (input, max, apply) => {
+    let fresh = true;
+    input.addEventListener("focus", () => { fresh = true; setMode(input === hourIn ? "hour" : "minute"); setTimeout(() => input.select(), 0); });
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") { ev.preventDefault(); ok(); return; }
+      if (!/^\d$/.test(ev.key)) return;
+      ev.preventDefault();
+      let v = fresh ? ev.key : (input.value + ev.key).slice(-2);
+      if (Number(v) > max) v = ev.key;
+      fresh = false;
+      input.value = v;
+      apply(Number(v));
+      draw();
+      if (input === hourIn && (v.length === 2 || Number(v) * 10 > max)) minIn.focus();
+    });
+    input.addEventListener("input", () => { // pasting, or a phone keyboard that skips keydown
+      input.value = input.value.replace(/\D/g, "").slice(0, 2);
+      const v = Number(input.value);
+      if (input.value !== "" && v <= max) apply(v);
+      fresh = false;
+      draw();
+    });
+    input.addEventListener("blur", () => draw());
+  };
+  typed(hourIn, clock24 ? 23 : 12, (v) => {
+    if (clock24) h = v;
+    else if (v >= 1) h = (h >= 12 ? 12 : 0) + (v % 12);
+  });
+  typed(minIn, 59, (v) => { m = v; });
+  am.addEventListener("click", () => { if (h >= 12) h -= 12; draw(); });
+  pm.addEventListener("click", () => { if (h < 12) h += 12; draw(); });
+
+  const close = () => { dlg.close(); dlg.remove(); };
+  const ok = () => { close(); onSave(`${pad(h)}:${pad(m)}`); };
+  const typeMode = el("button", { type: "button", class: "iconbtn plain", "aria-label": "Type the time instead", title: "Type the time",
+    onclick: () => { dlg.classList.toggle("typing"); (dlg.classList.contains("typing") ? hourIn : dial).focus(); } },
+    svgIcon("M3 7h18v10H3zM6 10h.01M9 10h.01M12 10h.01M15 10h.01M18 10h.01M7 14h10"));
+  dlg.append(
+    el("div", { class: "picker-head" },
+      el("p", { class: "picker-label" }, label || "Time"),
+      el("div", { class: "picker-time" }, hourIn, el("span", { class: "picker-colon", "aria-hidden": "true" }, ":"), minIn,
+        clock24 ? null : el("div", { class: "picker-ampms", role: "group", "aria-label": "Morning or afternoon" }, am, pm))),
+    el("div", { class: "picker-body" }, dial),
+    el("div", { class: "picker-actions" }, typeMode,
+      el("button", { type: "button", class: "link", onclick: () => { const d = new Date(); h = d.getHours(); m = d.getMinutes(); draw(); } }, "Now"),
+      el("span", { class: "picker-gap" }),
+      el("button", { type: "button", class: "link", onclick: close }, "Cancel"),
+      el("button", { type: "button", class: "primary small", onclick: ok }, "OK")));
+  dlg.addEventListener("cancel", (ev) => { ev.preventDefault(); close(); });
+  dlg.addEventListener("click", (ev) => { if (ev.target === dlg) close(); });
+  document.body.append(dlg);
+  draw();
+  dlg.showModal();
+  dial.focus();
+}
+
+// <time-field>: a button showing the time, which opens the clock. Has .value ("HH:MM" or "")
+// and fires input and change events, so it can stand in for <input type="time">.
+class TimeField extends HTMLElement {
+  static get observedAttributes() { return ["value", "aria-label", "placeholder"]; }
+  constructor() {
+    super();
+    this._value = "";
+    this._btn = document.createElement("button");
+    this._btn.type = "button";
+    this._btn.className = "time-field-btn";
+    this._btn.addEventListener("click", () => openTimePicker({
+      value: this._value, label: this.getAttribute("aria-label") || "Time",
+      onSave: (v) => {
+        this.value = v;
+        this.dispatchEvent(new Event("input", { bubbles: true }));
+        this.dispatchEvent(new Event("change", { bubbles: true }));
+        if (typeof markSheetChanged === "function" && this.closest("#sheet")) markSheetChanged();
+        this._btn.focus();
+      },
+    }));
+  }
+  connectedCallback() { if (!this._btn.isConnected) this.append(this._btn); this._draw(); }
+  attributeChangedCallback(name, _old, v) { if (name === "value") this._value = v || ""; this._draw(); }
+  get value() { return this._value; }
+  set value(v) { this._value = v || ""; this._draw(); }
+  focus() { this._btn.focus(); }
+  _draw() {
+    const label = this.getAttribute("aria-label") || "Time";
+    const shown = this._value ? niceTime(this._value) : (this.getAttribute("placeholder") || "Choose");
+    this._btn.replaceChildren(svgIcon("M12 7v5l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"), document.createTextNode(shown));
+    this._btn.classList.toggle("empty", !this._value);
+    this._btn.setAttribute("aria-label", `${label}: ${this._value ? niceTime(this._value) : "not set"}. Change`);
+  }
+}
+customElements.define("time-field", TimeField);
+
+start();

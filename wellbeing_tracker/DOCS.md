@@ -265,6 +265,14 @@ data:
   answer: taken          # taken, snooze or skip
 ```
 
+## Times
+
+Wherever you set a time, tap it to open the clock: tap the hour on the dial, then the minutes (dragging works too), or type into the big numbers at the top. Use **AM**/**PM** to switch, **Now** for the current time, and the keyboard button to hide the dial and just type. With a keyboard, type the digits, or focus the dial and use the arrow keys (Page Up and Page Down jump 5 minutes); Enter confirms. It follows the 12 or 24-hour setting in your Home Assistant profile.
+
+## Accessibility
+
+The app aims for WCAG 2.2 AA, with automated checks on every screen in light and dark. It works with a keyboard alone and is built for screen readers (named buttons, headings, announced changes); keeps your place when something saves; never relies on colour alone; respects reduced motion, text size and high-contrast settings; and drag-to-reorder has an arrow-key alternative. If anything gets in your way, please report it.
+
 ## Appearance
 
 The app uses the same colours as your Home Assistant theme, including dark mode and custom themes, and changes when Home Assistant does. Times use the 12 or 24-hour clock set in your Home Assistant profile.

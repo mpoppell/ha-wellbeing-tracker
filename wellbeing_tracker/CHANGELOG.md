@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.21.0
+
+**A clock for every time, and an accessibility pass.**
+
+Times
+- Every time in the app now uses one picker, like Android's clock: tap the hour on the dial, then the minutes, or type straight into the big numbers at the top. AM/PM (or a 24-hour dial with an inner ring, if that's your setting), **Now**, and a keyboard button to just type. The dial also works with the arrow keys.
+- Pausing reminders until a set time now uses a date and this picker.
+
+Accessibility (checked against WCAG 2.2 AA with automated tests on every screen and window, in light and dark, plus by hand)
+- Section names are headings, so screen readers can jump between them.
+- Saving no longer loses your place: after a tap, focus stays on the same button instead of jumping to the top of the page. The automatic refresh waits while you're using the page.
+- Every window is named by its title; errors in forms are announced.
+- Coloured answers ("Very bad (2)") are now dark text with a coloured dot, so they're readable for everyone; colour is never the only clue.
+- Notifications with Undo stay for 10 seconds and don't disappear while you're pointing at them or have tabbed to them.
+- The "clear" buttons are bigger (at least 24 by 24 pixels).
+- The sleep charts can be explored with the keyboard, and each bar and block is read out ("Tue 14 Oct: 7 h 28 min asleep").
+- Three good things has a visible question above the box, not just a hint inside it.
+- Reduced motion is respected everywhere, including scrolling. High-contrast (forced colours) mode keeps selected buttons visible.
+- Settings that are switched off are no longer greyed out to an unreadable contrast.
+
 ## 0.20.0
 
 **The question beside Check-in is now one tap.**
