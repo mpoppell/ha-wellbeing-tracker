@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.18.0
+
+**Three good things, a minute to breathe, and good news without guilt.**
+
+- **Three good things**, in a new **Reflect** section after How you feel. One at a time through the day: after lunch ("What's gone well so far today?"), mid-afternoon, and before bed. Small dots show how many you've written. Tap one to change or delete it.
+  - Nothing from yesterday? Before the first one's due, it asks "What were you grateful for yesterday?" instead.
+  - Optional reminders at those times, which you can answer straight from the notification. Turn them on, or change the times, by editing Three good things.
+- **A minute to breathe**: after a low mood, or anxiety at moderate or worse, the app gently offers a one-minute breathing exercise (at most every three hours). A circle grows as you breathe in for 4 and shrinks as you breathe out for 6, or stays still if your device asks for less motion. Finishing logs a new **Mindful minute** habit. You can also start it any time from How you feel's ••• menu.
+- **Good news**: when something's improved since the day before, the week before or the month before, Check-in says so ("Headache on 1 day this week, down from 6", "Your best mood in 3 weeks today"). Only improvements are ever mentioned, and only where it's clear which way is better.
+- **Your week**, at the top of History: days checked in, good things noted, sleep, doses taken, your best day, and everything that's going well.
+- A small "Nice work" when you fill in the last thing for the day.
+- Fixed: editing the Sleep item could forget where your nights come from and your sleep goal.
+
 ## 0.17.0
 
 **What needs doing first, and one question at a time on a computer.**

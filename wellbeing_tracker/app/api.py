@@ -181,6 +181,10 @@ def build_router(current_user) -> APIRouter:
         """Fetch everything Home Assistant still has (about ten days)."""
         return {"nights": await e.sync_nights(days=10, user_id=user["id"])}
 
+    @router.get("/encouragement")
+    def encouragement(user: dict = Depends(current_user), e=Depends(engine)) -> dict:
+        return e.encouragement(user["id"])
+
     @router.get("/inbox")
     def inbox(user: dict = Depends(current_user), e=Depends(engine)) -> list[dict]:
         return e.inbox(user["id"])

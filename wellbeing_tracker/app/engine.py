@@ -41,6 +41,7 @@ from .schedule import (
     person_settings,
     schedule_settings,
 )
+from . import encourage
 from . import sleep as sleepdata
 from .supply import normalise_supply, status as supply_status, supply_settings
 from .trackers import ValidationError
@@ -246,6 +247,7 @@ class Engine:
                 self._activate_checkins(conn, now, out)
                 self._expire_checkins(conn, now, out)
                 self._hydration(conn, now, out)
+                self._good_things(conn, now, out)
                 self._supply_alerts(conn, now, out)
             await self._flush(out)
             await self._send_due(now)
@@ -518,6 +520,9 @@ class Engine:
         if r["kind"] == "hydration":
             self._send_hydration(conn, r, now, out)
             return
+        if r["kind"] == "gratitude":
+            self._send_good_thing(conn, r, now, out)
+            return
         doses = self._due_doses(conn, rid)
         if not doses:
             self._close(conn, r, now, out)
@@ -715,6 +720,8 @@ class Engine:
                     self._answer_checkin(conn, r, verb, now, source, out)
                 elif r["kind"] == "hydration":
                     self._answer_hydration(conn, r, verb, now, out)
+                elif r["kind"] == "gratitude":
+                    self._answer_good_thing(conn, r, verb, reply, now, out)
                 elif verb == "SNOOZE" and r["kind"] == "dose":
                     person = self._person_for(conn, r["user_id"])
                     until = now + timedelta(minutes=person["snooze_minutes"])
@@ -795,6 +802,12 @@ class Engine:
             return
         if r["kind"] == "hydration":
             self._undo_hydration(conn, r, now, out)
+            return
+        if r["kind"] == "gratitude":
+            p = json.loads(r["payload"] or "{}")
+            if p.get("entry_id"):
+                conn.execute("DELETE FROM entries WHERE id = ?", (p["entry_id"],))
+            conn.execute("UPDATE reminders SET answered_at = NULL WHERE id = ?", (r["id"],))
             return
         doses = conn.execute(
             "SELECT * FROM doses WHERE reminder_id = ? AND status IN ('taken', 'skipped') AND resolved_at >= ?",
@@ -1249,6 +1262,93 @@ class Engine:
                     "VALUES (?, 'hydration', ?, 'active', ?, ?, ?)",
                     (user_id, iso(now), iso(now), iso(now), iso(now)),
                 )
+
+    # ================= three good things =================
+
+    GOOD_THING_WINDOW = timedelta(minutes=90)  # a prompt is only sent this long after its time
+
+    @staticmethod
+    def good_thing_prompt(hhmm: str) -> str:
+        if hhmm < "14:00":
+            return "What's gone well so far today?"
+        if hhmm < "18:00":
+            return "What's one good thing from this afternoon?"
+        return "Before bed: what's one good thing from today?"
+
+    def _good_things(self, conn, now: datetime, out: Outbox) -> None:
+        """A gentle prompt at each of the day's times, if asked for and not already written."""
+        local = now.astimezone(self.tz)
+        today = local.date().isoformat()
+        hhmm = local.strftime("%H:%M")
+        rows = conn.execute("SELECT * FROM trackers WHERE kind = 'gratitude' AND hidden = 0").fetchall()
+        for t in rows:
+            cfg = json.loads(t["config"] or "{}")
+            times = cfg.get("times") or []
+            slot = max((i for i, x in enumerate(times) if x <= hhmm), default=None)
+            written = {r[0] for r in conn.execute(
+                "SELECT value_num FROM entries WHERE tracker_id = ? AND day = ?", (t["id"], today)).fetchall()}
+            for r in conn.execute("SELECT * FROM reminders WHERE user_id = ? AND kind = 'gratitude' "
+                                  "AND status IN ('active', 'snoozed')", (t["user_id"],)).fetchall():
+                p = json.loads(r["payload"] or "{}")
+                if p.get("day") != today or p.get("slot") != slot or p.get("slot") in written or not cfg.get("remind"):
+                    self._close(conn, r, now, out)
+            if not cfg.get("remind") or slot is None or slot in written:
+                continue
+            h, m = map(int, times[slot].split(":"))
+            if now - datetime.combine(local.date(), time(h, m), self.tz) > self.GOOD_THING_WINDOW:
+                continue
+            asked = any(json.loads(r["payload"] or "{}").get("slot") == slot for r in conn.execute(
+                "SELECT payload FROM reminders WHERE user_id = ? AND kind = 'gratitude' AND created_at >= ?",
+                (t["user_id"], iso(now - timedelta(hours=20)))).fetchall()
+                if json.loads(r["payload"] or "{}").get("day") == today)
+            if asked:
+                continue
+            conn.execute(
+                "INSERT INTO reminders (user_id, kind, due_at, status, next_at, created_at, updated_at, payload) "
+                "VALUES (?, 'gratitude', ?, 'active', ?, ?, ?, ?)",
+                (t["user_id"], iso(now), iso(now), iso(now), iso(now),
+                 json.dumps({"tracker_id": t["id"], "slot": slot, "day": today, "time": times[slot]})))
+
+    def _send_good_thing(self, conn, r, now: datetime, out: Outbox) -> None:
+        p = json.loads(r["payload"] or "{}")
+        rid = r["id"]
+        data = {
+            "tag": self._tag(rid),
+            "group": "wellbeing-reflect",
+            "channel": "Good things",
+            "importance": "low",
+            "notification_icon": "mdi:sprout",
+            "color": "#2c5d86",
+            "actions": [
+                {"action": f"{ACTION_PREFIX}GOOD_{rid}", "title": "Write it", "behavior": "textInput",
+                 "textInputButtonTitle": "Save", "textInputPlaceholder": "One good thing"},
+                {"action": f"{ACTION_PREFIX}SKIP_{rid}", "title": "Not now"},
+            ],
+        }
+        if self.panel_path:
+            data["clickAction"] = self.panel_path
+        out.add("notify", r["user_id"], {"title": "One good thing", "message": self.good_thing_prompt(p.get("time", "12:00")),
+                                         "data": data})
+        out.add("event", r["user_id"], rid, "sent", [], "gratitude")
+        conn.execute("UPDATE reminders SET sends = sends + 1, status = 'active', next_at = NULL, updated_at = ? WHERE id = ?",
+                     (iso(now), rid))
+
+    def _answer_good_thing(self, conn, r, verb: str, reply: str | None, now: datetime, out: Outbox) -> None:
+        p = json.loads(r["payload"] or "{}")
+        text = (reply or "").strip()[:280]
+        if verb == "GOOD" and text:
+            local = now.astimezone(self.tz)
+            cur = conn.execute(
+                "INSERT INTO entries (user_id, tracker_id, day, logged_at, value_num, note, source, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'notification', ?, ?)",
+                (r["user_id"], p.get("tracker_id"), p.get("day") or local.date().isoformat(),
+                 local.isoformat(timespec="seconds"), p.get("slot"), text, iso(now), iso(now)))
+            conn.execute("UPDATE reminders SET answered_at = ?, payload = ? WHERE id = ?",
+                         (iso(now), json.dumps({**p, "entry_id": cur.lastrowid}), r["id"]))
+            out.add("event", r["user_id"], r["id"], "logged", [], "gratitude")
+        elif verb != "SKIP":
+            return
+        self._close(conn, r, now, out)
 
     @staticmethod
     def _unit_for(n, unit: str) -> str:
@@ -1863,6 +1963,22 @@ class Engine:
                          (tracker["id"], night))
             self._sleep_hours(conn, tracker, night)
         return self.sleep_view(user_id, 30)
+
+    # ================= good news =================
+
+    def encouragement(self, user_id: str) -> dict:
+        """Improvements worth mentioning, and the last seven days in a few facts."""
+        today = self._local_today(self.clock())
+        trackers = self.db.list_trackers(user_id, include_hidden=False)
+        entries = self.db.list_entries(user_id, (today - timedelta(days=65)).isoformat(), today.isoformat())
+        sleep_t = next((t for t in trackers if t["kind"] == "sleep"), None)
+        goal = float((sleep_t or {}).get("config", {}).get("goal") or 8)
+        with self.db.connect() as conn:
+            doses = [dict(r) for r in conn.execute(
+                "SELECT status FROM doses WHERE user_id = ? AND local_day > ? AND local_day <= ?",
+                (user_id, (today - timedelta(days=7)).isoformat(), today.isoformat())).fetchall()]
+        return {"highlights": encourage.highlights(trackers, entries, today, goal),
+                "week": encourage.week_recap(trackers, entries, doses, today, goal)}
 
     # ================= notifications inside the app =================
 

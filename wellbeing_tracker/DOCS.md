@@ -27,6 +27,28 @@ At the top, **Due** lists doses that are due and any check-in or water reminders
 
 On a computer with a wide window, a panel on the left asks one thing you haven't filled in today. Tap **Another one** for a different one. When everything's done, it goes round again so you can update anything that's changed.
 
+## Three good things
+
+The **Reflect** section asks for one good thing at a time, spread through the day: after lunch, mid-afternoon and before bed. Small things count: a coffee, a kind word, a walk. Type it and tap **Save** (or press Enter). The dots beside the name show how many you've written today, and you can tap any of them to change or delete it. Once all three are in, **Add another** is there if you want it.
+
+If you didn't write anything yesterday, the first question of the morning is "What were you grateful for yesterday?", saved to yesterday.
+
+To change the times, or to get a quiet reminder at each one, edit **Three good things** (Settings, or the pencil on Check-in) and turn on **Remind me at these times**. You can answer the reminder straight from the notification with **Write it**. You won't be asked for a time you've already written one for.
+
+## A minute to breathe
+
+After you log a low mood (the bottom third of the scale), anxiety or stress at moderate or worse, or feeling anxious or overwhelmed, the app offers **A minute to breathe?** It asks at most once every three hours, and you can ignore it.
+
+The exercise is one minute of slow breathing: in for 4, out for 6, following the circle. If your phone or computer is set to reduce motion, the circle stays still and the words guide you instead. When you finish, it's logged as a **Mindful minute** (under Lifestyle). Start it any time from the ••• menu on How you feel.
+
+## Good news, and your week
+
+When something's got better, Check-in says so in a **Good news** card: compared with the day before ("Your best mood in 3 weeks today", "No headache today, after 3 days of it"), the week before, or the month before ("Felt calm on 15 days in the last month, up from 2"). Close the card to hide those for a few days.
+
+Only improvements are mentioned, and only where it's clear which way is better: fewer symptoms, less of things like alcohol or late screen time, more exercise or time outdoors, more sleep when you're short of your goal, reaching a daily goal, a better mood or energy. Nothing points out a bad day or a missed one.
+
+**Your week**, at the top of History, sums up the last seven days: how many days you checked in, good things noted, sleep, doses taken when reminded, your best day, and everything that's going well.
+
 ## Meds/Supplements
 
 Each medication shows its strength, a **Log** button, and one line for today's doses, in time order:

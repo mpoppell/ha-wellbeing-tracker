@@ -247,6 +247,7 @@ function formatValue(t, e) {
       return parts.join(", ");
     }
     case "note": return "";
+    case "gratitude": return e.note || "";
     default: return "";
   }
 }
@@ -320,6 +321,7 @@ async function loadDay() {
   state.allTrackers = all;
   state.trackers = all.filter((t) => !t.hidden);
   state.nextCheckin = isToday ? (await api("GET", "api/checkins/next").catch(() => ({}))).time : null;
+  if (isToday) await loadEncouragement();
 }
 
 async function renderCheckin(view) {
@@ -363,6 +365,7 @@ async function quickSave(items, when) {
   try {
     const res = await api("POST", "api/checkin", { logged_at: when || loggedAtFor(state.day), items });
     await refreshCheckin();
+    offerBreathing(items);
     return res;
   } catch (err) { toast(err.message); return null; }
 }
@@ -392,6 +395,7 @@ const SECTION_ICONS = [
   [/sleep|rest/, "M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"],
   [/medic|meds|supplement/, ICONS.pill],
   [/life|habit|activ|exercise|social/, "M5 19c0-8 5-13 14-14 0 9-5 14-13 14zM5 19l7-7"],
+  [/reflect|good thing|gratitude|grateful/, "M12 3v4M12 17v4M3 12h4M17 12h4M6.3 6.3l2.5 2.5M15.2 15.2l2.5 2.5M6.3 17.7l2.5-2.5M15.2 8.8l2.5-2.5"],
   [/note|journal|diary/, "M4 20h4L19 9l-4-4L4 16v4z"],
   [/water|drink|food|nutrition|diet/, "M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11z"],
 ];
@@ -479,7 +483,12 @@ function dashboardSections(includeHidden) {
   const out = [];
   for (const s of saved) out.push({ name: s.name, hidden: s.hidden, items: byName.get(s.name) || [] });
   for (const [name, items] of byName) {
-    if (!saved.some((s) => s.name === name)) out.push({ name, hidden: false, items });
+    if (saved.some((s) => s.name === name)) continue;
+    const section = { name, hidden: false, items };
+    // Good things go just after How you feel when they're new, not at the bottom
+    const after = saved.length && items.some((t) => t.kind === "gratitude")
+      ? out.findIndex((x) => x.items.some((t) => t.key === "mood")) : -1;
+    if (after >= 0) out.splice(after + 1, 0, section); else out.push(section);
   }
   // Meds/Supplements first by default, like Bearable, unless you've arranged them yourself
   if (!saved.length) out.sort((a, b) => Number(b.items.some(isMeds)) - Number(a.items.some(isMeds)));
@@ -591,7 +600,7 @@ function drawCheckin(view) {
       el("p", {}, "Pick a few things to track. Start small: 3 to 5 is plenty, and you can add more any time."),
       el("button", { type: "button", class: "primary", onclick: () => openTrackerSheet({ kind: "rating" }, view) }, "Add something to track")));
   }
-  view.replaceChildren(...[head, ...banners, !editing && isToday ? dueCard(view) : null, ...cards, ...extra,
+  view.replaceChildren(...[head, ...banners, !editing && isToday ? dueCard(view) : null, !editing ? newsCard(view) : null, ...cards, ...extra,
     editing ? null : spotlight(view)].filter(Boolean));
 }
 
@@ -603,7 +612,7 @@ const spot = { id: null, shown: new Set(), day: null };
 
 function spotlightPool() {
   return dashboardSections(false).filter((s) => !s.hidden).flatMap((s) => s.items)
-    .filter((t) => !isMeds(t) && t.kind !== "note" && t.kind !== "sleep");
+    .filter((t) => !isMeds(t) && t.kind !== "note" && t.kind !== "sleep" && t.kind !== "gratitude");
 }
 
 function pickSpotlight(skip) {
@@ -652,14 +661,21 @@ function spotlight(view) {
 function answerable() {
   return dashboardSections(false).filter((s) => !s.hidden)
     .flatMap((s) => s.items)
-    .filter((t) => !isMeds(t) && t.kind !== "note" && !(t.kind === "factor" && t.config.mode === "bool"));
+    .filter((t) => !isMeds(t) && t.kind !== "note" && t.kind !== "gratitude" && !(t.kind === "factor" && t.config.mode === "bool"));
 }
 
 function progressLine(isToday) {
   const items = answerable();
   const done = items.filter((t) => entriesFor(t.id).length).length;
   const parts = [];
-  if (items.length) parts.push(done === items.length ? `All ${items.length} answered` : `${done} of ${items.length} answered`);
+  if (items.length) parts.push(done === items.length ? `All ${items.length} done. Nice work` : `${done} of ${items.length} answered`);
+  // a small moment when the last one's filled in (not when you open the app to find it done)
+  const allDone = items.length > 0 && done === items.length;
+  if (isToday) {
+    const was = state.doneSeen && state.doneSeen.day === state.day ? state.doneSeen.done : null;
+    if (was === false && allDone) setTimeout(() => toast("That's everything for today. Nice work."), 300);
+    state.doneSeen = { day: state.day, done: allDone };
+  }
   if (isToday && state.nextCheckin) parts.push(`next check-in ${niceTime(state.nextCheckin)}`);
   if (!parts.length) return null;
   return el("div", { class: "progress" },
@@ -816,9 +832,10 @@ function sectionLeft(items) {
     if (!today.length) return null;
     return today.filter((d) => d.status === "scheduled" || d.status === "due").length;
   }
-  const counted = items.filter((t) => t.kind !== "note" && !(t.kind === "factor" && t.config.mode === "bool"));
-  if (!counted.length) return null;
-  return counted.filter((t) => !entriesFor(t.id).length).length;
+  const counted = items.filter((t) => t.kind !== "note" && t.kind !== "gratitude" && !(t.kind === "factor" && t.config.mode === "bool"));
+  const good = items.filter((t) => t.kind === "gratitude");
+  if (!counted.length && !good.length) return null;
+  return counted.filter((t) => !entriesFor(t.id).length).length + good.reduce((a, t) => a + goodThingsLeft(t), 0);
 }
 
 function sectionCard(s, view) {
@@ -870,6 +887,7 @@ function openSectionMenu(s, view) {
       meds ? item("Supply and scripts", () => { location.hash = "#/settings"; }) : null,
       meds ? item("Reminders and devices", () => { location.hash = "#/settings"; }) : null,
       !meds ? item("Copy yesterday's answers", () => copyYesterday(s)) : null,
+      s.items.some((t) => t.kind === "rating" || t.kind === "tags") ? item("Breathe for a minute", () => openBreathing()) : null,
       item("Hide this section", () => hideSection(s)),
       item("Edit dashboard", () => { state.editing = true; drawCheckin(view); })),
     el("div", { class: "actions" }, el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Close"))));
@@ -1803,6 +1821,8 @@ function trackerRow(t, view) {
       el("div", { class: "brow-below" }, nightLink, el("span", { class: "row-sub" }, "How well did you sleep?"), qualityTiles));
   }
 
+  if (t.kind === "gratitude") return goodThingsRow(t, view);
+
   if (t.kind === "note") {
     const area = el("textarea", { "aria-label": t.name, placeholder: "Anything worth remembering about today?" });
     area.value = latest ? latest.note || "" : "";
@@ -1845,7 +1865,7 @@ function openRatingDialog(t, entry = null) {
       else await api("POST", "api/checkin", { logged_at: localISO(when), items: [{ tracker_id: t.id, value_num: v }] });
       sheet.close();
       await refreshCheckin();
-      toast(`${t.name}: ${ratingText(c, v)}`);
+      if (!offerBreathing([{ tracker_id: t.id, value_num: v }])) toast(`${t.name}: ${ratingText(c, v)}`);
     } catch (err) { toast(err.message); }
   };
 
@@ -2218,6 +2238,7 @@ async function renderHistory(view) {
   const from = addDays(to, -(state.historyDays - 1));
   const entries = await api("GET", `api/entries?from=${from}&to=${to}`);
   const allTrackers = await api("GET", "api/trackers?include_hidden=true");
+  await loadEncouragement();
   const byId = new Map(allTrackers.map((t) => [t.id, t]));
 
   const head = el("header", { class: "head" },
@@ -2255,7 +2276,7 @@ async function renderHistory(view) {
     await renderHistory(view);
   } }, "Show earlier days");
 
-  view.replaceChildren(head, ...blocks, more);
+  view.replaceChildren(...[head, weekCard(), ...blocks, more].filter(Boolean));
 }
 
 function daySummary(list, byId) {
@@ -2281,7 +2302,7 @@ function entryButton(e, t) {
     el("span", {},
       el("span", { class: "what" }, t.emoji ? `${t.emoji} ` : "", t.name),
       val ? el("span", { class: "val" }, `  ${val}`) : null,
-      e.note ? el("span", { class: "note" }, e.note) : null,
+      e.note && t.kind !== "gratitude" ? el("span", { class: "note" }, e.note) : null,
     ),
   );
 }
@@ -2293,7 +2314,7 @@ function openEntrySheet(e, t) {
     el("h2", {}, `${t.emoji ? t.emoji + " " : ""}${t.name}`),
     el("p", {}, `${longDate(e.day)} at ${timeOf(e.logged_at)}`),
     val ? el("p", {}, el("strong", {}, val)) : null,
-    e.note ? el("p", { style: "white-space:pre-wrap" }, e.note) : null,
+    e.note && t.kind !== "gratitude" ? el("p", { style: "white-space:pre-wrap" }, e.note) : null,
     el("div", { class: "actions" },
       el("button", { type: "button", class: "primary", onclick: () => {
         sheet.close();
@@ -2322,6 +2343,7 @@ const KIND_INFO = {
   factor: "Habit or factor (yes/no, count or amount)",
   sleep: "Sleep",
   note: "Note",
+  gratitude: "Good things (a few words, a few times a day)",
 };
 
 const OFTEN = { many: "as often as you like", daily: "once a day" };
@@ -2339,6 +2361,7 @@ function describeTracker(t) {
     case "tags": return `Choose from ${(c.options || []).length} options, ${often}`;
     case "sleep": return "Hours and quality, once a day";
     case "note": return `Free text, ${often}`;
+    case "gratitude": return `${joinNames((c.times || []).map(niceTime))}${c.remind ? ", with a reminder" : ""}`;
     case "medication": {
       const amount = [c.dose, c.unit].filter(Boolean).join(" ");
       return [amount, t._schedule === undefined ? null : describeSchedule(t._schedule, t)].filter(Boolean).join(". ");
@@ -2648,7 +2671,7 @@ function openTrackerSheet(t, view) {
     el("option", { value: "daily" }, "Once a day (a new answer replaces the old one)"));
   freq.value = t.frequency || (["symptom", "factor", "sleep", "note"].includes(kind) ? "daily" : "many");
 
-  const kinds = ["rating", "symptom", "factor", "tags", "note", "medication"];
+  const kinds = ["rating", "symptom", "factor", "tags", "note", "gratitude", "medication"];
   if (kind === "sleep") kinds.push("sleep");
   const kindSelect = el("select", { name: "kind" }, kinds.map((k) => el("option", { value: k }, KIND_INFO[k])));
   kindSelect.value = kind;
@@ -2662,6 +2685,7 @@ function openTrackerSheet(t, view) {
     factor: "Things you do or that happen: coffee, exercise, work, time outside.",
     tags: "Choose one or more words from your own list, like emotions or weather.",
     note: "A free-text box, like a journal.",
+    gratitude: "A few good things through the day. Small things count: a coffee, a kind word, a walk.",
     medication: "Log doses and get reminders.",
     sleep: "Hours slept and how well.",
   };
@@ -2692,6 +2716,13 @@ function openTrackerSheet(t, view) {
       drawLabels();
       extra.append(field("Scale", inputs.scale, !isNew && kind === t.kind && logged
         ? "Changing the scale moves past answers to the same place on the new one." : null), labelsField);
+    } else if (kind === "gratitude") {
+      const times = kind === t.kind && c.times ? c.times : ["12:30", "15:30", "21:30"];
+      inputs.times = timesEditor(times);
+      inputs.remind = switchField("Remind me at these times", kind === t.kind && c.remind,
+        "A quiet notification you can answer from your phone. If you've already written one, you won't be asked.");
+      extra.append(el("div", { class: "field" }, el("span", {}, "When to ask"), inputs.times.node,
+        el("span", { class: "hint" }, "For example after lunch, mid-afternoon and before bed.")), inputs.remind.node);
     } else if (kind === "tags") {
       inputs.options = el("textarea", { placeholder: "Happy\nCalm\nAnxious" });
       inputs.options.value = (c.options || []).join("\n");
@@ -2778,7 +2809,7 @@ function openTrackerSheet(t, view) {
   const freqFieldNode = field("How often will you answer it?", freq);
   const drawKindFields = () => {
     groupFieldNode.hidden = kind === "medication";
-    freqFieldNode.hidden = ["sleep", "medication"].includes(kind);
+    freqFieldNode.hidden = ["sleep", "medication", "gratitude"].includes(kind);
   };
   const kindHintEl = kindHint ? el("span", { class: "hint warn", hidden: true }, kindHint) : null;
   const originalKind = kind;
@@ -2798,7 +2829,8 @@ function openTrackerSheet(t, view) {
     if (kind === "tags") return { options: inputs.options.value.split("\n").map((s) => s.trim()).filter(Boolean) };
     if (kind === "factor") return { mode: inputs.mode.value, unit: inputs.unit.value.trim(), goal: inputs.goal.value === "" ? null : inputs.goal.value,
       source: inputs.mode.value === "bool" ? null : readSource() };
-    if (kind === "sleep") return { source: readSource() };
+    if (kind === "sleep") return { ...(kind === t.kind ? c : {}), source: readSource() }; // keep nights and goal
+    if (kind === "gratitude") return { times: inputs.times.read(), remind: inputs.remind.input.checked };
     if (kind === "medication") return { dose: inputs.dose.value === "" ? null : inputs.dose.value, unit: inputs.unit.value.trim(),
       notes: inputs.notes.value.trim(), quantity: inputs.quantity.value || 1, counted_as: inputs.counted.value.trim() };
     return {};
@@ -3661,3 +3693,240 @@ async function start() {
 }
 
 start();
+
+
+/* ================= three good things ================= */
+
+const nowHHMM = () => { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+
+function goodThingPrompt(hhmm) {
+  if (hhmm < "14:00") return "What's gone well so far today?";
+  if (hhmm < "18:00") return "What's one good thing from this afternoon?";
+  return "Before bed: what's one good thing from today?";
+}
+
+// Times that have come round today without a good thing written for them.
+function goodThingsLeft(t) {
+  const times = t.config.times || [];
+  const written = entriesFor(t.id);
+  if (state.day !== isoDay(new Date())) return written.length ? 0 : 1;
+  const open = times.filter((x) => x <= nowHHMM()).length;
+  return Math.max(0, open - written.length);
+}
+
+function goodThingsRow(t, view) {
+  const times = t.config.times || [];
+  const today = isoDay(new Date());
+  const isToday = state.day === today;
+  const written = entriesFor(t.id).slice().reverse(); // earliest first
+  const yesterday = addDays(state.day, -1);
+  const yesterdayEmpty = !(state.prevEntries || []).some((e) => e.tracker_id === t.id);
+  const slotsUsed = new Set(written.map((e) => e.value_num).filter((v) => v != null));
+  const now = nowHHMM();
+  const openSlot = isToday ? times.findIndex((x, i) => x <= now && !slotsUsed.has(i)) : -1;
+  const nextSlot = isToday ? times.findIndex((x, i) => x > now && !slotsUsed.has(i)) : -1;
+
+  const edit = (e) => {
+    const sheet = document.getElementById("sheet");
+    const input = el("textarea", { maxlength: "280", rows: "3" });
+    input.value = e.note || "";
+    const form = el("form", { method: "dialog" },
+      el("h2", {}, "A good thing"),
+      field(`${dayLabel(e.day)}, ${timeOf(e.logged_at)}`, input),
+      el("div", { class: "actions" },
+        el("button", { type: "submit", class: "primary" }, "Save"),
+        el("button", { type: "button", class: "secondary danger", onclick: async () => { sheet.close(); await deleteWithUndo(e, "Good thing"); } }, "Delete"),
+        el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Cancel")));
+    form.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const v = input.value.trim();
+      if (!v) return;
+      try { await api("PATCH", `api/entries/${e.id}`, { note: v }); sheet.close(); await refreshCheckin(); }
+      catch (err) { toast(err.message); }
+    });
+    sheet.replaceChildren(form);
+    sheet.showModal();
+    input.focus();
+  };
+
+  // one place to write, asking the right question for the time of day
+  let ask = null;
+  if (isToday && openSlot >= 0) ask = { prompt: goodThingPrompt(times[openSlot]), slot: openSlot, day: state.day };
+  else if (isToday && !written.length && yesterdayEmpty && (!times.length || now < times[0])) {
+    ask = { prompt: "What were you grateful for yesterday?", slot: null, day: yesterday, yesterday: true };
+  } else if (!isToday) ask = { prompt: written.length ? "Anything else from that day?" : "What went well that day?", slot: null, day: state.day };
+
+  const composer = (a) => {
+    const input = el("input", { type: "text", maxlength: "280", placeholder: a.prompt, "aria-label": a.prompt, class: "good-input" });
+    const save = async () => {
+      const v = input.value.trim();
+      if (!v) { input.focus(); return; }
+      const res = await quickSave([{ tracker_id: t.id, note: v, value_num: a.slot }], a.day === state.day ? undefined : loggedAtFor(a.day));
+      if (res) toast(a.yesterday ? "Saved to yesterday" : written.length + 1 >= times.length && isToday ? "That's three good things today" : "Saved");
+    };
+    input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); save(); } });
+    return el("div", { class: "good-compose" },
+      a.yesterday ? el("span", { class: "row-sub" }, "Nothing from yesterday yet. Looking back counts too.") : null,
+      el("div", { class: "good-compose-row" }, input, el("button", { type: "button", class: "secondary small", onclick: save }, "Save")));
+  };
+
+  let later = null;
+  if (!ask && nextSlot >= 0) {
+    const holder = el("div", {});
+    holder.append(el("p", { class: "row-sub good-next" }, `Next one around ${niceTime(times[nextSlot])}. `,
+      el("button", { type: "button", class: "link inline", onclick: () => holder.replaceChildren(composer({ prompt: "One good thing", slot: nextSlot, day: state.day })) }, "Write one now")));
+    later = holder;
+  } else if (!ask && isToday && written.length >= times.length) {
+    const holder = el("div", {});
+    holder.append(el("button", { type: "button", class: "link inline good-more", onclick: () => holder.replaceChildren(composer({ prompt: "Another good thing", slot: null, day: state.day })) }, "Add another"));
+    later = holder;
+  }
+
+  const list = written.length ? el("ul", { class: "good-list" }, written.map((e) => el("li", {},
+    el("button", { type: "button", class: "good-item", "aria-label": `${e.note}. Change or delete`, onclick: () => edit(e) },
+      el("span", { class: "good-dot", "aria-hidden": "true" }), el("span", { class: "good-text" }, e.note),
+      el("span", { class: "good-time" }, timeOf(e.logged_at)))))) : null;
+  const dots = isToday && times.length ? el("span", { class: "good-dots", "aria-label": `${Math.min(written.length, times.length)} of ${times.length} today` },
+    times.map((_, i) => el("span", { class: i < written.length ? "on" : "" }))) : null;
+  return el("div", { class: "brow good-row" },
+    el("div", { class: "brow-main" }, el("div", { class: "brow-text" }, rowName(t)), dots),
+    el("div", { class: "brow-below" }, list, ask ? composer(ask) : null, later));
+}
+
+/* ================= a minute to breathe ================= */
+
+const BREATH = { in: 4, out: 6, seconds: 60 };
+const BREATH_GAP = 3 * 60 * 60 * 1000; // offered at most every 3 hours
+
+// After a low mood or high anxiety, gently offer a minute to breathe. Returns true if offered.
+function offerBreathing(items) {
+  if (!items || state.day !== isoDay(new Date())) return false;
+  const low = items.some((it) => {
+    const t = state.trackers.find((x) => x.id === it.tracker_id);
+    if (!t) return false;
+    if (t.kind === "rating" && /mood/i.test(t.key || t.name)) {
+      const c = t.config;
+      return it.value_num != null && it.value_num <= c.min + Math.floor((c.max - c.min) * 0.3);
+    }
+    if (t.kind === "symptom" && /anx|panic|stress|overwhelm/i.test(t.name)) return it.value_num >= 2;
+    if (t.kind === "rating" && /stress|anx/i.test(t.name)) return it.value_num >= t.config.max - Math.floor((t.config.max - t.config.min) * 0.3);
+    if (t.kind === "tags") return (it.value_json || []).some((x) => /anxious|overwhelmed|panic|stressed/i.test(x));
+    return false;
+  });
+  if (!low) return false;
+  let last = 0;
+  try { last = Number(localStorage.getItem("wbt-breathe-offered") || 0); } catch { /* fine */ }
+  if (Date.now() - last < BREATH_GAP) return false;
+  try { localStorage.setItem("wbt-breathe-offered", String(Date.now())); } catch { /* fine */ }
+  toast("A minute to breathe?", "Start", () => openBreathing());
+  return true;
+}
+
+function openBreathing() {
+  const sheet = document.getElementById("sheet");
+  const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const cycle = BREATH.in + BREATH.out;
+  const circle = el("div", { class: `breath-circle${reduce ? " still" : ""}`, "aria-hidden": "true" });
+  const word = el("p", { class: "breath-word", "aria-live": "polite" }, "Get comfortable");
+  const count = el("p", { class: "breath-count row-sub" }, `Breathe in for ${BREATH.in}, out for ${BREATH.out}. One minute.`);
+  const bar = el("span", {});
+  const progress = el("div", { class: "breath-progress", role: "progressbar", "aria-label": "Time left", "aria-valuemin": "0", "aria-valuemax": String(BREATH.seconds) }, bar);
+  let timer = null, started = 0;
+  const stop = () => { clearInterval(timer); timer = null; };
+  const finish = async () => {
+    stop();
+    circle.className = "breath-circle done";
+    word.textContent = "Well done";
+    count.textContent = "That was a minute just for you.";
+    const t = state.trackers.find((x) => x.key === "mindful");
+    if (t && !entriesFor(t.id).some((e) => e.value_num) && state.day === isoDay(new Date())) {
+      try { await api("POST", "api/checkin", { logged_at: localISO(new Date()), items: [{ tracker_id: t.id, value_num: 1 }] }); await refreshCheckin(); }
+      catch { /* not important */ }
+      count.textContent = "That was a minute just for you. Logged as a mindful minute.";
+    }
+    actions.replaceChildren(el("button", { type: "button", class: "primary", onclick: () => sheet.close() }, "Done"),
+      el("button", { type: "button", class: "link", onclick: start }, "Another minute"));
+  };
+  const step = () => {
+    const el_ = (Date.now() - started) / 1000;
+    if (el_ >= BREATH.seconds) { finish(); return; }
+    const inCycle = el_ % cycle;
+    const breathingIn = inCycle < BREATH.in;
+    const left = Math.ceil(breathingIn ? BREATH.in - inCycle : cycle - inCycle);
+    const label = breathingIn ? "Breathe in" : "Breathe out";
+    if (word.textContent !== label) word.textContent = label;
+    count.textContent = String(left);
+    circle.classList.toggle("in", breathingIn);
+    circle.classList.toggle("out", !breathingIn);
+    bar.style.width = `${Math.min(100, (el_ / BREATH.seconds) * 100)}%`;
+    progress.setAttribute("aria-valuenow", String(Math.round(el_)));
+  };
+  const start = () => {
+    stop();
+    started = Date.now();
+    circle.className = `breath-circle${reduce ? " still" : ""}`;
+    actions.replaceChildren(el("button", { type: "button", class: "secondary", onclick: () => { stop(); sheet.close(); } }, "Stop"));
+    step();
+    timer = setInterval(step, 250);
+  };
+  const actions = el("div", { class: "actions breath-actions" },
+    el("button", { type: "button", class: "primary", onclick: start }, "Start"),
+    el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Not now"));
+  sheet.replaceChildren(el("div", { class: "sheet-body breath" },
+    el("h2", {}, "A minute to breathe"),
+    el("div", { class: "breath-stage" }, circle),
+    word, count, progress, actions));
+  sheet.addEventListener("close", stop, { once: true });
+  if (!sheet.open) sheet.showModal();
+}
+
+/* ================= good news ================= */
+
+async function loadEncouragement() {
+  try { state.encourage = await api("GET", "api/encouragement"); } catch { state.encourage = null; }
+}
+
+function dismissedNews() {
+  try { return JSON.parse(localStorage.getItem("wbt-news-seen") || "{}"); } catch { return {}; }
+}
+
+// The best bit of good news, once a day, on Check-in. Never anything negative.
+function newsCard(view) {
+  const news = state.encourage && state.encourage.highlights || [];
+  if (!news.length || state.day !== isoDay(new Date())) return null;
+  const seen = dismissedNews();
+  const fresh = news.filter((h) => seen[h.text] !== isoDay(new Date()) && !(seen[h.text] && seen[h.text] > addDays(isoDay(new Date()), -3)));
+  if (!fresh.length) return null;
+  const top = fresh.slice(0, 2);
+  const dismiss = () => {
+    const next = dismissedNews();
+    for (const h of top) next[h.text] = isoDay(new Date());
+    try { localStorage.setItem("wbt-news-seen", JSON.stringify(next)); } catch { /* fine */ }
+    drawCheckin(view);
+  };
+  return el("section", { class: "card news-card", "aria-label": "Good news" },
+    el("div", { class: "news-head" },
+      el("span", { class: "news-icon", "aria-hidden": "true" }, svgIcon("M12 3l2.2 5.6L20 9.3l-4.4 3.9 1.3 5.8L12 16l-4.9 3 1.3-5.8L4 9.3l5.8-.7z")),
+      el("span", { class: "card-title" }, "Good news"),
+      el("button", { type: "button", class: "iconbtn plain", "aria-label": "Hide for now", title: "Hide for now", onclick: dismiss }, svgIcon(ICONS.close))),
+    el("ul", { class: "news-list" }, top.map((h) => el("li", {}, h.emoji ? el("span", { class: "emoji", "aria-hidden": "true" }, h.emoji) : null, el("span", {}, h.text)))),
+    news.length > top.length ? el("a", { class: "link inline news-more", href: "#/history" }, "More in History") : null);
+}
+
+// History: the last seven days in a few facts, and every bit of good news.
+function weekCard() {
+  const data = state.encourage;
+  if (!data) return null;
+  const w = data.week;
+  const facts = [];
+  facts.push(`Checked in on ${w.days_checked_in} of the last 7 days`);
+  if (w.good_things) facts.push(`${w.good_things} good ${w.good_things === 1 ? "thing" : "things"} noted`);
+  if (w.sleep_average != null) facts.push(`Sleep averaged ${hm(w.sleep_average)}${w.nights_at_goal ? `, ${w.nights_at_goal} ${w.nights_at_goal === 1 ? "night" : "nights"} at your goal` : ""}`);
+  if (w.doses_taken) facts.push(`${w.doses_taken} ${w.doses_taken === 1 ? "dose" : "doses"} taken when reminded`);
+  if (w.best_day) facts.push(`Best day: ${dayLabel(w.best_day.day)} (${w.best_day.label.toLowerCase()})`);
+  return el("section", { class: "card week-card" },
+    el("div", { class: "news-head" }, el("span", { class: "card-title" }, "Your week")),
+    el("ul", { class: "week-facts" }, facts.map((f) => el("li", {}, f))),
+    data.highlights.length ? [el("h3", { class: "sleep-h3" }, "Going well"),
+      el("ul", { class: "news-list" }, data.highlights.map((h) => el("li", {}, h.emoji ? el("span", { class: "emoji", "aria-hidden": "true" }, h.emoji) : null, el("span", {}, h.text))))] : null);
+}

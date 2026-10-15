@@ -70,3 +70,29 @@ def test_dev_mode_allows_local_access(tmp_path):
     client = TestClient(app)
     me = client.get("/api/me").json()
     assert me["id"] == "dev-user"
+
+
+def test_upgrade_adds_good_things_and_mindful_minute(tmp_path):
+    """People who already had their items get Three good things and a Mindful minute."""
+    import sqlite3
+
+    from app.db import MIGRATIONS, Database
+
+    db_path = tmp_path / "wellbeing.db"
+    conn = sqlite3.connect(db_path)
+    for sql in MIGRATIONS[:11]:
+        conn.executescript(sql)
+    conn.execute("PRAGMA user_version = 11")
+    conn.commit()
+    conn.close()
+    db = Database(db_path)
+    with db.connect() as c:
+        c.execute("INSERT INTO users (id, username, display_name, first_seen, last_seen, seeded) VALUES ('old', 'o', 'O', 'x', 'x', 1)")
+        c.execute("INSERT INTO trackers (user_id, key, kind, name, group_name, config, frequency, sort_order, created_at) "
+                  "VALUES ('old', 'mood', 'rating', 'Mood', 'How you feel', '{\"min\":1,\"max\":10,\"labels\":[]}', 'many', 50, 'x')")
+    db.migrate()
+    keys = {t["key"]: t for t in db.list_trackers("old")}
+    assert keys["good_things"]["kind"] == "gratitude" and keys["good_things"]["group_name"] == "Reflect"
+    assert keys["mindful"]["config"] == {"mode": "bool"} and keys["good_things"]["sort_order"] > 50
+    db.migrate()  # running again changes nothing
+    assert len(db.list_trackers("old")) == 3

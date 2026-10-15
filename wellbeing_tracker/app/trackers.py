@@ -12,6 +12,7 @@ Kinds and how values are stored on an entry:
   factor      value_num  bool (0/1), count (int) or amount (float), per config.mode
   sleep       value_json {"hours": float|None, "quality": 1-5|None}
   note        note       free text
+  gratitude   note       one good thing; value_num = which time of day it was asked (0, 1, 2) or None
 
 Frequency:
   many   every check-in adds a new entry (mood through the day)
@@ -24,7 +25,8 @@ import re
 
 from typing import Any
 
-KINDS = ("rating", "tags", "symptom", "medication", "factor", "sleep", "note")
+KINDS = ("rating", "tags", "symptom", "medication", "factor", "sleep", "note", "gratitude")
+GOOD_THINGS_TIMES = ["12:30", "15:30", "21:30"]  # lunch, afternoon, before bed
 
 MOOD_LABELS = ["Awful", "Very bad", "Bad", "Poor", "Meh", "Okay", "Fine", "Good", "Very good", "Great"]
 ENERGY_LABELS = ["Exhausted", "Drained", "Very low", "Low", "Flat", "Okay", "Fair", "Good", "High", "Buzzing"]
@@ -40,6 +42,7 @@ DEFAULT_FREQUENCY = {
     "factor": "daily",
     "sleep": "daily",
     "note": "daily",
+    "gratitude": "many",
 }
 
 
@@ -78,6 +81,9 @@ def default_trackers() -> list[dict[str, Any]]:
         dict(key="late_screens", kind="factor", name="Late screen time", emoji="📱", group_name=life,
              config={"mode": "bool"}),
         dict(key="journal", kind="note", name="Journal", emoji="📝", group_name="Notes", config={}),
+        dict(key="good_things", kind="gratitude", name="Three good things", emoji="🌱", group_name="Reflect",
+             config={"times": GOOD_THINGS_TIMES, "remind": False}),
+        dict(key="mindful", kind="factor", name="Mindful minute", emoji="🧘", group_name=life, config={"mode": "bool"}),
     ]
     for i, item in enumerate(items):
         item["frequency"] = DEFAULT_FREQUENCY[item["kind"]]
@@ -128,6 +134,16 @@ def normalise_config(kind: str, config: dict | None) -> dict:
                 raise ValidationError("Sleep goal must be 14 hours or less")
             out["goal"] = goal
         return out
+    if kind == "gratitude":
+        times = config.get("times") or GOOD_THINGS_TIMES
+        if not isinstance(times, list) or not 1 <= len(times) <= 5:
+            raise ValidationError("Choose 1 to 5 times of day")
+        clean = []
+        for t in times:
+            if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", str(t)):
+                raise ValidationError("Times must look like 12:30")
+            clean.append(str(t))
+        return {"times": sorted(set(clean)), "remind": bool(config.get("remind"))}
     if kind == "medication":
         out = {}
         if config.get("dose") not in (None, ""):
@@ -276,6 +292,18 @@ def validate_value(tracker: dict, item: dict) -> dict:
         if hours is None and quality is None:
             raise ValidationError("Sleep: hours or quality is required")
         return {"value_num": hours, "value_json": {"hours": hours, "quality": quality}, "note": note}
+    if kind == "gratitude":
+        if not note:
+            raise ValidationError("Write one good thing first")
+        slot = None
+        if num is not None and not isinstance(num, bool):
+            try:
+                slot = int(num)
+            except (TypeError, ValueError):
+                slot = None
+            if slot is not None and not 0 <= slot <= 4:
+                slot = None
+        return {"value_num": slot, "value_json": None, "note": note[:280]}
     if kind == "note":
         if not note:
             raise ValidationError(f"{tracker['name']}: write something first")

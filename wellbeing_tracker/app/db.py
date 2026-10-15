@@ -220,6 +220,21 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE sleep_nights ADD COLUMN why TEXT;
     """,
+    # 12: Three good things, and a Mindful minute habit for the breathing exercise, for people
+    # who already have their items (new people get them with the rest).
+    """
+    INSERT OR IGNORE INTO trackers (user_id, key, kind, name, emoji, group_name, config, frequency, sort_order, hidden, created_at)
+    SELECT u.id, 'good_things', 'gratitude', 'Three good things', '🌱', 'Reflect',
+           '{"times": ["12:30", "15:30", "21:30"], "remind": false}', 'many',
+           COALESCE((SELECT MAX(sort_order) FROM trackers t WHERE t.user_id = u.id), 0) + 10, 0, strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
+    FROM users u WHERE u.seeded = 1
+      AND NOT EXISTS (SELECT 1 FROM trackers t WHERE t.user_id = u.id AND t.kind = 'gratitude');
+    INSERT OR IGNORE INTO trackers (user_id, key, kind, name, emoji, group_name, config, frequency, sort_order, hidden, created_at)
+    SELECT u.id, 'mindful', 'factor', 'Mindful minute', '🧘', 'Lifestyle', '{"mode": "bool"}', 'daily',
+           COALESCE((SELECT MAX(sort_order) FROM trackers t WHERE t.user_id = u.id), 0) + 10, 0, strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
+    FROM users u WHERE u.seeded = 1
+      AND NOT EXISTS (SELECT 1 FROM trackers t WHERE t.user_id = u.id AND t.key = 'mindful');
+    """,
 ]
 
 

@@ -1289,3 +1289,56 @@ def test_inbox_includes_supply_warnings(env):
     supply_env(env, count=10)
     [item] = engine.inbox("u1")
     assert (item["kind"], item["title"]) == ("supply", "5 days left")
+
+
+# ----- three good things -----
+
+def good_things(db):
+    return [t for t in db.list_trackers("u1") if t["kind"] == "gratitude"][0]
+
+
+def test_good_thing_prompts_through_the_day(env):
+    db, ha, clock, engine, med = env
+    t = good_things(db)
+    assert t["config"] == {"times": ["12:30", "15:30", "21:30"], "remind": False}
+    clock.set("2026-10-14T12:31")
+    run(engine.tick())
+    assert ha.notifications() == []  # prompts are off until you turn them on
+    db.update_tracker("u1", t["id"], {"config": {"times": ["12:30", "15:30", "21:30"], "remind": True}})
+    run(engine.tick())
+    [n] = ha.notifications()
+    assert n["title"] == "One good thing" and n["message"] == "What's gone well so far today?"
+    write, later = n["data"]["actions"]
+    assert write["behavior"] == "textInput" and later["title"] == "Not now"
+    rid = int(n["data"]["tag"].rsplit("-", 1)[1])
+    run(engine.handle_event("mobile_app_notification_action", {"action": write["action"], "reply_text": "Lunch in the sun"}))
+    [entry] = db.list_entries("u1", "2026-10-14", "2026-10-14")
+    assert entry["note"] == "Lunch in the sun" and entry["value_num"] == 0 and entry["source"] == "notification"
+    run(engine.answer_reminder(rid, "UNDO"))
+    assert db.list_entries("u1", "2026-10-14", "2026-10-14") == []
+
+    # not asked twice for the same time; the afternoon one comes at 3:30pm
+    ha.reset()
+    clock.set("2026-10-14T13:00")
+    run(engine.tick())
+    assert ha.notifications() == []
+    clock.set("2026-10-14T15:30")
+    run(engine.tick())
+    [n] = ha.notifications()
+    assert n["message"] == "What's one good thing from this afternoon?"
+
+    # written in the app instead: the prompt goes away
+    ha.reset()
+    db.save_checkin("u1", "2026-10-14T15:35:00+11:00", [{"tracker_id": t["id"], "note": "A walk", "value_num": 1}])
+    clock.set("2026-10-14T15:36")
+    run(engine.tick())
+    assert len(ha.clears()) == 1
+
+
+def test_too_late_for_a_prompt(env):
+    db, ha, clock, engine, med = env
+    t = good_things(db)
+    db.update_tracker("u1", t["id"], {"config": {"times": ["12:30"], "remind": True}})
+    clock.set("2026-10-14T16:00")  # the app was off at lunchtime: don't ask hours later
+    run(engine.tick())
+    assert ha.notifications() == []

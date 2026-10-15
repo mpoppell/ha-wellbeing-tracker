@@ -1451,3 +1451,55 @@ button.plan-due:hover, button.plan-due:focus-visible { color: var(--accent-ink);
 .spotlight-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
 .coming-up li { align-items: center; min-height: 36px; }
 .coming-up-what { flex: 1; min-width: 0; }
+
+/* ---------- good things, breathing, good news (0.18) ---------- */
+
+.good-row .brow-main { align-items: center; }
+.good-dots { display: inline-flex; gap: 5px; }
+.good-dots span { width: 9px; height: 9px; border-radius: 50%; background: var(--sunken); border: 1px solid var(--line); }
+.good-dots span.on { background: var(--r4); border-color: var(--r4); }
+.good-list { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 2px; }
+.good-item {
+  width: 100%; display: flex; align-items: baseline; gap: 10px; padding: 6px 4px; border: 0; border-radius: 8px;
+  background: none; font: inherit; color: var(--ink); text-align: left; cursor: pointer;
+}
+.good-item:hover { background: var(--sunken); }
+.good-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--r4); transform: translateY(-2px); }
+.good-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.good-time { flex: none; color: var(--muted); font-size: 0.82rem; }
+.good-compose { display: grid; gap: 4px; margin-top: 8px; }
+.good-compose-row { display: flex; gap: 8px; align-items: center; }
+.good-input { flex: 1; min-width: 0; }
+.good-next { margin: 8px 0 0; }
+.good-more { margin-top: 6px; }
+
+.breath { text-align: center; }
+.breath h2 { text-align: left; }
+.breath-stage { display: grid; place-items: center; height: 220px; }
+.breath-circle {
+  width: 90px; height: 90px; border-radius: 50%;
+  background: radial-gradient(circle at 40% 35%, color-mix(in srgb, var(--accent) 35%, var(--surface)), color-mix(in srgb, var(--accent) 70%, var(--surface)));
+  transform: scale(1); transition: transform 4s ease-in-out;
+  box-shadow: 0 0 0 10px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.breath-circle.in { transform: scale(2); transition-duration: 4s; }
+.breath-circle.out { transform: scale(1); transition-duration: 6s; }
+.breath-circle.still, .breath-circle.still.in, .breath-circle.still.out { transform: none; transition: none; }
+.breath-circle.done { transform: scale(1.4); background: color-mix(in srgb, var(--r4) 55%, var(--surface)); transition: transform 1s, background 1s; }
+.breath-word { font-size: 1.5rem; font-weight: 700; margin: 6px 0 0; }
+.breath-count { margin: 4px 0 12px; min-height: 1.4em; font-variant-numeric: tabular-nums; }
+.breath-progress { height: 4px; border-radius: 2px; background: var(--sunken); overflow: hidden; }
+.breath-progress span { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.25s linear; }
+.breath-actions { justify-content: center; }
+@media (prefers-reduced-motion: reduce) { .breath-circle { transition: none; } }
+
+.news-card { padding: 12px 14px 14px; border-color: color-mix(in srgb, var(--r4) 45%, var(--line)); }
+.news-head { display: flex; align-items: center; gap: 8px; }
+.news-head .card-title { flex: 1; }
+.news-icon { display: inline-grid; place-items: center; color: var(--r4); }
+.news-icon svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
+.news-list { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 6px; }
+.news-list li { display: flex; gap: 8px; align-items: baseline; }
+.news-more { display: inline-block; margin-top: 8px; font-size: 0.9rem; }
+.week-card { padding: 14px 16px 16px; margin-bottom: 18px; }
+.week-facts { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 4px; }
