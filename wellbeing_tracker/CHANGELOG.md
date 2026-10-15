@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.19.0
+
+**Sleep times like Bearable, and a side question that makes sense.**
+
+- Tap the hours on the Sleep row (or **Change times** on a night) to say when you **fell asleep** and **woke up**, and optionally when you **went to bed** and **got up**. It works out time asleep and time in bed as you type. Or tap **Or just enter how long you slept**. Your times fill in Sleep hours and keep your sleep quality.
+- The question beside Check-in on a computer now only asks what makes sense right now:
+  - mood, energy and emotions if you haven't logged them in the last 3 hours;
+  - symptoms you haven't answered today;
+  - a good thing, when one's due;
+  - end-of-day habits like exercise or time outdoors, from 6pm.
+  - Never counts like alcohol, caffeine or water, habits about the night like late screen time, or anything Home Assistant fills in.
+- It asks a real question ("How's your energy right now?", "Any headache today?"), sits in the middle of the screen, and offers **Skip**, or **Next** once answered.
+
 ## 0.18.0
 
 **Three good things, a minute to breathe, and good news without guilt.**

@@ -1917,18 +1917,31 @@ class Engine:
             raise ValidationError("Add a Sleep item first")
         return {**tracker, "user_id": user_id}
 
-    def set_night(self, user_id: str, night: str, start: str, end: str) -> dict:
-        """Your own times for a night: when you fell asleep and woke up."""
+    def set_night(self, user_id: str, night: str, start: str, end: str,
+                  bed: str | None = None, up: str | None = None) -> dict:
+        """Your own times for a night: when you fell asleep and woke up, and optionally when you
+        went to bed and got up (time in bed). Fills in that morning's Sleep hours, keeping any
+        sleep quality you've given."""
         tracker = self._sleep_tracker(user_id)
         try:
             day = date.fromisoformat(night)
             s, e = parse(start), parse(end)
+            b = parse(bed) if bed else s
+            u = parse(up) if up else e
         except (TypeError, ValueError):
             raise ValidationError("Choose when you fell asleep and woke up") from None
         if not timedelta(minutes=30) <= e - s <= timedelta(hours=16):
-            raise ValidationError("A night is between 30 minutes and 16 hours")
+            raise ValidationError("Time asleep must be between 30 minutes and 16 hours")
+        if b > s:
+            raise ValidationError("You went to bed after you fell asleep? Check the times")
+        if u < e:
+            raise ValidationError("You got up before you woke up? Check the times")
+        if u - b > timedelta(hours=20):
+            raise ValidationError("Time in bed must be 20 hours or less")
         if e.astimezone(self.tz).date() != day:
             raise ValidationError("Wake up on the morning of that day")
+        phases = ([[iso(b), iso(s), "awake"]] if s > b else []) + [[iso(s), iso(e), sleepdata.ASLEEP]] \
+            + ([[iso(e), iso(u), "awake"]] if u > e else [])
         with self.db.connect() as conn:
             conn.execute("DELETE FROM sleep_nights WHERE tracker_id = ? AND night = ? AND source IN ('you', 'removed')",
                          (tracker["id"], night))
@@ -1936,9 +1949,26 @@ class Engine:
                 "INSERT INTO sleep_nights (user_id, tracker_id, night, start_at, end_at, phases, source, updated_at, why) "
                 "VALUES (?, ?, ?, ?, ?, ?, 'you', ?, '[]') ON CONFLICT(tracker_id, start_at) DO UPDATE SET "
                 "end_at = excluded.end_at, phases = excluded.phases, source = 'you', night = excluded.night, updated_at = excluded.updated_at",
-                (user_id, tracker["id"], night, iso(s), iso(e), json.dumps([[iso(s), iso(e), sleepdata.ASLEEP]]), iso(self.clock())))
-            self._sleep_hours(conn, tracker, night)
+                (user_id, tracker["id"], night, iso(b), iso(u), json.dumps(phases), iso(self.clock())))
+            self._your_sleep_hours(conn, tracker, night, (e - s).total_seconds() / 3600, e)
         return self.sleep_view(user_id, 30)
+
+    def _your_sleep_hours(self, conn, tracker: dict, night: str, hours: float, at: datetime) -> None:
+        """You set the times, so Sleep hours follow them, whoever wrote them before. Quality is kept."""
+        row = conn.execute("SELECT id, value_json FROM entries WHERE tracker_id = ? AND day = ?", (tracker["id"], night)).fetchone()
+        stamp = iso(self.clock())
+        if row:
+            v = json.loads(row["value_json"] or "{}")
+            v["hours"] = round(hours, 2)
+            v.setdefault("quality", None)
+            conn.execute("UPDATE entries SET value_num = ?, value_json = ?, updated_at = ? WHERE id = ?",
+                         (round(hours, 2), json.dumps(v), stamp, row["id"]))
+        else:
+            conn.execute(
+                "INSERT INTO entries (user_id, tracker_id, day, logged_at, value_num, value_json, source, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'app', ?, ?)",
+                (tracker["user_id"], tracker["id"], night, at.astimezone(self.tz).isoformat(timespec="seconds"),
+                 round(hours, 2), json.dumps({"hours": round(hours, 2), "quality": None}), stamp, stamp))
 
     def remove_night(self, user_id: str, night: str) -> dict:
         """Not a night's sleep (you were away, or it's wrong): leave the morning empty."""

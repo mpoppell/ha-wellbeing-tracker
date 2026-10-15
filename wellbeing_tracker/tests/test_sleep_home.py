@@ -156,3 +156,28 @@ def test_suggested_sources():
     assert s["confidence"] == "sensor.my_phone_sleep_confidence"
     assert s["charging"] == "binary_sensor.my_phone_is_charging"
     assert s["lights"] == ["light.ceiling_2"] and s["in_use"] is None and s["tracking"] == "event.x_sleep_tracking_2"
+
+
+def test_your_own_times_with_time_in_bed(tmp_path):
+    from app.db import Database
+    from app.engine import Engine
+    from app.trackers import ValidationError
+    import pytest
+
+    from .test_engine import Clock, FakeHA
+
+    db = Database(tmp_path / "w.db")
+    db.migrate()
+    db.touch_user("u1", "matt", "Matthew")
+    engine = Engine(db, FakeHA(), tz=TZ, clock=Clock("2026-10-15T09:00"))
+    sleep_t = next(t for t in db.list_trackers("u1") if t["kind"] == "sleep")
+    db.save_checkin("u1", "2026-10-15T08:00:00+11:00", [{"tracker_id": sleep_t["id"], "value_json": {"hours": 5, "quality": 4}}])
+    view = engine.set_night("u1", "2026-10-15", "2026-10-14T23:20:00+11:00", "2026-10-15T06:50:00+11:00",
+                            bed="2026-10-14T22:45:00+11:00", up="2026-10-15T07:15:00+11:00")
+    n = view["nights"][0]
+    assert (n["in_bed"], n["asleep"], n["fell_asleep_after"]) == (510, 450, 35)
+    [entry] = db.list_entries("u1", "2026-10-15", "2026-10-15")
+    assert entry["value_json"] == {"hours": 7.5, "quality": 4}  # your quality is kept
+    with pytest.raises(ValidationError):
+        engine.set_night("u1", "2026-10-15", "2026-10-14T23:20:00+11:00", "2026-10-15T06:50:00+11:00",
+                         bed="2026-10-14T23:45:00+11:00")

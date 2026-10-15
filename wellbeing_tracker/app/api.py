@@ -166,7 +166,8 @@ def build_router(current_user) -> APIRouter:
 
     @router.put("/sleep/nights/{night}")
     def set_night(night: str, payload: dict = Body(...), user: dict = Depends(current_user), e=Depends(engine)) -> dict:
-        return e.set_night(user["id"], _day(night), payload.get("start"), payload.get("end"))
+        return e.set_night(user["id"], _day(night), payload.get("start"), payload.get("end"),
+                           payload.get("bed"), payload.get("up"))
 
     @router.delete("/sleep/nights/{night}")
     def remove_night(night: str, user: dict = Depends(current_user), e=Depends(engine)) -> dict:

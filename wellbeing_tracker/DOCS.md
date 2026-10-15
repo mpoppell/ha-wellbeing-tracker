@@ -25,7 +25,7 @@ Tap the pencil at the top of Check-in to edit it, much like a Home Assistant das
 
 At the top, **Due** lists doses that are due and any check-in or water reminders you've been sent, with the same buttons as the notification. Anything in the next 30 minutes shows under it as **Coming up**.
 
-On a computer with a wide window, a panel on the left asks one thing you haven't filled in today. Tap **Another one** for a different one. When everything's done, it goes round again so you can update anything that's changed.
+On a computer with a wide window, a panel on the left asks one question that makes sense right now: your mood, energy or emotions if you haven't logged them in the last 3 hours, symptoms you haven't answered today, a good thing when one's due, and end-of-day habits (like exercise) from 6pm. It never asks about counts like alcohol or water, which you log as they happen, or habits about the night. **Skip** moves to another; once everything's done it asks "Anything changed?" about your mood, energy and emotions.
 
 ## Three good things
 
@@ -173,6 +173,8 @@ Estimates can be wrong, so every night except Sleep as Android's can be changed:
 - **Add this night**: for a morning with nothing recorded.
 
 Importing brings in the last 10 days (all Home Assistant keeps), and new nights are added every 15 minutes. Nights are kept by the app from then on, so your history keeps growing. Each night also fills in **Sleep** hours for that morning; anything you enter yourself still wins.
+
+To enter a night yourself, tap the hours on the **Sleep** row: fill in when you fell asleep and woke up, and if you like, when you went to bed and got up. Time asleep and time in bed are worked out as you type. Or choose **Or just enter how long you slept**. Your times win over everything from Home Assistant, and your sleep quality is kept.
 
 Tap a night on Check-in to see it in full: when you fell asleep and woke, a graph of the night (tap a block to see its times), time in each stage, and the last 14 nights against your sleep goal. Nights without stages show in grey.
 

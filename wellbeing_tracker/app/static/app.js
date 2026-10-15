@@ -606,54 +606,95 @@ function drawCheckin(view) {
 
 /* ---------- desktop: one question at a time, beside Check-in ---------- */
 
-// Shown only on wide screens (CSS). One thing you haven't filled in today, picked at random.
-// Once everything's filled in, it starts again with things you might want to update.
+// Shown only on wide screens (CSS): one question that makes sense right now, picked at random.
+//
+// What counts as a good question, and when:
+// - Mood and energy: if not logged in the last 3 hours (they change through the day).
+// - Emotions: if not logged in the last 3 hours.
+// - Symptoms: once a day, if not answered yet.
+// - A good thing: when one is due (Three good things).
+// - Habits you can only know at the end of the day (exercise, time outdoors...): from 6pm,
+//   if not ticked. Not ones about the night (late screen time) or things HA fills in.
+// Never: counts and amounts like alcohol, caffeine or water (logged as they happen, and 0 is a
+// real answer), sleep (it has its own place), medicines and notes.
+// Once nothing's left, it goes round mood, energy and emotions again: "Anything changed?"
 const spot = { id: null, shown: new Set(), day: null };
+const RECENT = 3 * 60 * 60 * 1000;
 
-function spotlightPool() {
-  return dashboardSections(false).filter((s) => !s.hidden).flatMap((s) => s.items)
-    .filter((t) => !isMeds(t) && t.kind !== "note" && t.kind !== "sleep" && t.kind !== "gratitude");
+function recentlyLogged(t) {
+  const latest = entriesFor(t.id)[0];
+  return !!latest && Date.now() - new Date(latest.logged_at).getTime() < RECENT;
+}
+
+function spotlightItems() {
+  const items = dashboardSections(false).filter((s) => !s.hidden).flatMap((s) => s.items);
+  const hour = new Date().getHours();
+  const today = state.day === isoDay(new Date());
+  const ask = [];
+  const again = [];
+  for (const t of items) {
+    const c = t.config || {};
+    if (t.kind === "rating" || t.kind === "tags") {
+      const fresh = t.frequency === "daily" ? entriesFor(t.id).length > 0 : recentlyLogged(t);
+      (fresh ? again : ask).push(t);
+    } else if (t.kind === "symptom") {
+      if (!entriesFor(t.id).length) ask.push(t);
+    } else if (t.kind === "gratitude") {
+      if (today && goodThingsLeft(t) > 0) ask.push(t);
+    } else if (t.kind === "factor" && c.mode === "bool" && !c.source) {
+      const night = /late|night|bed|screen/i.test(t.name);
+      if (!night && (hour >= 18 || !today) && !entriesFor(t.id).some((e) => e.value_num)) ask.push(t);
+    }
+  }
+  return { ask, again };
 }
 
 function pickSpotlight(skip) {
-  const pool = spotlightPool();
-  if (!pool.length) return null;
+  const { ask, again } = spotlightItems();
   if (spot.day !== state.day) { spot.day = state.day; spot.shown.clear(); }
-  let choices = pool.filter((t) => !entriesFor(t.id).length && t.id !== skip);
+  let choices = ask.filter((t) => t.id !== skip);
   if (!choices.length) {
-    // all filled in: go round again, without repeating until we've shown them all
-    choices = pool.filter((t) => !spot.shown.has(t.id) && t.id !== skip);
-    if (!choices.length) { spot.shown.clear(); choices = pool.filter((t) => t.id !== skip); }
-    if (!choices.length) choices = pool;
+    choices = again.filter((t) => !spot.shown.has(t.id) && t.id !== skip);
+    if (!choices.length) { spot.shown.clear(); choices = again.filter((t) => t.id !== skip); }
+    if (!choices.length) choices = again;
   }
+  if (!choices.length) return null;
   const t = choices[Math.floor(Math.random() * choices.length)];
   spot.shown.add(t.id);
   return t.id;
 }
 
+const SPOT_QUESTION = {
+  rating: (t) => `How's your ${t.name.toLowerCase()} right now?`,
+  tags: () => "How are you feeling?",
+  symptom: (t) => `Any ${t.name.toLowerCase()} today?`,
+  gratitude: () => "One good thing",
+  factor: (t) => `${t.name} today?`,
+};
+
 function spotlight(view) {
-  const pool = spotlightPool();
+  const { ask, again } = spotlightItems();
+  const pool = [...ask, ...again];
   if (!pool.length) return null;
-  let t = pool.find((x) => x.id === spot.id);
-  const allDone = pool.every((x) => entriesFor(x.id).length);
+  let t = pool.find((x) => x.id === spot.id) || state.allTrackers.find((x) => x.id === spot.id && !x.hidden);
   // stays put while you answer it (emotions can take several taps); "Next" moves on
   if (!t || spot.day !== state.day) {
     spot.id = pickSpotlight();
-    t = pool.find((x) => x.id === spot.id);
+    t = state.trackers.find((x) => x.id === spot.id);
   }
   if (!t) return null;
-  const done = !!entriesFor(t.id).length;
-  const left = answerable().filter((x) => !entriesFor(x.id).length).length;
+  const answeredNow = !ask.some((x) => x.id === t.id);
+  const nothingLeft = !ask.length;
   const row = t.kind === "factor" && t.config.mode === "bool"
-    ? el("div", { class: "brow" }, el("div", { class: "brow-text" }, rowName(t)), el("div", { class: "bchips" }, factorChip(t)))
+    ? el("div", { class: "brow" }, el("div", { class: "bchips" }, factorChip(t)))
     : trackerRow(t, view);
   const next = () => { spot.id = pickSpotlight(t.id); drawCheckin(view); };
   return el("aside", { class: "spotlight card", "aria-label": "One quick question" },
-    el("p", { class: "spotlight-kicker" }, allDone ? "All done today. Anything changed?" : "One quick question"),
+    el("p", { class: "spotlight-kicker" }, nothingLeft && answeredNow ? "Anything changed?" : (SPOT_QUESTION[t.kind] || (() => t.name))(t)),
     row,
     el("div", { class: "spotlight-foot" },
-      el("span", { class: "row-sub" }, allDone ? "Everything's filled in" : done ? "Thanks" : left ? `${left} more on Check-in` : ""),
-      el("button", { type: "button", class: "link inline", onclick: next }, done ? "Next" : "Another one")));
+      el("span", { class: "row-sub" }, answeredNow ? "Saved to today" : ""),
+      el("button", { type: "button", class: "link inline", onclick: next }, answeredNow ? "Next" : "Skip")));
 }
 
 // Items that count towards "7 of 12 answered": the questions on the screen. Medications, notes and
@@ -1686,7 +1727,7 @@ function yesterdayText(t) {
   const e = (state.prevEntries || []).find((x) => x.tracker_id === t.id);
   if (!e) return "";
   const v = formatValue(t, e);
-  return v ? `Yesterday ${t.kind === "rating" ? ratingText(t.config, e.value_num) : v.toLowerCase()}` : "";
+  return v ? `Yesterday: ${t.kind === "rating" ? ratingText(t.config, e.value_num) : v.toLowerCase()}` : "";
 }
 
 function trackerRow(t, view) {
@@ -1797,7 +1838,9 @@ function trackerRow(t, view) {
     const qcfg = { min: 1, max: 5, labels: ["Awful", "Poor", "Okay", "Good", "Great"] };
     const stepper = el("div", { class: "level-tiles" },
       tile(svgIcon(ICONS.minus), { class: "tile tile-square", "aria-label": "Less sleep", onclick: () => save(Math.max(0, shownHours - 0.5), quality) }),
-      el("output", { class: "tile-num" }, hours == null ? "–" : hmShort(hours * 60)),
+      el("button", { type: "button", class: "tile-num sleep-hours", "aria-label": "Times you slept", title: "Bed, asleep and wake-up times",
+        onclick: () => openSleepTimes(state.day, state.sleep && state.sleep.nights.find((x) => x.night === state.day)) },
+        hours == null ? "Add" : hmShort(hours * 60)),
       tile(svgIcon(ICONS.plus), { class: "tile tile-square", "aria-label": "More sleep", onclick: () => save(Math.min(24, hours == null ? shownHours : hours + 0.5), quality) }));
     const qualityTiles = el("div", { class: "rating-grid one-row" }, [1, 2, 3, 4, 5].map((v) => el("div", { class: "rating-col", style: `--c:${scaleColor(qcfg, v)}` },
       faceIcon(v - 1),
@@ -1806,7 +1849,7 @@ function trackerRow(t, view) {
     const night = state.sleep && state.sleep.nights.find((x) => x.night === state.day);
     const text = quality ? `${qcfg.labels[quality - 1]} sleep` : null;
     const note = latest && latest.source === "ha" && !night ? "from Home Assistant" : null;
-    const nightLink = state.sleep && state.sleep.configured
+    const nightLink = state.sleep && (state.sleep.configured || night)
       ? el("button", { type: "button", class: "night-link", onclick: () => openSleepSheet(state.day) },
           night ? [hypnogram(night, { mini: true }),
               el("span", { class: "night-link-text" }, `${clockOf(night.start)} to ${clockOf(night.end)} · ${hm(night.asleep)} asleep`,
@@ -2061,7 +2104,7 @@ async function openSleepSheet(pickNight) {
   let view;
   try { view = await api("GET", "api/sleep?days=30"); } catch (err) { toast(err.message); return; }
   if (!view.tracker_id) { toast("Add a Sleep item first"); return; }
-  if (!view.configured) { openSleepSetup(view); return; }
+  if (!view.configured && !view.nights.length) { openSleepSetup(view); return; }
   let nights = view.nights;
   // A morning with no night (yet) can still be opened, to add one yourself.
   let current = pickNight || (nights[0] || {}).night || isoDay(new Date());
@@ -2092,7 +2135,7 @@ async function openSleepSheet(pickNight) {
         ? el("button", { type: "button", class: "link", onclick: async () => reload(await api("POST", `api/sleep/nights/${current}/reset`)) }, "Use Home Assistant's times")
         : null,
       !n || n.source !== "sleep_as_android"
-        ? el("button", { type: "button", class: "secondary small", onclick: () => openNightTimes(n, current, (fresh) => { sheet.close(); reload(fresh).then(() => openSleepSheet(current)); }) },
+        ? el("button", { type: "button", class: "secondary small", onclick: () => openSleepTimes(current, n, () => openSleepSheet(current)) },
             n ? "Change times" : "Add this night")
         : null,
       n && n.source !== "sleep_as_android"
@@ -2137,29 +2180,103 @@ async function openSleepSheet(pickNight) {
   draw();
 }
 
-// Set a night's times yourself: when you fell asleep and when you woke.
-function openNightTimes(n, night, done) {
+// Last night, like Bearable: when you went to bed, fell asleep, woke up and got up, or just the total.
+// done(view) is called with the fresh sleep view after saving times, or with nothing after a total.
+function openSleepTimes(night, n, done) {
   const sheet = document.getElementById("sheet");
-  const hhmm = (iso) => /T(\d{2}:\d{2})/.exec(iso)[1];
-  const from = el("input", { type: "time", value: n ? hhmm(n.start) : "23:00", required: true });
-  const to = el("input", { type: "time", value: n ? hhmm(n.end) : "07:00", required: true });
+  const hhmm = (iso) => (iso ? /T(\d{2}:\d{2})/.exec(iso)[1] : "");
+  const asleepParts = n ? n.phases.filter((p) => p.phase !== "awake") : [];
+  const t = state.allTrackers.find((x) => x.kind === "sleep");
+  const entry = t ? (state.dayEntries || []).find((e) => e.tracker_id === t.id && e.day === night) : null;
+  const was = entry && entry.value_json ? entry.value_json : {};
+  const time = (value, label) => el("input", { type: "time", value, "aria-label": label });
+  const bed = time(n && n.fell_asleep_after != null && n.phases[0] && n.phases[0].phase === "awake" ? hhmm(n.start) : "", "Went to bed");
+  const asleep = time(asleepParts.length ? hhmm(asleepParts[0].start) : "", "Fell asleep");
+  const woke = time(asleepParts.length ? hhmm(asleepParts[asleepParts.length - 1].end) : "", "Woke up");
+  const lastPhase = n && n.phases[n.phases.length - 1];
+  const up = time(lastPhase && lastPhase.phase === "awake" ? hhmm(n.end) : "", "Got up");
+  const totalH = el("input", { type: "number", min: "0", max: "24", step: "1", inputmode: "numeric", "aria-label": "Hours", style: "width:5em",
+    value: was.hours != null ? Math.floor(was.hours) : "" });
+  const totalM = el("input", { type: "number", min: "0", max: "59", step: "1", inputmode: "numeric", "aria-label": "Minutes", style: "width:5em",
+    value: was.hours != null ? Math.round((was.hours % 1) * 60) : "" });
+  const summary = el("p", { class: "sleep-sum", "aria-live": "polite" });
   const err = el("p", { class: "form-error", hidden: true });
-  const form = el("form", { method: "dialog" },
-    el("h2", {}, n ? "Change this night" : "Add this night"),
-    el("p", { class: "row-sub", style: "margin:-8px 0 14px" }, `Waking up on ${longDate(night)}. Your times are kept, and fill in Sleep hours.`),
-    err,
-    el("div", { class: "field-pair" }, field("Fell asleep", from), field("Woke up", to)),
+  let mode = "times";
+
+  // evening times belong to the night before; morning times to the day you woke
+  const at = (v, evening) => {
+    if (!v) return null;
+    const d = dayToDate(evening && v >= "12:00" ? addDays(night, -1) : night);
+    const [h, m] = v.split(":").map(Number);
+    d.setHours(h, m, 0, 0);
+    return d;
+  };
+  const mins = (a, b) => (a && b ? Math.round((b - a) / 60000) : null);
+  const update = () => {
+    const sl = mins(at(asleep.value, true), at(woke.value, false));
+    const inBed = mins(at(bed.value || asleep.value, true), at(up.value || woke.value, false));
+    summary.replaceChildren(...(sl != null && sl > 0
+      ? [el("strong", {}, `${hm(sl)} asleep`), inBed && inBed > sl ? ` · ${hm(inBed)} in bed` : ""]
+      : [el("span", { class: "row-sub" }, "Fill in when you fell asleep and woke up.")]));
+  };
+  [bed, asleep, woke, up].forEach((x) => x.addEventListener("input", update));
+  update();
+
+  const pair = (a, aLabel, b, bLabel) => el("div", { class: "sleep-pair" },
+    el("label", { class: "sleep-time" }, el("span", {}, aLabel), a),
+    el("label", { class: "sleep-time" }, el("span", {}, bLabel), b));
+  const timesPart = el("div", { class: "sleep-times" },
+    el("div", { class: "sleep-group" }, el("span", { class: "sleep-group-title" }, "Time asleep"),
+      pair(asleep, "Fell asleep", woke, "Woke up")),
+    el("div", { class: "sleep-group" }, el("span", { class: "sleep-group-title" }, "Time in bed ", el("span", { class: "row-sub" }, "(optional)")),
+      pair(bed, "Went to bed", up, "Got up")),
+    summary);
+  const totalPart = el("div", { class: "sleep-times", hidden: true },
+    el("div", { class: "sleep-group" }, el("span", { class: "sleep-group-title" }, "How long you slept"),
+      el("div", { class: "sleep-total" }, totalH, el("span", {}, "h"), totalM, el("span", {}, "min"))));
+  const switchBtn = el("button", { type: "button", class: "link inline" });
+  const drawMode = () => {
+    timesPart.hidden = mode !== "times";
+    totalPart.hidden = mode !== "total";
+    switchBtn.textContent = mode === "times" ? "Or just enter how long you slept" : "Enter times instead";
+  };
+  switchBtn.addEventListener("click", () => { mode = mode === "times" ? "total" : "times"; drawMode(); markSheetChanged(); });
+  drawMode();
+
+  const form = el("form", { method: "dialog", class: "sleep-form", novalidate: true },
+    el("h2", {}, night === isoDay(new Date()) ? "Last night's sleep" : `Sleep, night to ${dayLabel(night)}`),
+    err, timesPart, totalPart, switchBtn,
     el("div", { class: "actions" },
       el("button", { type: "submit", class: "primary" }, "Save"),
-      el("button", { type: "button", class: "link", onclick: () => openSleepSheet(night) }, "Cancel")));
+      entry || (n && n.source === "you") ? el("button", { type: "button", class: "secondary danger", onclick: async () => {
+        sheet.close();
+        if (n && n.source === "you") await api("POST", `api/sleep/nights/${night}/reset`).catch(() => null);
+        if (entry) await removeEntry(entry); else await refreshCheckin();
+      } }, "Clear") : null,
+      el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Cancel")));
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    const at = (day, t) => { const d = dayToDate(day); const [h, m] = t.split(":").map(Number); d.setHours(h, m, 0, 0); return d; };
-    const end = at(night, to.value);
-    // after midday it was the evening before
-    const start = at(from.value >= "12:00" ? addDays(night, -1) : night, from.value);
-    try { done(await api("PUT", `api/sleep/nights/${night}`, { start: localISO(start), end: localISO(end) })); }
-    catch (e) { err.textContent = e.message; err.hidden = false; }
+    err.hidden = true;
+    try {
+      if (mode === "total") {
+        const hours = Number(totalH.value || 0) + Number(totalM.value || 0) / 60;
+        if (!hours) throw new Error("How long did you sleep?");
+        await api("POST", "api/checkin", { logged_at: loggedAtFor(night), items: [{ tracker_id: t.id, value_json: { hours: Math.round(hours * 100) / 100, quality: was.quality ?? null } }] });
+        sheet.close();
+        await refreshCheckin();
+        if (done) done(null);
+        return;
+      }
+      if (!asleep.value || !woke.value) throw new Error("Fill in when you fell asleep and woke up");
+      const body = { start: localISO(at(asleep.value, true)), end: localISO(at(woke.value, false)) };
+      if (bed.value) body.bed = localISO(at(bed.value, true));
+      if (up.value) body.up = localISO(at(up.value, false));
+      const fresh = await api("PUT", `api/sleep/nights/${night}`, body);
+      state.sleep = { ...(state.sleep || {}), ...fresh };
+      sheet.close();
+      await refreshCheckin();
+      if (done) done(fresh);
+    } catch (e) { err.textContent = e.message; err.hidden = false; }
   });
   sheet.replaceChildren(form);
   if (!sheet.open) sheet.showModal();

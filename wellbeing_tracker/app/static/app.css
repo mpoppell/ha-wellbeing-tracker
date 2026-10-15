@@ -1503,3 +1503,24 @@ button.plan-due:hover, button.plan-due:focus-visible { color: var(--accent-ink);
 .news-more { display: inline-block; margin-top: 8px; font-size: 0.9rem; }
 .week-card { padding: 14px 16px 16px; margin-bottom: 18px; }
 .week-facts { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 4px; }
+
+/* ---------- 0.19: centred side question, sleep times ---------- */
+@media (min-width: 1220px) {
+  .spotlight { top: 50%; transform: translateY(-50%); max-height: calc(100vh - 2 * var(--tabs-h)); }
+}
+.spotlight-kicker { font-size: 1rem; color: var(--ink); margin-bottom: 4px; }
+.spotlight .brow-name { font-size: 0.92rem; color: var(--muted); font-weight: 400; }
+
+.sleep-hours { border: 0; background: none; font: inherit; font-weight: 700; color: var(--ink); cursor: pointer; padding: 0 4px; min-width: 4.2em; border-radius: 8px; text-decoration: underline dotted; text-underline-offset: 4px; }
+.sleep-hours:hover { background: var(--sunken); }
+.sleep-form h2 { margin-bottom: 14px; }
+.sleep-times { display: grid; gap: 14px; }
+.sleep-group { display: grid; gap: 6px; }
+.sleep-group-title { font-weight: 700; }
+.sleep-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.sleep-time { display: grid; gap: 4px; font-size: 0.9rem; color: var(--muted); }
+.sleep-time input { width: 100%; min-width: 0; font-size: 1.1rem; }
+.sleep-sum { margin: 0; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--sunken); }
+.sleep-form > .link.inline { display: inline-block; margin-top: 12px; }
+.sleep-total { display: flex; align-items: center; gap: 8px; }
+.sleep-total input { width: 5em; }
