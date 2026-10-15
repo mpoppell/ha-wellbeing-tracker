@@ -944,6 +944,7 @@ class Engine:
                 out.append({
                     **info,
                     "status": d["status"],
+                    "entry_id": d["entry_id"],
                     "local_day": d["local_day"],
                     "reason": d["reason"],
                     "resolved_at": resolved_local,
@@ -1718,32 +1719,84 @@ class Engine:
         trackers = [{**dict(r), "config": json.loads(r["config"] or "{}")} for r in rows]
         trackers = [t for t in trackers if t["config"].get("nights") and (user_id is None or t["user_id"] == user_id)]
         now = self.clock()
-        start = iso(now - timedelta(days=days))
+        start = iso(now - timedelta(days=days + 1))  # estimates need the evening before
         saved = 0
         for t in trackers:
             src = t["config"]["nights"]
+            hist = lambda entity, attrs=False: self.ha.get_history(entity, start, iso(now), attributes=attrs)  # noqa: E731
             nights = []
             if src.get("tracking"):
-                tracking = await self.ha.get_history(src["tracking"], start, iso(now), attributes=True)
-                phases = await self.ha.get_history(src["phases"], start, iso(now), attributes=True) if src.get("phases") else []
-                nights = sleepdata.nights_from_sleep_as_android(tracking, phases)
-            if not nights and src.get("segments"):
-                nights = sleepdata.nights_from_segments(
-                    await self.ha.get_history(src["segments"], start, iso(now), attributes=True))
+                tracking = await hist(src["tracking"], True)
+                phases = await hist(src["phases"], True) if src.get("phases") else []
+                nights += sleepdata.nights_from_sleep_as_android(tracking, phases)
+            segments = sleepdata.nights_from_segments(await hist(src["segments"], True)) if src.get("segments") else []
+            nights += segments
+            if src.get("lights") or src.get("charging") or src.get("in_use"):
+                signals = {
+                    "lights": [await hist(x) for x in src.get("lights") or []],
+                    "charging": await hist(src["charging"]) if src.get("charging") else None,
+                    "in_use": await hist(src["in_use"]) if src.get("in_use") else None,
+                }
+                confidence = await hist(src["confidence"]) if src.get("confidence") else None
+                nights += sleepdata.nights_from_home(signals, self.tz, now, days, segments=segments, confidence=confidence)
+            mornings = set()
             with self.db.connect() as conn:
                 for n in nights:
                     info = sleepdata.summary(n, self.tz)
                     phases_json = json.dumps([[iso(s), iso(e), p] for s, e, p in n["phases"]])
+                    why = json.dumps(n.get("why") or [])
+                    if n["source"] in ("home", "android"):
+                        # an estimate for a morning is replaced, not added to, when the data changes
+                        conn.execute("DELETE FROM sleep_nights WHERE tracker_id = ? AND night = ? AND source = ? AND start_at != ?",
+                                     (t["id"], info["night"], n["source"], iso(n["start"])))
                     cur = conn.execute(
-                        "INSERT INTO sleep_nights (user_id, tracker_id, night, start_at, end_at, phases, source, updated_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(tracker_id, start_at) DO UPDATE SET "
+                        "INSERT INTO sleep_nights (user_id, tracker_id, night, start_at, end_at, phases, source, updated_at, why) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(tracker_id, start_at) DO UPDATE SET "
                         "end_at = excluded.end_at, phases = excluded.phases, night = excluded.night, source = excluded.source, "
-                        "updated_at = excluded.updated_at WHERE sleep_nights.phases != excluded.phases OR sleep_nights.end_at != excluded.end_at",
-                        (t["user_id"], t["id"], info["night"], iso(n["start"]), iso(n["end"]), phases_json, n["source"], iso(now)))
+                        "updated_at = excluded.updated_at, why = excluded.why "
+                        "WHERE sleep_nights.source NOT IN ('you', 'removed') AND (sleep_nights.phases != excluded.phases "
+                        "OR sleep_nights.end_at != excluded.end_at OR IFNULL(sleep_nights.why, '') != excluded.why)",
+                        (t["user_id"], t["id"], info["night"], iso(n["start"]), iso(n["end"]), phases_json, n["source"], iso(now), why))
                     saved += cur.rowcount
-                    # Sleep hours for that morning, unless you've entered them yourself
-                    self._write_from_ha(conn, t, date.fromisoformat(info["night"]), info["asleep"] / 60, n["end"])
+                    mornings.add(info["night"])
+                for night in mornings:
+                    self._sleep_hours(conn, t, night)
         return saved
+
+    # Which night counts for a morning: yours, then Sleep as Android, then the estimate, then Android's.
+    SLEEP_PRIORITY = {"you": 0, "removed": 0, "sleep_as_android": 1, "home": 2, "android": 3}
+
+    def _nights(self, conn, tracker_id: int, since: str | None = None, night: str | None = None) -> dict[str, dict]:
+        """{morning: the night that counts}, removed mornings included (source "removed")."""
+        sql, args = "SELECT * FROM sleep_nights WHERE tracker_id = ?", [tracker_id]
+        if since:
+            sql += " AND night > ?"
+            args.append(since)
+        if night:
+            sql += " AND night = ?"
+            args.append(night)
+        best: dict[str, dict] = {}
+        for r in conn.execute(sql, args).fetchall():
+            n = {"start": parse(r["start_at"]), "end": parse(r["end_at"]), "source": r["source"],
+                 "phases": [(parse(s), parse(e), p) for s, e, p in json.loads(r["phases"])],
+                 "why": json.loads(r["why"]) if r["why"] else []}
+            info = sleepdata.summary(n, self.tz)
+            info["night"] = r["night"]
+            info["estimate"] = r["source"] in ("home", "android")
+            rank = (self.SLEEP_PRIORITY.get(r["source"], 9), -info["in_bed"])
+            if r["night"] not in best or rank < best[r["night"]]["_rank"]:
+                best[r["night"]] = {**info, "_rank": rank}
+        return best
+
+    def _sleep_hours(self, conn, t: dict, night: str) -> None:
+        """Sleep hours for a morning, from the night that counts. Anything you entered yourself wins."""
+        n = self._nights(conn, t["id"], night=night).get(night)
+        if not n:
+            return
+        if n["source"] == "removed":
+            conn.execute("DELETE FROM entries WHERE tracker_id = ? AND day = ? AND source = 'ha'", (t["id"], night))
+            return
+        self._write_from_ha(conn, t, date.fromisoformat(night), n["asleep"] / 60, parse(n["end"]))
 
     def sleep_view(self, user_id: str, days: int = 14) -> dict:
         """Recent nights, newest first, for the sleep screen."""
@@ -1753,20 +1806,63 @@ class Engine:
         cfg = tracker["config"]
         since = (self._local_today(self.clock()) - timedelta(days=days)).isoformat()
         with self.db.connect() as conn:
-            rows = conn.execute("SELECT * FROM sleep_nights WHERE tracker_id = ? AND night > ? ORDER BY start_at DESC",
-                                (tracker["id"], since)).fetchall()
-        nights = []
-        for r in rows:
-            n = {"start": parse(r["start_at"]), "end": parse(r["end_at"]), "source": r["source"],
-                 "phases": [(parse(s), parse(e), p) for s, e, p in json.loads(r["phases"])]}
-            nights.append(sleepdata.summary(n, self.tz))
-        # one night per morning: if there were two (a nap, a restart), keep the longest
-        best: dict[str, dict] = {}
-        for n in nights:
-            if n["night"] not in best or n["in_bed"] > best[n["night"]]["in_bed"]:
-                best[n["night"]] = n
+            best = self._nights(conn, tracker["id"], since=since)
+        nights = [{k: v for k, v in n.items() if k != "_rank"} for n in best.values() if n["source"] != "removed"]
         return {"tracker_id": tracker["id"], "configured": bool(cfg.get("nights")), "source": cfg.get("nights"),
-                "goal": cfg.get("goal") or 8, "nights": sorted(best.values(), key=lambda n: n["night"], reverse=True)}
+                "goal": cfg.get("goal") or 8, "nights": sorted(nights, key=lambda n: n["night"], reverse=True)}
+
+    def _sleep_tracker(self, user_id: str) -> dict:
+        tracker = next((t for t in self.db.list_trackers(user_id, include_hidden=True) if t["kind"] == "sleep"), None)
+        if not tracker:
+            raise ValidationError("Add a Sleep item first")
+        return {**tracker, "user_id": user_id}
+
+    def set_night(self, user_id: str, night: str, start: str, end: str) -> dict:
+        """Your own times for a night: when you fell asleep and woke up."""
+        tracker = self._sleep_tracker(user_id)
+        try:
+            day = date.fromisoformat(night)
+            s, e = parse(start), parse(end)
+        except (TypeError, ValueError):
+            raise ValidationError("Choose when you fell asleep and woke up") from None
+        if not timedelta(minutes=30) <= e - s <= timedelta(hours=16):
+            raise ValidationError("A night is between 30 minutes and 16 hours")
+        if e.astimezone(self.tz).date() != day:
+            raise ValidationError("Wake up on the morning of that day")
+        with self.db.connect() as conn:
+            conn.execute("DELETE FROM sleep_nights WHERE tracker_id = ? AND night = ? AND source IN ('you', 'removed')",
+                         (tracker["id"], night))
+            conn.execute(
+                "INSERT INTO sleep_nights (user_id, tracker_id, night, start_at, end_at, phases, source, updated_at, why) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'you', ?, '[]') ON CONFLICT(tracker_id, start_at) DO UPDATE SET "
+                "end_at = excluded.end_at, phases = excluded.phases, source = 'you', night = excluded.night, updated_at = excluded.updated_at",
+                (user_id, tracker["id"], night, iso(s), iso(e), json.dumps([[iso(s), iso(e), sleepdata.ASLEEP]]), iso(self.clock())))
+            self._sleep_hours(conn, tracker, night)
+        return self.sleep_view(user_id, 30)
+
+    def remove_night(self, user_id: str, night: str) -> dict:
+        """Not a night's sleep (you were away, or it's wrong): leave the morning empty."""
+        tracker = self._sleep_tracker(user_id)
+        day = date.fromisoformat(night)
+        noon = datetime.combine(day, datetime.min.time(), self.tz).replace(hour=12)
+        with self.db.connect() as conn:
+            conn.execute("DELETE FROM sleep_nights WHERE tracker_id = ? AND night = ? AND source IN ('you', 'removed')",
+                         (tracker["id"], night))
+            conn.execute(
+                "INSERT INTO sleep_nights (user_id, tracker_id, night, start_at, end_at, phases, source, updated_at, why) "
+                "VALUES (?, ?, ?, ?, ?, '[]', 'removed', ?, '[]')",
+                (user_id, tracker["id"], night, iso(noon), iso(noon), iso(self.clock())))
+            self._sleep_hours(conn, tracker, night)
+        return self.sleep_view(user_id, 30)
+
+    def reset_night(self, user_id: str, night: str) -> dict:
+        """Undo your changes to a night and go back to what Home Assistant says."""
+        tracker = self._sleep_tracker(user_id)
+        with self.db.connect() as conn:
+            conn.execute("DELETE FROM sleep_nights WHERE tracker_id = ? AND night = ? AND source IN ('you', 'removed')",
+                         (tracker["id"], night))
+            self._sleep_hours(conn, tracker, night)
+        return self.sleep_view(user_id, 30)
 
     # ================= notifications inside the app =================
 

@@ -164,19 +164,29 @@ def normalise_source(src) -> dict:
 
 
 def normalise_nights(src) -> dict:
-    """Where nights of sleep come from: Sleep as Android's event entities, or Android's sleep segment sensor."""
+    """Where nights of sleep come from: Sleep as Android's event entities, Android's sleep
+    segments and sleep confidence, and things in your home that show when you go to bed."""
     if not isinstance(src, dict):
         raise ValidationError("Choose where your nights come from")
     out = {}
-    for key, domain in (("tracking", "event"), ("phases", "event"), ("segments", "sensor")):
+    for key, domains in (("tracking", "event"), ("phases", "event"), ("segments", "sensor"), ("confidence", "sensor"),
+                         ("charging", "binary_sensor"), ("in_use", "binary_sensor")):
         value = src.get(key)
         if value in (None, ""):
             continue
-        if not re.match(rf"^{domain}\.[a-z0-9_]+$", str(value)):
+        if not re.match(rf"^({domains})\.[a-z0-9_]+$", str(value)):
             raise ValidationError("Choose where your nights come from")
         out[key] = str(value)
-    if not (out.get("tracking") or out.get("segments")):
-        raise ValidationError("Choose Sleep as Android's sleep tracking, or Android's sleep segments")
+    lights = src.get("lights") or []
+    if isinstance(lights, str):
+        lights = [lights]
+    lights = [str(x) for x in lights if x]
+    if any(not re.match(r"^(light|switch)\.[a-z0-9_]+$", x) for x in lights) or len(lights) > 10:
+        raise ValidationError("Choose up to 10 bedroom lights")
+    if lights:
+        out["lights"] = lights
+    if not any(out.get(k) for k in ("tracking", "segments", "lights", "charging", "in_use")):
+        raise ValidationError("Choose at least one way to tell when you sleep")
     return out
 
 

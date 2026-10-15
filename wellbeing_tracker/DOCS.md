@@ -21,18 +21,21 @@ The Check-in screen is a dashboard of sections, each a card you can open or clos
 
 ### Arranging your dashboard
 
-Tap the pencil at the top of Check-in to edit it, much like a Home Assistant dashboard. Drag the grip handle (⠿) beside a section or anything in it to reorder it, or focus the handle and use the arrow keys. You can also rename sections, hide them, or add a new one. For anything in a section you can move it, edit it, send it to another section, or hide it. Tap **Done** when you're finished. Each section's ••• menu has shortcuts too.
+Tap the pencil at the top of Check-in to edit it, much like a Home Assistant dashboard. Drag the grip handle (⠿) beside a section or anything in it to reorder it, or focus the handle and use the arrow keys. You can also rename sections, hide them, or add a new one. For anything in a section you can move it, edit it, send it to another section, or hide it. Tap **Done** when you're finished. Each section's ••• menu has shortcuts too. The small "2 of 5" beside a section's name is how many you've done today.
 
 ## Meds/Supplements
 
-Each medication shows its usual strength and how many you usually take ("1 dose", "2 tablets"). Doses taken today appear as squares with their time, with the day's total on the right.
+Each medication shows its strength, a **Log** button, and one line for today's doses, in time order:
 
-- Today's reminders show under each medication ("½ dose at 7pm ✓", "1 dose at 10pm"). Tap one that's still to come to log exactly that amount, or tap the bell to change the reminders.
-- Tap **+** to log a dose: set how many (×1, ×1.5 and so on), change the strength or time if needed, then **Confirm**.
-- **Skip** on the Due now card offers one-tap reasons (Felt fine, Side effects, Ran out…), or skip without one.
-- Tap a logged dose to change it or delete it. Reminders timed from that dose move with it.
-- **Groups**: make a group such as Morning or Sleep and tap it to log everything in it at once (with Undo).
-- **Copy last**: logs the same doses as the last day you logged any, at the same times (only times that have already passed today).
+- **✓ ½ dose · 7:02pm**: taken. Tap it to change the amount or time, or delete it. Reminders timed from that dose move with it.
+- **1 dose at 10pm**: still to come. Tap it to log exactly that amount now.
+- **1 dose due** (filled in): due now. The **Due now** card at the top has Taken, Snooze and Skip too.
+- Skipped and missed doses are crossed out.
+
+Tap **Log** to log a dose at any time: set how many (×1, ×1.5 and so on), change the strength or time if needed, then **Confirm**. Tap the medicine's name for its supply, refills and reminders. Supply warnings ("8 days left", "New script needed by 3 Nov") show underneath.
+
+- **Groups**: from the section's ••• menu, choose **Create a group to log together**, such as Morning or Bedtime. Your groups then show at the top of the section; tap one to log everything in it at once (with Undo).
+- **Log the same as last time** (••• menu): logs the same doses as the last day you logged any, at the same times (only times that have already passed today).
 
 ## Medication reminders
 
@@ -123,14 +126,29 @@ Good sources: the Google Health integration (Fitbit, Pixel Watch and other devic
 
 ## Sleep
 
-If you use **Sleep as Android** with its Home Assistant integration, Check-in can show your nights the way Sleep as Android does. On the **Sleep** row tap **Show your nights from Sleep as Android**, check the suggested entities and tap **Save and import**. To change them later, open a night and tap **Change** beside the source.
+Check-in can show each night's sleep, the way Sleep as Android does. On the **Sleep** row tap **Show your nights from Home Assistant** (or **from Sleep as Android**), check the suggested entities and tap **Save and import**. To change them later, open a night and tap **Change** at the bottom.
 
-- **Sleep tracking** events (started and stopped) mark each night; **Sleep phase** events (deep, light, REM, awake) fill it in.
-- No Sleep as Android? Pick the Home Assistant Companion app's **Sleep segment** sensor instead. You'll get bedtimes and wake times, without phases.
+You can use any of these together. Each morning shows the best one available:
+
+1. **Sleep as Android**: its **Sleep tracking** events mark the night, and **Sleep phase** events add deep, light, REM and awake. Only on nights you track.
+2. **Your bedroom and phone**: an estimate for every night, with nothing to start or stop.
+   - **Bedroom lights**: lights out means you've gone to bed; on again means you're up.
+   - **Phone charging**: most people put their phone on charge at bedtime.
+   - **Phone in use** (optional): the Companion app's **Interactive** sensor. It's off by default: turn it on in the Home Assistant app under **Settings → Companion app → Manage sensors**.
+   - **Sleep confidence**, from the Companion app, tells when you actually fell asleep and woke, rather than when you went to bed.
+3. **Android's sleep detection**: the Companion app's **Sleep segment** sensor. Bedtimes and wake times, without stages. It also sharpens the estimate above.
+
+How the estimate works: bedtime is when everything you chose says you're in bed (lights off, phone on charge, phone not in use), and you're up when any of them changes. A trip to the bathroom or a quick look at your phone (under 15 minutes) doesn't end the night. If a light stays on all night, or the phone never goes on charge, that night goes by the others. If only the charger is chosen and it stays plugged in, you're counted as up within an hour of waking. Open a night and tap **How this was worked out** to see each step ("Lights out 11:40pm", "Phone on charge 11:42pm", "Asleep 11:58pm"...).
+
+Estimates can be wrong, so every night except Sleep as Android's can be changed:
+
+- **Change times**: set when you fell asleep and woke. Your times are kept and win over everything else. **Use Home Assistant's times** puts it back.
+- **Not a night's sleep**: for a night away from home, or one that's just wrong. It's removed, along with its Sleep hours (Undo is offered).
+- **Add this night**: for a morning with nothing recorded.
 
 Importing brings in the last 10 days (all Home Assistant keeps), and new nights are added every 15 minutes. Nights are kept by the app from then on, so your history keeps growing. Each night also fills in **Sleep** hours for that morning; anything you enter yourself still wins.
 
-Tap a night on Check-in to see it in full: when you fell asleep and woke, a graph of your phases (tap a block to see its times), time in each phase, and the last 14 nights against your sleep goal.
+Tap a night on Check-in to see it in full: when you fell asleep and woke, a graph of the night (tap a block to see its times), time in each stage, and the last 14 nights against your sleep goal. Nights without stages show in grey.
 
 ## Dashboard card, entities and actions
 

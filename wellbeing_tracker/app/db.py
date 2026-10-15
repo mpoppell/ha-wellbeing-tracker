@@ -216,6 +216,10 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX sleep_nights_night ON sleep_nights (tracker_id, night);
     """,
+    # 11: how an estimated night was worked out ("Lights out 11:40pm", ...), as JSON
+    """
+    ALTER TABLE sleep_nights ADD COLUMN why TEXT;
+    """,
 ]
 
 

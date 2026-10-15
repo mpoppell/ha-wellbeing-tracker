@@ -159,17 +159,22 @@ def build_router(current_user) -> APIRouter:
     @router.get("/sleep")
     async def sleep(request: Request, days: int = 14, user: dict = Depends(current_user), e=Depends(engine)) -> dict:
         view = e.sleep_view(user["id"], max(1, min(120, days)))
-        if not view["configured"]:
-            # suggest the right Home Assistant entities, so setting up is one tap
-            states = await request.app.state.ha.get_states()
-            ids = [s.get("entity_id", "") for s in states]
-            pick = lambda pred: next((i for i in ids if pred(i)), None)  # noqa: E731
-            view["suggested"] = {
-                "tracking": pick(lambda i: i.startswith("event.") and "sleep_tracking" in i),
-                "phases": pick(lambda i: i.startswith("event.") and "sleep_phase" in i),
-                "segments": pick(lambda i: i.startswith("sensor.") and i.endswith("sleep_segment")),
-            }
+        # suggest the right Home Assistant entities, so setting up is one tap
+        states = await request.app.state.ha.get_states()
+        view["suggested"] = suggest_sleep_sources(states)
         return view
+
+    @router.put("/sleep/nights/{night}")
+    def set_night(night: str, payload: dict = Body(...), user: dict = Depends(current_user), e=Depends(engine)) -> dict:
+        return e.set_night(user["id"], _day(night), payload.get("start"), payload.get("end"))
+
+    @router.delete("/sleep/nights/{night}")
+    def remove_night(night: str, user: dict = Depends(current_user), e=Depends(engine)) -> dict:
+        return e.remove_night(user["id"], _day(night))
+
+    @router.post("/sleep/nights/{night}/reset")
+    def reset_night(night: str, user: dict = Depends(current_user), e=Depends(engine)) -> dict:
+        return e.reset_night(user["id"], _day(night))
 
     @router.post("/sleep/import")
     async def sleep_import(user: dict = Depends(current_user), e=Depends(engine)) -> dict:
@@ -290,6 +295,8 @@ def build_router(current_user) -> APIRouter:
             ],
             "people": people,
             "events": entities("event"),
+            "lights": entities("light") + entities("switch"),
+            "binary_sensors": entities("binary_sensor"),
             # Numbers that can fill in an item: sensors and number helpers with a numeric state or a unit.
             "sensors": sorted(
                 ({"entity_id": s["entity_id"], "name": name_of(s["entity_id"]), "state": s.get("state"),
@@ -318,3 +325,30 @@ def build_router(current_user) -> APIRouter:
         return {"ok": True}
 
     return router
+
+
+def _day(value: str) -> str:
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError:
+        raise ValidationError("Not a date") from None
+
+
+def suggest_sleep_sources(states: list[dict]) -> dict:
+    """The entities most likely to help, from what's in Home Assistant. Phone sensors from the
+    same phone as the sleep segment sensor come first."""
+    ids = [s.get("entity_id", "") for s in states]
+    names = {s.get("entity_id", ""): str((s.get("attributes") or {}).get("friendly_name") or "") for s in states}
+    pick = lambda pred, prefer="": next((i for i in sorted(ids, key=lambda x: not x.startswith(prefer)) if pred(i)), None)  # noqa: E731
+    segments = pick(lambda i: i.startswith("sensor.") and i.endswith("sleep_segment"))
+    phone = segments[len("sensor."):-len("sleep_segment")] if segments else ""
+    bedroom = [i for i in ids if i.startswith("light.") and ("bedroom" in i or "bedroom" in names[i].lower())]
+    return {
+        "tracking": pick(lambda i: i.startswith("event.") and "sleep_tracking" in i),
+        "phases": pick(lambda i: i.startswith("event.") and "sleep_phase" in i),
+        "segments": segments,
+        "confidence": pick(lambda i: i.startswith("sensor.") and i.endswith("sleep_confidence"), "sensor." + phone),
+        "charging": pick(lambda i: i.startswith("binary_sensor.") and i.endswith("_is_charging"), "binary_sensor." + phone),
+        "in_use": pick(lambda i: i.startswith("binary_sensor.") and i.endswith("_interactive"), "binary_sensor." + phone),
+        "lights": bedroom[:1],
+    }

@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.16.0
+
+**Sleep from your bedroom and phone, and a cleaner, calmer Check-in.**
+
+Sleep
+- Every night can now be **estimated from your home**: bedroom lights, your phone on charge, and (optionally) your phone in use mark bedtime and getting up. Android's sleep confidence or sleep segments then show when you were actually asleep.
+- Each morning shows the best night available: your own times, then Sleep as Android, then the estimate, then Android's sleep segments.
+- **How this was worked out** lists each step ("Lights out 11:40pm", "Phone on charge", "Asleep"...).
+- **Change times**, **Not a night's sleep** and **Add this night**, with your times always winning. Sleep hours follow.
+- Setup suggests the right entities, grouped by source, and explains how to turn on the phone's Interactive sensor.
+- Nights without stages show as Awake and Asleep (grey), on Check-in and in the 14-night chart.
+
+Check-in
+- Medications: one line of today's doses in time order (taken ✓ with the time you took it, due, still to come) and a single **Log** button, instead of three different displays of the same thing.
+- The **Coming up** card is gone (each medicine already shows what's coming); **Due now** stays.
+- Groups only show once you have some. Creating a group and **Log the same as last time** are in the section's ••• menu.
+- No more "Not answered" under every item; you'll see yesterday's answer instead, when there was one.
+- A section's count reads "2 of 5" instead of a bare number in a bubble.
+- Sleep shows as 7h 44m, not 7.73h; "from Home Assistant" is shown quietly beside the value.
+- Strengths read "100 mcg", not "100mcg"; numbers from 1,000 have commas.
+
+Settings
+- Every row is one tap target with a chevron, instead of buttons and up/down arrows. Reorder things on Check-in by dragging, in one place.
+- "Devices and alerts" is now **Where reminders go**, and the reminder rows say what they're set to in fewer words.
+- When editing an item, the warning about changing its type only shows if you change it.
+
+Also
+- On a computer, the tab bar sits under the page instead of stretching across the window.
+- Edit mode no longer says medicines have "No reminders" when they do.
+
 ## 0.15.0
 
 **Drag to arrange Check-in, and your nights from Sleep as Android.**

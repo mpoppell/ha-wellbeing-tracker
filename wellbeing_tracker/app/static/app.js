@@ -42,6 +42,8 @@ const ICONS = {
   plus: "M12 6v12M6 12h12",
   bell: "M6 16v-5a6 6 0 0112 0v5l1.5 2h-15L6 16zM10 20a2 2 0 004 0",
   close: "M6 6l12 12M18 6L6 18",
+  check: "M5 12.5l4.2 4.2L19 7",
+  chevron: "M9 6l6 6-6 6",
 };
 
 // 12 or 24-hour clock, following the time format in your Home Assistant profile.
@@ -192,7 +194,7 @@ const state = {
 
 function fmtNum(n) {
   const v = Number(n);
-  if (Math.abs(v) >= 10000) return Math.round(v).toLocaleString();
+  if (Math.abs(v) >= 1000) return Math.round(v).toLocaleString();
   return Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100);
 }
 
@@ -240,7 +242,7 @@ function formatValue(t, e) {
     case "sleep": {
       const s = e.value_json || {};
       const parts = [];
-      if (s.hours != null) parts.push(`${s.hours} h`);
+      if (s.hours != null) parts.push(hm(Math.round(s.hours * 60)));
       if (s.quality != null) parts.push(`quality ${s.quality} of 5`);
       return parts.join(", ");
     }
@@ -503,11 +505,18 @@ function rowName(t) {
   return el("span", { class: "brow-name" }, t.emoji ? el("span", { class: "emoji", "aria-hidden": "true" }, t.emoji) : null, t.name);
 }
 
-function levelLine(text, colour, onClear) {
-  if (!text) return null;
+function levelLine(text, colour, onClear, note) {
+  if (!text && !note) return null;
   return el("span", { class: "brow-level", style: colour ? `--lc:${colour}` : "" },
-    onClear ? el("button", { type: "button", class: "clear", "aria-label": "Clear", title: "Clear", onclick: onClear }, svgIcon(ICONS.minus)) : null,
-    el("span", {}, text));
+    onClear && text ? el("button", { type: "button", class: "clear", "aria-label": "Clear", title: "Clear", onclick: onClear }, svgIcon(ICONS.minus)) : null,
+    text ? el("span", {}, text) : null,
+    note ? el("span", { class: "level-note" }, text ? ` · ${note}` : note) : null);
+}
+
+// Nothing logged yet: say what you said yesterday, if anything, and otherwise nothing at all.
+function notYet(t) {
+  const y = yesterdayText(t);
+  return y ? levelLine(null, null, null, y) : null;
 }
 
 function brow(t, levelNode, right, below) {
@@ -759,7 +768,7 @@ function sectionCard(s, view) {
     el("button", { type: "button", class: "card-toggle", "aria-expanded": String(open), onclick: () => toggleCollapsed(key) },
       el("span", { class: "card-icon" }, sectionIcon(s.name)),
       el("span", { class: "card-title" }, s.name),
-      count ? el("span", { class: "card-count", "aria-label": `${count} logged today` }, String(count)) : null,
+      count ? el("span", { class: "card-progress", title: "Done today" }, `${count} of ${meds ? s.items.filter(isMeds).length : s.items.length}`) : null,
       el("span", { class: "card-chevron" }, svgIcon(open ? ICONS.up : ICONS.down))),
     el("button", { type: "button", class: "iconbtn plain", "aria-label": `${s.name} options`, title: "Options",
       onclick: () => openSectionMenu(s, view) }, svgIcon(ICONS.dots)));
@@ -791,7 +800,8 @@ function openSectionMenu(s, view) {
     el("div", { class: "menu" },
       meds ? item("Add a medication", () => openTrackerSheet({ kind: "medication", group_name: s.name }, view))
         : item(`Add something to ${s.name}`, () => openTrackerSheet({ kind: "rating", group_name: s.name }, view)),
-      meds ? item("Create a group", () => openGroupSheet(null, view)) : null,
+      meds ? item("Log the same as last time", () => copyLast(s)) : null,
+      meds ? item("Create a group to log together", () => openGroupSheet(null, view)) : null,
       meds ? item("Supply and scripts", () => { location.hash = "#/settings"; }) : null,
       meds ? item("Reminders and devices", () => { location.hash = "#/settings"; }) : null,
       !meds ? item("Copy yesterday's answers", () => copyYesterday(s)) : null,
@@ -1015,8 +1025,7 @@ async function addSection(sections) {
 
 function dueCard(view) {
   const due = state.doses.filter((d) => d.status === "due");
-  const later = state.doses.filter((d) => d.status === "scheduled" && d.local_day === state.day);
-  if (!due.length && !later.length) return null;
+  if (!due.length) return null;
 
   const act = async (d, action, reason) => {
     if (action === "skip" && reason === undefined) { openSkipSheet(d, (r) => act(d, "skip", r)); return; }
@@ -1045,13 +1054,11 @@ function dueCard(view) {
         d.last_call ? null : el("button", { type: "button", class: "secondary small", onclick: () => act(d, "snooze") }, "Snooze"),
         el("button", { type: "button", class: "secondary small", onclick: () => act(d, "skip") }, "Skip")));
   });
-  const laterText = later.length ? `Later today: ${joinNames(later.map((d) => `${d.name}${d.amount ? " " + d.amount : ""} at ${niceTime(d.time)}`))}` : null;
   return el("section", { class: "card due-card", "aria-label": "Medications due" },
     el("div", { class: "card-head" },
       el("span", { class: "card-icon" }, svgIcon(ICONS.bell)),
-      el("span", { class: "card-title" }, due.length ? "Due now" : "Coming up"),
-      due.length ? el("span", { class: "card-count" }, String(due.length)) : null),
-    el("div", { class: "card-body" }, rows, laterText ? el("p", { class: "row-sub due-later" }, laterText) : null));
+      el("span", { class: "card-title" }, "Due now")),
+    el("div", { class: "card-body" }, rows));
 }
 
 const SKIP_REASONS = ["Felt fine", "Side effects", "Ran out", "Not needed today", "Forgot, too late now"];
@@ -1089,21 +1096,14 @@ function usualText(t) {
 
 function strengthText(t) {
   const c = t.config;
-  return c.dose != null && c.dose !== "" ? `${fmtNum(c.dose)}${c.unit || ""}` : (c.unit || "");
+  return c.dose != null && c.dose !== "" ? `${fmtNum(c.dose)} ${c.unit || ""}`.trim() : (c.unit || "");
 }
 
 function medsBody(s, view) {
-  const gkey = `groups:${s.name}`;
-  const groupsOpen = !collapsed.has(gkey);
   const groups = (state.person && state.person.med_groups) || [];
-  const groupBlock = el("div", { class: "med-groups" },
-    el("div", { class: "med-groups-head" },
-      el("button", { type: "button", class: "sub-toggle", "aria-expanded": String(groupsOpen), onclick: () => toggleCollapsed(gkey) },
-        "Groups", svgIcon(groupsOpen ? ICONS.up : ICONS.down)),
-      el("button", { type: "button", class: "link inline-icon", onclick: () => copyLast(s) }, svgIcon(ICONS.copy), "Copy last")),
-    groupsOpen ? el("div", { class: "bchips small" },
-      groups.map((g) => el("button", { type: "button", class: "chip", title: `Log ${g.name}`, onclick: () => logGroup(g) }, g.name)),
-      el("button", { type: "button", class: "chip chip-ghost", onclick: () => openGroupSheet(null, view) }, "+ Create new group")) : null);
+  const groupBlock = groups.length ? el("div", { class: "med-groups" },
+    el("span", { class: "row-sub" }, "Log together:"),
+    groups.map((g) => el("button", { type: "button", class: "chip", title: `Log everything in ${g.name}`, onclick: () => logGroup(g) }, g.name))) : null;
   const rows = s.items.filter(isMeds).map((t) => medRow(t, view));
   const others = s.items.filter((t) => !isMeds(t)).map((t) => trackerRow(t, view));
   return [groupBlock, ...rows, ...others];
@@ -1113,48 +1113,51 @@ function medRow(t, view) {
   const taken = entriesFor(t.id).slice().reverse(); // earliest first
   const c = t.config;
   const planned = state.doses.filter((d) => d.tracker_id === t.id && d.local_day === state.day && d.status !== "cancelled");
+  const byId = new Map(taken.map((e) => [e.id, e]));
+  const linked = new Set(planned.map((d) => d.entry_id).filter(Boolean));
+
+  // One chip per dose today, in time order: taken (tap to change), due, still to come, skipped.
+  const takenChip = (e) => el("button", { type: "button", class: "plan-dose plan-taken",
+    "aria-label": `${t.name} ${doseText(t, e)} taken at ${timeOf(e.logged_at)}. Change or delete`,
+    onclick: () => openDoseDialog(t, e) }, svgIcon(ICONS.check), `${qtyText(t, e.value_num ?? 1)} · ${timeOf(e.logged_at)}`);
+  const chips = [];
+  for (const d of planned) {
+    const text = `${qtyText(t, d.quantity)} at ${niceTime(d.time)}`;
+    const e = d.entry_id && byId.get(d.entry_id);
+    if (d.status === "taken" && e) chips.push({ at: e.logged_at, node: takenChip(e) });
+    else if (d.status === "scheduled" || d.status === "due") {
+      chips.push({ at: d.time, node: el("button", { type: "button", class: `plan-dose plan-${d.status}`,
+        "aria-label": `Log ${text}`, title: "Log this dose", onclick: () => openDoseDialog(t, null, { quantity: d.quantity }) },
+        d.status === "due" ? `${qtyText(t, d.quantity)} due` : text) });
+    } else {
+      chips.push({ at: d.time, node: el("span", { class: `plan-dose plan-${d.status}` }, text,
+        el("span", { class: "plan-mark" }, d.status === "taken" ? " ✓" : ` (${d.status})`)) });
+    }
+  }
+  for (const e of taken) if (!linked.has(e.id)) chips.push({ at: e.logged_at, node: takenChip(e) });
+  const timeKey = (x) => (/T(\d{2}:\d{2})/.exec(x) || [null, x])[1];
+  chips.sort((a, b) => timeKey(a.at).localeCompare(timeKey(b.at)));
+
   const totalQty = taken.reduce((a, e) => a + Number(e.value_num || 1), 0);
   const totalStrength = taken.reduce((a, e) => {
     const strength = e.value_json && e.value_json.dose != null ? e.value_json.dose : c.dose;
     return strength != null && strength !== "" ? a + Number(strength) * Number(e.value_num || 1) : a;
   }, 0);
-  const add = el("button", { type: "button", class: "dose-add", "aria-label": `Log ${t.name}`, onclick: () => openDoseDialog(t, null) }, svgIcon(ICONS.plus));
-  const squares = taken.map((e) => el("div", { class: "dose-cell" },
-    el("button", { type: "button", class: "dose-square", "aria-label": `${t.name} at ${timeOf(e.logged_at)}, ${doseText(t, e)}. Change or delete`,
-      onclick: () => openDoseDialog(t, e) }, fmtQty(e.value_num ?? 1)),
-    el("span", { class: "dose-time" }, timeOf(e.logged_at))));
   const strength = strengthText(t);
-  const title = el("div", { class: "brow-text" },
-    el("div", { class: "med-title" },
-      el("button", { type: "button", class: "brow-name name-btn", title: "Details and supply", onclick: () => openMedSheet(t) },
-        t.emoji ? el("span", { class: "emoji", "aria-hidden": "true" }, t.emoji) : null, t.name),
-      strength ? el("span", { class: "med-strength" }, ` (${strength})`) : null,
-      el("button", { type: "button", class: "iconbtn plain med-bell", "aria-label": `Reminders for ${t.name}`, title: "Reminders",
-        onclick: () => openScheduleSheet(t, view) }, svgIcon(ICONS.bell))),
-    planned.length
-      ? el("div", { class: "row-sub med-plan", role: "list", "aria-label": "Today's reminders" },
-          planned.map((d) => {
-            const text = `${qtyText(t, d.quantity)} at ${niceTime(d.time)}`;
-            if (d.status === "scheduled" || d.status === "due") {
-              return el("button", { type: "button", role: "listitem", class: `plan-dose plan-${d.status}`,
-                "aria-label": `Log ${text}`, title: "Log this dose",
-                onclick: () => openDoseDialog(t, null, { quantity: d.quantity }) }, text);
-            }
-            return el("span", { role: "listitem", class: `plan-dose plan-${d.status}` }, text,
-              d.status === "taken" ? el("span", { class: "plan-mark", "aria-label": "taken" }, " ✓")
-                : el("span", { class: "plan-mark" }, ` (${d.status})`));
-          }))
-      : el("div", { class: "row-sub" }, usualText(t)),
-    supplyCallout(t));
-  if (!taken.length) {
-    return el("div", { class: "med-row" }, el("div", { class: "brow-main" }, title, add));
-  }
-  return el("div", { class: "med-row" }, title,
-    el("div", { class: "med-main" },
-      el("div", { class: "dose-cells" }, squares, el("div", { class: "dose-cell" }, add)),
-      el("div", { class: "med-total", "aria-label": "Total today" },
-        el("strong", {}, qtyText(t, totalQty)),
-        totalStrength ? el("span", {}, `${fmtNum(totalStrength)}${c.unit || ""}`) : null)));
+  return el("div", { class: "med-row" },
+    el("div", { class: "brow-main" },
+      el("div", { class: "brow-text" },
+        el("button", { type: "button", class: "brow-name name-btn", title: "Supply, reminders and details", onclick: () => openMedSheet(t) },
+          t.emoji ? el("span", { class: "emoji", "aria-hidden": "true" }, t.emoji) : null, t.name,
+          strength ? el("span", { class: "med-strength" }, strength) : null)),
+      el("button", { type: "button", class: "secondary small log-dose", "aria-label": `Log ${t.name}`, onclick: () => openDoseDialog(t, null) },
+        svgIcon(ICONS.plus), "Log")),
+    chips.length ? el("div", { class: "med-plan", role: "list", "aria-label": "Today" }, chips.map((x) => x.node))
+      : el("div", { class: "row-sub" }, `Usually ${usualText(t)}`),
+    taken.length > 1 || supplyCallout(t) ? el("div", { class: "med-foot" },
+      supplyCallout(t),
+      taken.length > 1 ? el("span", { class: "row-sub med-total" },
+        `Today ${qtyText(t, totalQty)}${totalStrength ? ` · ${fmtNum(totalStrength)} ${c.unit || ""}`.trimEnd() : ""}`) : null) : null);
 }
 
 /* ---------- supply and refills ---------- */
@@ -1555,7 +1558,7 @@ function yesterdayText(t) {
   const e = (state.prevEntries || []).find((x) => x.tracker_id === t.id);
   if (!e) return "";
   const v = formatValue(t, e);
-  return v ? ` · yesterday ${t.kind === "rating" ? ratingText(t.config, e.value_num) : v.toLowerCase()}` : "";
+  return v ? `Yesterday ${t.kind === "rating" ? ratingText(t.config, e.value_num) : v.toLowerCase()}` : "";
 }
 
 function trackerRow(t, view) {
@@ -1565,7 +1568,7 @@ function trackerRow(t, view) {
 
   if (t.kind === "rating") {
     const level = latest ? levelLine(ratingText(c, latest.value_num), scaleColor(c, latest.value_num),
-      t.frequency === "daily" ? () => removeEntry(latest) : null) : levelLine(`Not logged yet${yesterdayText(t)}`, "var(--muted)");
+      t.frequency === "daily" ? () => removeEntry(latest) : null) : notYet(t);
     const chips = t.frequency === "many" && entries.length
       ? el("div", { class: "bchips small" }, entries.slice().reverse().map((e) => el("button", {
           type: "button", class: "chip", style: `--lc:${scaleColor(c, e.value_num)}`,
@@ -1584,7 +1587,7 @@ function trackerRow(t, view) {
     const val = latest ? latest.value_num : null;
     const labels = state.meta.severity_labels;
     const level = val != null ? levelLine(labels[val], SEVERITY_COLOURS[val], () => quickSave([{ tracker_id: t.id, clear: true }]))
-      : levelLine(`Not answered${yesterdayText(t)}`, "var(--muted)");
+      : notYet(t);
     const tiles = el("div", { class: "level-tiles", role: "group", "aria-label": `${t.name} severity` },
       labels.map((label, i) => tile(barsIcon(i), {
         class: `tile tile-square${val === i ? " on" : ""}`, style: `--c:${SEVERITY_COLOURS[i]}`,
@@ -1640,9 +1643,8 @@ function trackerRow(t, view) {
         tile(svgIcon(ICONS.minus), { class: "tile tile-square", "aria-label": `Fewer ${t.name}`, disabled: current <= 0, onclick: () => step(-1) }),
         el("output", { class: "tile-num", "aria-live": "polite" }, fmtNum(current)),
         tile(svgIcon(ICONS.plus), { class: "tile tile-square", "aria-label": `More ${t.name}`, onclick: () => step(1) }));
-      const text = [goalAside(c, current) || (current ? `${fmtNum(current)} ${c.unit || ""}`.trim() : null),
-        latest && latest.source === "ha" ? "from Home Assistant" : null].filter(Boolean).join(" · ") || null;
-      return brow(t, levelLine(text, current ? "var(--accent)" : "var(--muted)"), stepper);
+      const text = goalAside(c, current) || (current ? `${fmtNum(current)} ${c.unit || ""}`.trim() : null);
+      return brow(t, levelLine(text, current ? "var(--accent)" : "var(--muted)", null, latest && latest.source === "ha" ? "from Home Assistant" : null), stepper);
     }
     const input = el("input", {
       type: "number", inputmode: "decimal", min: "0", step: "any", class: "tile-input",
@@ -1652,7 +1654,7 @@ function trackerRow(t, view) {
         quickSave([v === "" ? { tracker_id: t.id, clear: true } : { tracker_id: t.id, value_num: Number(v) }]);
       },
     });
-    return brow(t, levelLine([goalAside(c, val ?? 0), latest && latest.source === "ha" ? "from Home Assistant" : null].filter(Boolean).join(" · ") || null, "var(--accent)"),
+    return brow(t, levelLine(goalAside(c, val ?? 0), "var(--accent)", null, latest && latest.source === "ha" ? "from Home Assistant" : null),
       el("div", { class: "level-tiles" }, input, c.unit ? el("span", { class: "row-sub" }, c.unit) : null));
   }
 
@@ -1667,24 +1669,27 @@ function trackerRow(t, view) {
     const qcfg = { min: 1, max: 5, labels: ["Awful", "Poor", "Okay", "Good", "Great"] };
     const stepper = el("div", { class: "level-tiles" },
       tile(svgIcon(ICONS.minus), { class: "tile tile-square", "aria-label": "Less sleep", onclick: () => save(Math.max(0, shownHours - 0.5), quality) }),
-      el("output", { class: "tile-num" }, hours == null ? "–" : `${fmtNum(hours)}h`),
+      el("output", { class: "tile-num" }, hours == null ? "–" : hmShort(hours * 60)),
       tile(svgIcon(ICONS.plus), { class: "tile tile-square", "aria-label": "More sleep", onclick: () => save(Math.min(24, hours == null ? shownHours : hours + 0.5), quality) }));
     const qualityTiles = el("div", { class: "rating-grid one-row" }, [1, 2, 3, 4, 5].map((v) => el("div", { class: "rating-col", style: `--c:${scaleColor(qcfg, v)}` },
       faceIcon(v - 1),
       tile(String(v), { class: `tile tile-rating${quality === v ? " on" : ""}`, "aria-pressed": String(quality === v),
         "aria-label": `Sleep quality ${qcfg.labels[v - 1]}`, onclick: () => save(hours, quality === v ? null : v) }))));
-    const text = [hours != null ? `${fmtNum(hours)} hours` : null, quality ? `${qcfg.labels[quality - 1]} sleep` : null].filter(Boolean).join(", ")
-      + (latest && latest.source === "ha" ? " · from Home Assistant" : "");
     const night = state.sleep && state.sleep.nights.find((x) => x.night === state.day);
+    const text = quality ? `${qcfg.labels[quality - 1]} sleep` : null;
+    const note = latest && latest.source === "ha" && !night ? "from Home Assistant" : null;
     const nightLink = state.sleep && state.sleep.configured
-      ? el("button", { type: "button", class: "night-link", onclick: () => openSleepSheet(night ? night.night : null) },
-          night ? [hypnogram(night, { mini: true }), el("span", { class: "row-sub" }, `${clockOf(night.start)} to ${clockOf(night.end)} · ${hm(night.asleep)} asleep · see the night`)]
-            : el("span", { class: "row-sub" }, "No night tracked for this day · see your sleep"))
-      : state.sleep && state.sleep.tracker_id === t.id && state.sleep.suggested && (state.sleep.suggested.tracking || state.sleep.suggested.segments)
-        ? el("button", { type: "button", class: "link inline", onclick: () => openSleepSetup(state.sleep) }, "Show your nights from Sleep as Android")
+      ? el("button", { type: "button", class: "night-link", onclick: () => openSleepSheet(state.day) },
+          night ? [hypnogram(night, { mini: true }),
+              el("span", { class: "night-link-text" }, `${clockOf(night.start)} to ${clockOf(night.end)} · ${hm(night.asleep)} asleep`,
+                night.source === "guess" ? el("span", { class: "row-sub" }, " · estimated") : null, svgIcon(ICONS.chevron))]
+            : el("span", { class: "night-link-text row-sub" }, "No night recorded for this day. See your sleep", svgIcon(ICONS.chevron)))
+      : state.sleep && state.sleep.tracker_id === t.id && state.sleep.suggested && Object.values(state.sleep.suggested).some((v) => v && v.length)
+        ? el("button", { type: "button", class: "link inline", onclick: () => openSleepSetup(state.sleep) },
+            state.sleep.suggested.tracking ? "Show your nights from Sleep as Android" : "Show your nights from Home Assistant")
         : null;
-    return brow(t, levelLine(text || `Not logged yet${yesterdayText(t)}`, quality ? scaleColor(qcfg, quality) : "var(--muted)",
-      latest ? () => removeEntry(latest) : null), stepper,
+    return brow(t, text || note ? levelLine(text, quality ? scaleColor(qcfg, quality) : "var(--muted)", latest ? () => removeEntry(latest) : null, note)
+      : latest ? null : notYet(t), stepper,
       el("div", { class: "brow-below" }, nightLink, el("span", { class: "row-sub" }, "How well did you sleep?"), qualityTiles));
   }
 
@@ -1778,7 +1783,9 @@ function openDoseSheet(t, view, entry = null) { openDoseDialog(t, entry); }
 /* ================= sleep: nights from Sleep as Android ================= */
 
 const PHASE_ORDER = ["awake", "rem", "light", "deep"]; // top to bottom, like Sleep as Android
-const PHASE_LABEL = { awake: "Awake", rem: "REM", light: "Light", deep: "Deep" };
+const PHASE_LABEL = { awake: "Awake", rem: "REM", light: "Light", deep: "Deep", asleep: "Asleep" };
+// Nights without stages (Android, or estimated) show just awake and asleep.
+const phaseOf = (n, p) => (n.has_phases ? p : p === "awake" ? "awake" : "asleep");
 const SVGNS = "http://www.w3.org/2000/svg";
 
 function svgEl(tag, attrs = {}, ...kids) {
@@ -1795,13 +1802,21 @@ function hm(minutes) {
   return h ? (m % 60 ? `${h} h ${m % 60} min` : `${h} h`) : `${m} min`;
 }
 
+// "7h 44m", for tight spaces
+function hmShort(minutes) {
+  if (minutes == null) return "";
+  const m = Math.round(minutes);
+  const h = Math.floor(m / 60);
+  return h ? (m % 60 ? `${h}h\u00a0${m % 60}m` : `${h}h`) : `${m}m`;
+}
+
 const clockOf = (iso) => niceTime(/T(\d{2}:\d{2})/.exec(iso)[1]);
 const msOf = (iso) => new Date(iso).getTime();
 
 // The night graph: a row for each phase, a block for each stretch of time in it.
 function hypnogram(n, opts = {}) {
   const W = 340, labelW = opts.mini ? 0 : 46, rowH = opts.mini ? 9 : 26, gap = opts.mini ? 1 : 4;
-  const rows = n.has_phases ? PHASE_ORDER : ["light"];
+  const rows = n.has_phases ? PHASE_ORDER : ["awake", "asleep"];
   const H = rows.length * (rowH + gap) + (opts.mini ? 0 : 22);
   const t0 = msOf(n.start), t1 = msOf(n.end), span = Math.max(1, t1 - t0);
   const x = (iso) => labelW + ((msOf(iso) - t0) / span) * (W - labelW);
@@ -1812,21 +1827,21 @@ function hypnogram(n, opts = {}) {
   if (!opts.mini) {
     rows.forEach((p) => {
       svg.append(svgEl("rect", { x: labelW, y: y(p), width: W - labelW, height: rowH, rx: 4, class: "hypno-lane" }));
-      svg.append(svgEl("text", { x: 0, y: y(p) + rowH / 2 + 4, class: "hypno-label" }, n.has_phases ? PHASE_LABEL[p] : "Asleep"));
+      svg.append(svgEl("text", { x: 0, y: y(p) + rowH / 2 + 4, class: "hypno-label" }, PHASE_LABEL[p]));
     });
   }
   const caption = opts.caption;
   for (const b of n.phases) {
-    const p = n.has_phases ? b.phase : "light";
+    const p = phaseOf(n, b.phase);
     const w = Math.max(1.5, x(b.end) - x(b.start) - (opts.mini ? 0 : 1));
     const rect = svgEl("rect", { x: x(b.start), y: y(p), width: w, height: rowH, rx: opts.mini ? 1 : 4,
-      class: `ph ph-${n.has_phases ? p : "asleep"}`, tabindex: opts.mini ? null : 0 },
-      svgEl("title", {}, `${n.has_phases ? PHASE_LABEL[p] : "Asleep"} ${clockOf(b.start)}–${clockOf(b.end)}`));
+      class: `ph ph-${p}`, tabindex: opts.mini ? null : 0 },
+      svgEl("title", {}, `${PHASE_LABEL[p]} ${clockOf(b.start)}–${clockOf(b.end)}`));
     if (caption) {
       const show = () => {
         svg.querySelectorAll(".ph.on").forEach((r) => r.classList.remove("on"));
         rect.classList.add("on");
-        caption.textContent = `${n.has_phases ? PHASE_LABEL[p] : "Asleep"} · ${clockOf(b.start)} to ${clockOf(b.end)} · ${hm((msOf(b.end) - msOf(b.start)) / 60000)}`;
+        caption.textContent = `${PHASE_LABEL[p]} · ${clockOf(b.start)} to ${clockOf(b.end)} · ${hm((msOf(b.end) - msOf(b.start)) / 60000)}`;
       };
       rect.addEventListener("pointerenter", show);
       rect.addEventListener("click", show);
@@ -1904,86 +1919,164 @@ function usualTime(isos) {
   return niceTime(`${pad(Math.floor(real / 60))}:${pad(real % 60)}`);
 }
 
+const SLEEP_SOURCE = {
+  sleep_as_android: "Sleep as Android",
+  android: "Android's sleep detection",
+  home: "Estimated from your bedroom and phone",
+  you: "Times you set",
+};
+
 async function openSleepSheet(pickNight) {
   const sheet = document.getElementById("sheet");
   let view;
   try { view = await api("GET", "api/sleep?days=30"); } catch (err) { toast(err.message); return; }
   if (!view.tracker_id) { toast("Add a Sleep item first"); return; }
   if (!view.configured) { openSleepSetup(view); return; }
-  const nights = view.nights;
-  let current = pickNight && nights.find((n) => n.night === pickNight) ? pickNight : (nights[0] || {}).night;
+  let nights = view.nights;
+  // A morning with no night (yet) can still be opened, to add one yourself.
+  let current = pickNight || (nights[0] || {}).night || isoDay(new Date());
+  const reload = async (fresh) => { view = fresh; nights = view.nights; state.sleep = view; draw(); await redraw(); };
   const draw = () => {
     const i = nights.findIndex((n) => n.night === current);
     const n = nights[i];
-    const caption = el("p", { class: "row-sub hypno-caption", "aria-live": "polite" }, n && n.has_phases ? "Tap the graph to see each part of the night." : "");
-    const recent = nights.filter((x) => x.night > addDays(isoDay(new Date()), -14));
-    const week = nights.filter((x) => x.night > addDays(isoDay(new Date()), -7));
+    const older = nights.find((x) => x.night < current);
+    const newer = [...nights].reverse().find((x) => x.night > current);
+    const caption = el("p", { class: "row-sub hypno-caption", "aria-live": "polite" }, "Tap the graph to see each part of the night.");
+    const today = isoDay(new Date());
+    const recent = nights.filter((x) => x.night > addDays(today, -14));
+    const week = nights.filter((x) => x.night > addDays(today, -7));
     const avg = recent.length ? recent.reduce((a, x) => a + x.asleep, 0) / recent.length : null;
     const debt = week.length ? Math.max(0, week.length * view.goal * 60 - week.reduce((a, x) => a + x.asleep, 0)) : null;
     const tiles = n && n.has_phases ? el("div", { class: "phase-tiles" }, ["deep", "light", "rem", "awake"].map((p) =>
       el("div", { class: "phase-tile" },
-        el("span", { class: `dot ph-${p}` }),
-        el("span", { class: "phase-name" }, PHASE_LABEL[p]),
-        el("strong", {}, hm(n.totals[p])),
-        p !== "awake" && n.asleep ? el("span", { class: "row-sub" }, `${Math.round((n.totals[p] / n.asleep) * 100)}%`) : null))) : null;
+        el("span", { class: "phase-name" }, el("span", { class: `dot ph-${p}` }), PHASE_LABEL[p]),
+        el("strong", {}, hmShort(n.totals[p])),
+        el("span", { class: "row-sub" }, n.in_bed ? `${Math.round((n.totals[p] / n.in_bed) * 100)}%` : "")))) : null;
+    const why = n && n.why && n.why.length ? el("details", { class: "more why" },
+      el("summary", {}, "How this was worked out"),
+      el("ul", { class: "why-list" }, n.why.map((w) => el("li", {}, el("span", { class: "why-time" }, clockOf(w.at)), w.what))),
+      el("p", { class: "hint" }, "Bedtime is when everything you chose says you're in bed. Short interruptions, like a trip to the bathroom, don't count.")) : null;
+    const nightLabel = (day) => `${dayToDate(addDays(day, -1)).toLocaleDateString(undefined, { weekday: "short" })} to ${dayToDate(day).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}`;
+    const actions = el("div", { class: "night-actions" },
+      n && n.source === "you"
+        ? el("button", { type: "button", class: "link", onclick: async () => reload(await api("POST", `api/sleep/nights/${current}/reset`)) }, "Use Home Assistant's times")
+        : null,
+      !n || n.source !== "sleep_as_android"
+        ? el("button", { type: "button", class: "secondary small", onclick: () => openNightTimes(n, current, (fresh) => { sheet.close(); reload(fresh).then(() => openSleepSheet(current)); }) },
+            n ? "Change times" : "Add this night")
+        : null,
+      n && n.source !== "sleep_as_android"
+        ? el("button", { type: "button", class: "link", onclick: async () => {
+            const fresh = await api("DELETE", `api/sleep/nights/${current}`);
+            current = (fresh.nights[0] || {}).night || current;
+            await reload(fresh);
+            toast("Night removed", "Undo", async () => reload(await api("POST", `api/sleep/nights/${n.night}/reset`)));
+          } }, "Not a night's sleep")
+        : null);
     sheet.replaceChildren(el("div", { class: "sheet-body sleep-sheet" },
       el("div", { class: "med-sheet-head" }, el("h2", {}, "Sleep"),
         el("button", { type: "button", class: "iconbtn plain", "aria-label": "Close", onclick: () => sheet.close() }, svgIcon(ICONS.close))),
+      el("div", { class: "night-nav" },
+        el("button", { type: "button", class: "iconbtn", "aria-label": "Night before", disabled: !older,
+          onclick: () => { current = older.night; draw(); } }, svgIcon(ICONS.left)),
+        el("span", {}, nightLabel(current)),
+        el("button", { type: "button", class: "iconbtn", "aria-label": "Night after", disabled: !newer,
+          onclick: () => { current = newer.night; draw(); } }, svgIcon(ICONS.right))),
       n ? [
-        el("div", { class: "night-nav" },
-          el("button", { type: "button", class: "iconbtn", "aria-label": "Night before", disabled: i >= nights.length - 1,
-            onclick: () => { current = nights[i + 1].night; draw(); } }, svgIcon(ICONS.left)),
-          el("span", {}, `Night to ${longDate(n.night)}`),
-          el("button", { type: "button", class: "iconbtn", "aria-label": "Night after", disabled: i <= 0,
-            onclick: () => { current = nights[i - 1].night; draw(); } }, svgIcon(ICONS.right))),
         el("div", { class: "sleep-hero" },
           el("div", { class: "supply-big" }, `${hm(n.asleep)} asleep`),
           el("p", { class: "row-sub" }, `${clockOf(n.start)} to ${clockOf(n.end)} · in bed ${hm(n.in_bed)}`
-            + (n.fell_asleep_after != null && n.has_phases ? ` · asleep after ${hm(n.fell_asleep_after)}` : ""))),
-        hypnogram(n, { caption }), caption, tiles,
-      ] : el("p", { class: "row-sub" }, "No nights yet. They appear here the morning after Sleep as Android tracks one."),
+            + (n.fell_asleep_after ? ` · asleep after ${hm(n.fell_asleep_after)}` : "")),
+          el("p", { class: `sleep-badge${n.estimate ? " estimate" : ""}` }, SLEEP_SOURCE[n.source] || "")),
+        hypnogram(n, { caption }), caption, tiles, why,
+      ] : el("p", { class: "row-sub" }, "Nothing recorded for this night."),
+      actions,
       el("h3", { class: "sleep-h3" }, "Last 14 nights"),
       sleepTrend(nights, view.goal, current, (night) => { current = night; draw(); }),
+      el("div", { class: "sleep-legend", "aria-hidden": "true" },
+        (nights.some((x) => x.has_phases) ? ["deep", "light", "rem"] : []).concat(nights.some((x) => !x.has_phases) ? ["asleep"] : []).map((p) =>
+          el("span", {}, el("span", { class: `dot ph-${p}` }), p === "asleep" ? "Asleep, no stages" : PHASE_LABEL[p]))),
       el("ul", { class: "sleep-facts" },
-        avg != null ? el("li", {}, el("strong", {}, `Average ${hm(avg)}`), ` against a goal of ${view.goal} h`) : null,
-        debt != null ? el("li", {}, debt ? `${hm(debt)} short of your goal over the last ${week.length === 1 ? "night" : week.length + " nights"}` : "On or over your goal all week") : null,
-        recent.length ? el("li", {}, `Usually asleep by ${usualTime(recent.map((x) => x.start))}, up at ${usualTime(recent.map((x) => x.end))}`) : null),
-      el("div", { class: "sleep-legend", "aria-hidden": "true" }, ["deep", "light", "rem"].map((p) =>
-        el("span", {}, el("span", { class: `dot ph-${p}` }), PHASE_LABEL[p]))),
-      el("p", { class: "row-sub sleep-source" }, view.source.tracking ? "From Sleep as Android, through Home Assistant. " : "From Android's sleep detection, through Home Assistant. ",
+        avg != null ? el("li", {}, el("strong", {}, `Average ${hm(avg)}`), `, goal ${view.goal} h`) : null,
+        debt != null ? el("li", {}, debt ? `${hm(debt)} short of your goal this week` : "On or over your goal all week") : null,
+        recent.length ? el("li", {}, `Usually in bed by ${usualTime(recent.map((x) => x.start))}, up at ${usualTime(recent.map((x) => x.end))}`) : null),
+      el("p", { class: "row-sub sleep-source" }, "Where your nights come from. ",
         el("button", { type: "button", class: "link inline", onclick: () => openSleepSetup(view) }, "Change"))));
     if (!sheet.open) sheet.showModal();
   };
   draw();
 }
 
+// Set a night's times yourself: when you fell asleep and when you woke.
+function openNightTimes(n, night, done) {
+  const sheet = document.getElementById("sheet");
+  const hhmm = (iso) => /T(\d{2}:\d{2})/.exec(iso)[1];
+  const from = el("input", { type: "time", value: n ? hhmm(n.start) : "23:00", required: true });
+  const to = el("input", { type: "time", value: n ? hhmm(n.end) : "07:00", required: true });
+  const err = el("p", { class: "form-error", hidden: true });
+  const form = el("form", { method: "dialog" },
+    el("h2", {}, n ? "Change this night" : "Add this night"),
+    el("p", { class: "row-sub", style: "margin:-8px 0 14px" }, `Waking up on ${longDate(night)}. Your times are kept, and fill in Sleep hours.`),
+    err,
+    el("div", { class: "field-pair" }, field("Fell asleep", from), field("Woke up", to)),
+    el("div", { class: "actions" },
+      el("button", { type: "submit", class: "primary" }, "Save"),
+      el("button", { type: "button", class: "link", onclick: () => openSleepSheet(night) }, "Cancel")));
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const at = (day, t) => { const d = dayToDate(day); const [h, m] = t.split(":").map(Number); d.setHours(h, m, 0, 0); return d; };
+    const end = at(night, to.value);
+    // after midday it was the evening before
+    const start = at(from.value >= "12:00" ? addDays(night, -1) : night, from.value);
+    try { done(await api("PUT", `api/sleep/nights/${night}`, { start: localISO(start), end: localISO(end) })); }
+    catch (e) { err.textContent = e.message; err.hidden = false; }
+  });
+  sheet.replaceChildren(form);
+  if (!sheet.open) sheet.showModal();
+}
+
 async function openSleepSetup(view) {
   const sheet = document.getElementById("sheet");
   let ha;
-  try { haOptionsCache = null; ha = await haOptions(); } catch { ha = { events: [], sensors: [] }; }
+  try { haOptionsCache = null; ha = await haOptions(); } catch { ha = { events: [], sensors: [], lights: [], binary_sensors: [] }; }
   const tracker = state.allTrackers.find((t) => t.id === view.tracker_id) || (await api("GET", "api/trackers?include_hidden=true")).find((t) => t.id === view.tracker_id);
-  const was = view.source || view.suggested || {};
-  const events = (ha.events || []).map((x) => ({ id: x.entity_id, name: x.name, sub: x.entity_id, icon: ICONS.bell }));
-  const sensors = (ha.sensors || []).filter((x) => /sleep/.test(x.entity_id)).map((x) => ({ id: x.entity_id, name: x.name, sub: x.entity_id, icon: ICONS.home }));
+  const was = view.configured ? view.source : (view.suggested || {});
+  const sug = view.suggested || {};
+  const opt = (list, icon, filter = () => true) => (list || []).filter((x) => filter(x.entity_id)).map((x) => ({ id: x.entity_id, name: x.name, sub: x.entity_id, icon }));
+  const events = opt(ha.events, ICONS.bell);
   const pick = (items, id, label) => entityPicker({ items, selected: id ? [id] : [], addLabel: label, single: true, empty: "Nothing like this in Home Assistant." });
   const tracking = pick(events, was.tracking, "Search events");
   const phases = pick(events, was.phases, "Search events");
-  const segments = pick(sensors, was.segments, "Search sensors");
+  const lights = entityPicker({ items: opt(ha.lights, ICONS.home), selected: was.lights || [], addLabel: "Search lights", empty: "No lights in Home Assistant." });
+  const charging = pick(opt(ha.binary_sensors, ICONS.phone, (i) => /charg/.test(i)), was.charging, "Search sensors");
+  const inUse = pick(opt(ha.binary_sensors, ICONS.phone, (i) => /interactive|screen|in_use/.test(i)), was.in_use, "Search sensors");
+  const segments = pick(opt(ha.sensors, ICONS.phone, (i) => /sleep/.test(i)), was.segments, "Search sensors");
+  const confidence = pick(opt(ha.sensors, ICONS.phone, (i) => /sleep/.test(i)), was.confidence, "Search sensors");
   const goal = el("input", { type: "number", min: "4", max: "14", step: "0.5", inputmode: "decimal", value: view.goal || 8, style: "width:6em" });
   const err = el("p", { class: "form-error", hidden: true });
+  const group = (title, intro, open, ...fields) => el("details", { class: "source-group", open },
+    el("summary", {}, el("span", { class: "source-title" }, title), el("span", { class: "row-sub" }, intro)), ...fields);
+  const hasHome = !!(was.lights?.length || was.charging || was.in_use);
   const form = el("form", { method: "dialog" },
-    el("h2", {}, "Your nights"),
+    el("h2", {}, "Where your nights come from"),
     el("p", { class: "row-sub", style: "margin:-8px 0 14px" },
-      "See each night's deep, light and REM sleep, like Sleep as Android, plus your sleep over the last two weeks. Sleep hours on Check-in fill in by themselves; anything you enter yourself wins."),
+      "Use any of these. Each morning shows the best one: Sleep as Android, then an estimate from your bedroom and phone. Sleep hours on Check-in fill in by themselves; anything you enter yourself wins."),
     err,
-    el("div", { class: "field" }, el("span", {}, "Sleep as Android: sleep tracking"), tracking.node,
-      el("span", { class: "hint" }, "Marks when each night starts and ends.")),
-    el("div", { class: "field" }, el("span", {}, "Sleep as Android: sleep phase"), phases.node,
-      el("span", { class: "hint" }, "Deep, light, REM and awake through the night.")),
-    el("details", { class: "more", open: !was.tracking && !!was.segments },
-      el("summary", {}, "Without Sleep as Android"),
-      el("div", { class: "field" }, el("span", {}, "Android sleep segment"), segments.node,
-        el("span", { class: "hint" }, "From the Home Assistant app on your phone: when you slept, without phases. Used when Sleep as Android has nothing."))),
+    group("Sleep as Android", "Deep, light and REM sleep, on nights you track.", !!was.tracking || !hasHome,
+      el("div", { class: "field" }, el("span", {}, "Sleep tracking"), tracking.node, el("span", { class: "hint" }, "Marks when each night starts and ends.")),
+      el("div", { class: "field" }, el("span", {}, "Sleep phase"), phases.node, el("span", { class: "hint" }, "Deep, light, REM and awake through the night."))),
+    group("Your bedroom and phone", "An estimate for every night, without tracking anything.", hasHome || !was.tracking,
+      el("div", { class: "field" }, el("span", {}, "Bedroom lights"), lights.node, el("span", { class: "hint" }, "Lights out means you've gone to bed; on again means you're up.")),
+      el("div", { class: "field" }, el("span", {}, "Phone charging"), charging.node, el("span", { class: "hint" }, "Most people put their phone on charge at bedtime.")),
+      el("div", { class: "field" }, el("span", {}, "Phone in use"), inUse.node,
+        el("span", { class: "hint" }, sug.in_use || was.in_use ? "When the screen's on, you're awake."
+          : "Optional. Turn on the Interactive sensor in the Home Assistant app: Settings, Companion app, Manage sensors.")),
+      el("div", { class: "field" }, el("span", {}, "Sleep confidence"), confidence.node,
+        el("span", { class: "hint" }, "From the Home Assistant app. Shows when you actually fell asleep and woke, rather than went to bed."))),
+    el("details", { class: "source-group", open: !!was.segments && !was.tracking && !hasHome },
+      el("summary", {}, el("span", { class: "source-title" }, "Android's sleep detection"), el("span", { class: "row-sub" }, "When you slept, without stages.")),
+      el("div", { class: "field" }, el("span", {}, "Sleep segment"), segments.node,
+        el("span", { class: "hint" }, "From the Home Assistant app. Also sharpens the estimate above."))),
     field("Sleep goal", el("div", { class: "inline-field" }, goal, el("span", {}, "hours a night"))),
     el("div", { class: "actions" },
       el("button", { type: "submit", class: "primary" }, "Save and import"),
@@ -1991,11 +2084,13 @@ async function openSleepSetup(view) {
         : el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Not now")));
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    const nights = { tracking: tracking.value()[0] || null, phases: phases.value()[0] || null, segments: segments.value()[0] || null };
+    const one = (p) => p.value()[0] || null;
+    const nights = { tracking: one(tracking), phases: one(phases), segments: one(segments), confidence: one(confidence),
+      lights: lights.value(), charging: one(charging), in_use: one(inUse) };
     try {
       await api("PATCH", `api/trackers/${view.tracker_id}`, { config: { ...(tracker ? tracker.config : {}), nights, goal: Number(goal.value) || 8 } });
       const r = await api("POST", "api/sleep/import");
-      toast(r.nights ? `Imported ${r.nights === 1 ? "1 night" : r.nights + " nights"} from Home Assistant` : "Saved. Nights appear the morning after they're tracked");
+      toast(r.nights ? `Found ${r.nights === 1 ? "1 night" : r.nights + " nights"} in Home Assistant` : "Saved. Nights appear the morning after");
       await redraw();
       openSleepSheet();
     } catch (e) { err.textContent = e.message; err.hidden = false; }
@@ -2136,7 +2231,7 @@ function describeTracker(t) {
     case "note": return `Free text, ${often}`;
     case "medication": {
       const amount = [c.dose, c.unit].filter(Boolean).join(" ");
-      return [amount, describeSchedule(t._schedule, t)].filter(Boolean).join(". ");
+      return [amount, t._schedule === undefined ? null : describeSchedule(t._schedule, t)].filter(Boolean).join(". ");
     }
     default: return often;
   }
@@ -2171,10 +2266,11 @@ function describeDays(d) {
   return `every ${d.every} days`;
 }
 
-function settingRow(title, sub, buttonLabel, onclick) {
-  return el("div", { class: "tracker-row" },
-    el("div", { class: "info" }, el("div", { class: "row-name" }, title), el("div", { class: "row-sub" }, sub)),
-    el("button", { type: "button", class: "secondary", onclick }, buttonLabel));
+// A whole row you tap, with what it's set to underneath and a chevron.
+function settingRow(title, sub, onclick) {
+  return el("button", { type: "button", class: "tracker-row row-button", onclick },
+    el("span", { class: "info" }, el("span", { class: "row-name" }, title), sub ? el("span", { class: "row-sub" }, sub) : null),
+    el("span", { class: "row-chevron", "aria-hidden": "true" }, svgIcon(ICONS.chevron)));
 }
 
 async function renderSettings(view) {
@@ -2228,20 +2324,20 @@ async function renderSettings(view) {
   const notifySection = el("section", { class: "group" },
     el("h2", {}, "Reminders"),
     el("div", { class: "panel" },
-      settingRow("Today's reminders", "What's due and what's done today", "See", () => openTodaySheet(view)),
-      settingRow("Pause reminders", paused ? `Paused until ${paused}` : "Take a break from notifications, for example on holiday",
-        paused ? "Resume" : "Pause", () => (paused ? setPause(null) : openPauseSheet())),
-      settingRow("Devices and alerts",
-        phones ? `Sending to ${phones === 1 ? "1 device" : phones + " devices"}` : "Nowhere chosen yet, so reminders only show in this app",
-        "Change", () => openPersonSheet(view)),
+      settingRow("Today's reminders", "What's due and what's done", () => openTodaySheet(view)),
+      settingRow(paused ? "Reminders paused" : "Pause reminders", paused ? `Until ${paused}. Tap to resume or change` : "For a few hours, or while you're away",
+        () => openPauseSheet()),
+      settingRow("Where reminders go",
+        phones ? `${phones === 1 ? "1 device" : phones + " devices"}` : "Only this app so far",
+        () => openPersonSheet(view)),
       settingRow("Check-in reminders",
-        ci && ci.enabled ? `At ${joinNames(ci.times.map(niceTime))}, ${describeDays(ci.days)}` : "Off",
-        "Change", () => openCheckinSheet(view)),
+        ci && ci.enabled ? `${joinNames(ci.times.map(niceTime))}, ${describeDays(ci.days)}` : "Off",
+        () => openCheckinSheet(view)),
       settingRow("Water reminders",
         person && person.hydration.enabled
-          ? `If you haven't had water for ${niceGap(person.hydration.every)}, ${niceTime(person.hydration.start)} to ${niceTime(person.hydration.end)}`
+          ? `After ${niceGap(person.hydration.every)} without water, ${niceTime(person.hydration.start)} to ${niceTime(person.hydration.end)}`
           : "Off",
-        "Change", () => openWaterSheet(view))),
+        () => openWaterSheet(view))),
   );
 
   const groups = new Map();
@@ -2267,6 +2363,7 @@ async function renderSettings(view) {
   // Ordered by how often you'll need each: supply and today's reminders first, setting things up last.
   view.replaceChildren(...[head, supplySection, notifySection, medSection,
     el("h2", { class: "section-title" }, "What you track"),
+    el("p", { class: "hint section-hint" }, "Tap one to change it. To reorder or regroup them, tap the pencil on Check-in."),
     ...trackerSections, addRow, hiddenSection,
     el("p", { class: "whoami" }, `Signed in to Home Assistant as ${state.me.display_name || state.me.username}`)].filter(Boolean));
 }
@@ -2315,43 +2412,20 @@ async function openTodaySheet(view) {
 }
 
 function settingsRow(t, all, view) {
-  // Arrows move a tracker within its own section on screen.
-  const section = all.filter((x) => !x.hidden && (t.kind === "medication"
-    ? x.kind === "medication"
-    : x.kind !== "medication" && (x.group_name || "Other") === (t.group_name || "Other")));
-  const i = section.findIndex((x) => x.id === t.id);
-  const move = async (d) => {
-    const neighbour = section[i + d];
-    if (!neighbour) return;
-    const order = all.map((x) => x.id);
-    const a = order.indexOf(t.id);
-    const b = order.indexOf(neighbour.id);
-    [order[a], order[b]] = [order[b], order[a]];
-    await api("POST", "api/trackers/order", { ids: order });
-    await refreshTrackers();
-    await renderSettings(view);
-  };
-  const last = section.length - 1;
-  return el("div", { class: "tracker-row" },
-    el("div", { class: "info" },
-      el("div", { class: "row-name" }, t.emoji ? el("span", { class: "emoji", "aria-hidden": "true" }, t.emoji) : null, t.name),
-      el("div", { class: "row-sub" }, describeTracker(t)),
-    ),
+  const main = el("button", { type: "button", class: "row-button-main", onclick: () => openTrackerSheet(t, view) },
+    el("span", { class: "info" },
+      el("span", { class: "row-name" }, t.emoji ? el("span", { class: "emoji", "aria-hidden": "true" }, t.emoji) : null, t.name),
+      el("span", { class: "row-sub" }, describeTracker(t))),
+    t.hidden ? null : el("span", { class: "row-chevron", "aria-hidden": "true" }, svgIcon(ICONS.chevron)));
+  return el("div", { class: "tracker-row with-main" },
+    main,
     t.hidden
-      ? el("button", { type: "button", class: "secondary", onclick: async () => {
+      ? el("button", { type: "button", class: "secondary small", onclick: async () => {
           await api("PATCH", `api/trackers/${t.id}`, { hidden: false });
           await refreshTrackers();
           await renderSettings(view);
         } }, "Show")
-      : [
-          el("button", { type: "button", class: "iconbtn", "aria-label": `Move ${t.name} up`, disabled: i <= 0, onclick: () => move(-1) }, svgIcon(ICONS.up)),
-          el("button", { type: "button", class: "iconbtn", "aria-label": `Move ${t.name} down`, disabled: i >= last, onclick: () => move(1) }, svgIcon(ICONS.down)),
-        ],
-    t.kind === "medication" && !t.hidden
-      ? el("button", { type: "button", class: "iconbtn", "aria-label": `Reminders for ${t.name}`, title: "Reminders", onclick: () => openScheduleSheet(t, view) }, svgIcon(ICONS.bell))
-      : null,
-    el("button", { type: "button", class: "iconbtn", "aria-label": `Edit ${t.name}`, title: "Edit", onclick: () => openTrackerSheet(t, view) }, svgIcon(ICONS.edit)),
-  );
+      : null);
 }
 
 function field(label, control, hint) {
@@ -2596,6 +2670,9 @@ function openTrackerSheet(t, view) {
     groupFieldNode.hidden = kind === "medication";
     freqFieldNode.hidden = ["sleep", "medication"].includes(kind);
   };
+  const kindHintEl = kindHint ? el("span", { class: "hint warn", hidden: true }, kindHint) : null;
+  const originalKind = kind;
+  if (kindHintEl) kindSelect.addEventListener("change", () => { kindHintEl.hidden = kindSelect.value === originalKind; });
   kindSelect.addEventListener("change", drawKindFields);
   kindSelect.addEventListener("change", drawKindExample);
   kindSelect.addEventListener("change", () => { drawSource(); if (inputs.mode) inputs.mode.addEventListener("change", drawSource); });
@@ -2621,7 +2698,7 @@ function openTrackerSheet(t, view) {
     el("h2", {}, isNew ? (t.kind === "medication" ? "Add medication" : "Add something to track") : `Edit ${t.name}`),
     err,
     isNew && kind === "medication" ? null : el("label", { class: "field" }, el("span", {}, "What kind?"), kindSelect, kindExample,
-      kindHint ? el("span", { class: "hint" }, kindHint) : null),
+      kindHintEl),
     field("Name", name),
     el("div", { class: "field" }, el("span", {}, "Icon"), icon.node),
     groupFieldNode,
