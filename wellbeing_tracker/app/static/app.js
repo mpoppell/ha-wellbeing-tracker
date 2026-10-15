@@ -643,7 +643,7 @@ function spotlightItems() {
       if (today && goodThingsLeft(t) > 0) ask.push(t);
     } else if (t.kind === "factor" && c.mode === "bool" && !c.source) {
       const night = /late|night|bed|screen/i.test(t.name);
-      if (!night && (hour >= 18 || !today) && !entriesFor(t.id).some((e) => e.value_num)) ask.push(t);
+      if (!night && (hour >= 18 || !today) && !entriesFor(t.id).length) ask.push(t);
     }
   }
   return { ask, again };
@@ -666,35 +666,94 @@ function pickSpotlight(skip) {
 
 const SPOT_QUESTION = {
   rating: (t) => `How's your ${t.name.toLowerCase()} right now?`,
-  tags: () => "How are you feeling?",
+  tags: () => "How are you feeling right now?",
   symptom: (t) => `Any ${t.name.toLowerCase()} today?`,
-  gratitude: () => "One good thing",
-  factor: (t) => `${t.name} today?`,
+  gratitude: () => goodThingPrompt(nowHHMM()),
+  factor: (t) => ({ exercise: "Did you exercise today?", outdoors: "Did you get time outdoors today?",
+    socialised: "Did you see or talk to people today?", mindful: "Did you take a mindful minute today?" }[t.key] || `${t.name} today?`),
 };
 
+// The side question gets its own simple answers, not the Check-in rows: no times, no history,
+// no "+" to open a dialog. One tap saves it for right now; then it moves on by itself.
 function spotlight(view) {
+  if (state.day !== isoDay(new Date())) return null;
   const { ask, again } = spotlightItems();
-  const pool = [...ask, ...again];
-  if (!pool.length) return null;
-  let t = pool.find((x) => x.id === spot.id) || state.allTrackers.find((x) => x.id === spot.id && !x.hidden);
-  // stays put while you answer it (emotions can take several taps); "Next" moves on
+  if (!ask.length && !again.length) return null;
+  let t = state.trackers.find((x) => x.id === spot.id);
   if (!t || spot.day !== state.day) {
     spot.id = pickSpotlight();
     t = state.trackers.find((x) => x.id === spot.id);
   }
   if (!t) return null;
-  const answeredNow = !ask.some((x) => x.id === t.id);
+  const next = (delay = 0) => {
+    clearTimeout(spot.timer);
+    spot.timer = setTimeout(() => { spot.saved = null; spot.id = pickSpotlight(t.id); drawCheckin(view); }, delay);
+  };
+  const save = async (items, said, advance = true) => {
+    try {
+      await api("POST", "api/checkin", { logged_at: localISO(new Date()), items });
+      spot.saved = { id: t.id, said };
+      await refreshCheckin();
+      offerBreathing(items);
+      if (advance) next(1400);
+    } catch (err) { toast(err.message); }
+  };
+  const saved = spot.saved && spot.saved.id === t.id ? spot.saved.said : null;
   const nothingLeft = !ask.length;
-  const row = t.kind === "factor" && t.config.mode === "bool"
-    ? el("div", { class: "brow" }, el("div", { class: "bchips" }, factorChip(t)))
-    : trackerRow(t, view);
-  const next = () => { spot.id = pickSpotlight(t.id); drawCheckin(view); };
+  const question = nothingLeft && !ask.some((x) => x.id === t.id) && (t.kind === "rating" || t.kind === "tags")
+    ? `Anything changed with your ${t.kind === "tags" ? "feelings" : t.name.toLowerCase()}?` : (SPOT_QUESTION[t.kind] || (() => t.name))(t);
+  const c = t.config;
+  let body;
+  if (t.kind === "rating") {
+    const values = [];
+    for (let v = c.min; v <= c.max; v++) values.push(v);
+    body = [el("div", { class: `spot-scale n${values.length}` }, values.map((v) => el("button", {
+        type: "button", class: "spot-num", style: `--c:${scaleColor(c, v)}`, title: ratingText(c, v), "aria-label": ratingText(c, v),
+        onclick: () => save([{ tracker_id: t.id, value_num: v }], ratingText(c, v)) }, String(v)))),
+      (c.labels || []).length ? el("div", { class: "spot-ends" }, el("span", {}, c.labels[0]), el("span", {}, c.labels[c.labels.length - 1])) : null];
+  } else if (t.kind === "symptom") {
+    body = el("div", { class: "spot-choices" }, state.meta.severity_labels.map((label, i) => el("button", {
+      type: "button", class: "spot-choice", style: `--c:${SEVERITY_COLOURS[i]}`,
+      onclick: () => save([{ tracker_id: t.id, value_num: i }], label) }, label)));
+  } else if (t.kind === "factor") {
+    body = el("div", { class: "spot-choices two" },
+      el("button", { type: "button", class: "spot-choice", onclick: () => save([{ tracker_id: t.id, value_num: 1 }], "Yes") }, "Yes"),
+      el("button", { type: "button", class: "spot-choice", onclick: () => save([{ tracker_id: t.id, value_num: 0 }], "Not today") }, "Not today"));
+  } else if (t.kind === "tags") {
+    // pick as many as fit, then Done; taps within the hour add to the same answer
+    const recent = entriesFor(t.id).find((e) => Date.now() - new Date(e.logged_at).getTime() < 60 * 60 * 1000 && spot.saved && spot.saved.id === t.id);
+    const chosen = new Set(recent ? recent.value_json || [] : []);
+    const toggle = async (opt) => {
+      if (chosen.has(opt)) chosen.delete(opt); else chosen.add(opt);
+      try {
+        if (recent && chosen.size) await api("PATCH", `api/entries/${recent.id}`, { value_json: [...chosen] });
+        else if (recent) await api("DELETE", `api/entries/${recent.id}`);
+        else await api("POST", "api/checkin", { logged_at: localISO(new Date()), items: [{ tracker_id: t.id, value_json: [...chosen] }] });
+        spot.saved = chosen.size ? { id: t.id, said: [...chosen].join(", "), multi: true } : null;
+        await refreshCheckin();
+        offerBreathing([{ tracker_id: t.id, value_json: [...chosen] }]);
+      } catch (err) { toast(err.message); }
+    };
+    body = el("div", { class: "bchips spot-tags" }, (c.options || []).map((opt) => el("button", {
+      type: "button", class: "chip", "aria-pressed": String(chosen.has(opt)), onclick: () => toggle(opt) }, opt)));
+  } else if (t.kind === "gratitude") {
+    const input = el("input", { type: "text", maxlength: "280", class: "good-input", placeholder: "A coffee, a kind word, a walk…", "aria-label": "One good thing" });
+    const times = c.times || [];
+    const written = new Set(entriesFor(t.id).map((e) => e.value_num));
+    const slot = times.findIndex((x, i) => x <= nowHHMM() && !written.has(i));
+    const go = () => { const v = input.value.trim(); if (v) save([{ tracker_id: t.id, note: v, value_num: slot >= 0 ? slot : null }], "Saved"); else input.focus(); };
+    input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); go(); } });
+    body = el("div", { class: "good-compose-row" }, input, el("button", { type: "button", class: "secondary small", onclick: go }, "Save"));
+  }
+  const multiSaved = spot.saved && spot.saved.id === t.id && spot.saved.multi;
   return el("aside", { class: "spotlight card", "aria-label": "One quick question" },
-    el("p", { class: "spotlight-kicker" }, nothingLeft && answeredNow ? "Anything changed?" : (SPOT_QUESTION[t.kind] || (() => t.name))(t)),
-    row,
+    el("p", { class: "spotlight-kicker" }, t.emoji ? el("span", { class: "emoji", "aria-hidden": "true" }, t.emoji) : null, question),
+    saved && !multiSaved
+      ? el("p", { class: "spot-saved", role: "status" }, svgIcon(ICONS.check), t.kind === "gratitude" ? "Saved. Nice one." : `Saved: ${saved}`)
+      : body,
     el("div", { class: "spotlight-foot" },
-      el("span", { class: "row-sub" }, answeredNow ? "Saved to today" : ""),
-      el("button", { type: "button", class: "link inline", onclick: next }, answeredNow ? "Next" : "Skip")));
+      multiSaved ? el("button", { type: "button", class: "secondary small", onclick: () => next() }, "Done")
+        : saved ? null : el("button", { type: "button", class: "link inline spot-skip", onclick: () => next() }, "Skip")));
 }
 
 // Items that count towards "7 of 12 answered": the questions on the screen. Medications, notes and

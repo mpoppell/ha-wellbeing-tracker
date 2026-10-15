@@ -1524,3 +1524,29 @@ button.plan-due:hover, button.plan-due:focus-visible { color: var(--accent-ink);
 .sleep-form > .link.inline { display: inline-block; margin-top: 12px; }
 .sleep-total { display: flex; align-items: center; gap: 8px; }
 .sleep-total input { width: 5em; }
+
+/* ---------- side question answers (0.20) ---------- */
+.spotlight-kicker { display: flex; gap: 8px; align-items: baseline; font-weight: 700; margin: 0 0 12px; }
+.spot-scale { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.spot-scale.n4, .spot-scale.n3 { grid-template-columns: repeat(var(--cols, 4), 1fr); }
+.spot-num {
+  height: 42px; border-radius: 10px; font: inherit; font-weight: 700; font-size: 1.05rem; cursor: pointer; color: var(--ink);
+  background: var(--sunken); border: 1.5px solid color-mix(in srgb, var(--c) 55%, var(--line));
+}
+.spot-num:hover, .spot-num:focus-visible { background: color-mix(in srgb, var(--c) 22%, var(--surface)); }
+.spot-ends { display: flex; justify-content: space-between; margin-top: 6px; font-size: 0.82rem; color: var(--muted); }
+.spot-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.spot-choice {
+  min-height: 42px; border-radius: 10px; font: inherit; font-weight: 700; cursor: pointer; color: var(--ink);
+  background: var(--sunken); border: 1.5px solid color-mix(in srgb, var(--c, var(--line)) 60%, var(--line));
+}
+.spot-choice:hover, .spot-choice:focus-visible { background: color-mix(in srgb, var(--c, var(--accent)) 20%, var(--surface)); }
+.spot-tags { margin: 0; }
+.spot-saved { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-weight: 700; color: var(--ink); min-height: 42px; }
+.spot-saved svg { width: 20px; height: 20px; fill: none; stroke: var(--r4); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.spotlight-foot { justify-content: flex-end; }
+.spotlight-foot:empty { display: none; }
+.spot-skip { color: var(--muted); }
+.spotlight .spotlight-foot { border-top: 0; padding-top: 0; margin-top: 10px; }
+.spot-skip { text-decoration: none; font-weight: 400; font-size: 0.9rem; }
+.spot-skip:hover { text-decoration: underline; color: var(--ink); }

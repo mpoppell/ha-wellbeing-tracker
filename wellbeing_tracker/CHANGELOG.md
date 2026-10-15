@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.20.0
+
+**The question beside Check-in is now one tap.**
+
+Each kind of question has its own simple answer, instead of a copy of the Check-in row (no times, no history, no + to open another window). Your answer is saved for right now, it says "Saved: Fair (7)", and moves on to the next question by itself.
+
+- Mood and energy: the numbers, with the words for each end of the scale underneath.
+- Symptoms: None, Mild, Moderate, Severe.
+- Habits: "Did you exercise today?" Yes or Not today.
+- Feelings: pick as many as fit, then Done.
+- A good thing: type it and Save.
+- Skip is quieter, and only shows before you answer.
+
 ## 0.19.0
 
 **Sleep times like Bearable, and a side question that makes sense.**
