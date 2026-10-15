@@ -1,0 +1,37 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Wellbeing Tracker",
+        "description": "Adds a dashboard card, sensors for each person and medication, and actions to answer reminders and log doses. Everything comes from the Wellbeing Tracker app, which is already running."
+      }
+    },
+    "error": {
+      "cannot_connect": "Can't reach the Wellbeing Tracker app. Check it's running, then try again."
+    },
+    "abort": {
+      "already_configured": "Wellbeing Tracker is already set up.",
+      "no_app": "Install and start the Wellbeing Tracker app first. It sets this up for you."
+    }
+  },
+  "services": {
+    "answer_reminder": {
+      "name": "Answer a reminder",
+      "description": "Answers a Wellbeing reminder, the same as tapping its button on your phone.",
+      "fields": {
+        "reminder_id": {"name": "Reminder", "description": "The reminder's number, from the Reminders waiting sensor."},
+        "answer": {"name": "Answer", "description": "taken, snooze or skip. Mood and water buttons work too, for example MOOD_7 or WATER_1."},
+        "reason": {"name": "Reason", "description": "Why it was skipped (optional)."}
+      }
+    },
+    "log_dose": {
+      "name": "Log a dose",
+      "description": "Logs a medication as taken now. It counts towards a reminder that's due and comes off the supply.",
+      "fields": {
+        "medication": {"name": "Medication", "description": "Its name, as in the Wellbeing app."},
+        "quantity": {"name": "How many", "description": "Leave empty for the usual amount."},
+        "person": {"name": "Person", "description": "Who took it. Leave empty for whoever runs the action."}
+      }
+    }
+  }
+}

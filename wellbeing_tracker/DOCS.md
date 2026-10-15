@@ -121,6 +121,38 @@ Linking fills in the last 30 days from Home Assistant's history, then keeps up e
 
 Good sources: the Google Health integration (Fitbit, Pixel Watch and other devices that sync to Google), Health Connect sensors in the Home Assistant Companion app, Withings, and Sleep as Android.
 
+## Dashboard card, entities and actions
+
+The app installs a companion integration into Home Assistant for you. After installing or updating the app, restart Home Assistant, then go to **Settings → Devices & services → Add integration → Wellbeing Tracker** and confirm. There's nothing to type: the app has already given it its address and a private key.
+
+**Dashboard card**: edit a dashboard, add a card and choose **Wellbeing** (or use `type: custom:wellbeing-card`). It shows:
+
+- reminders waiting, with the same buttons as your phone
+- today's medications (tap a dose that's due to log it)
+- supply warnings and when to see your doctor
+- today's mood
+
+It shows whoever is looking at the dashboard. To always show one person, choose their "Reminders waiting" sensor in the card's settings.
+
+**Entities**, for each person: *Reminders waiting*, *Next dose*, *Mood today*, *See the doctor by*. For each medication you count: *Supply left* (days) and *New script needed by*.
+
+**Actions** for automations and scripts:
+
+```yaml
+action: wellbeing_tracker.log_dose
+data:
+  medication: Clonidine
+  quantity: 0.5          # optional, the usual amount if left out
+  person: Matthew Poppell  # optional when run by that person
+```
+
+```yaml
+action: wellbeing_tracker.answer_reminder
+data:
+  reminder_id: 12        # from the Reminders waiting sensor
+  answer: taken          # taken, snooze or skip
+```
+
 ## Appearance
 
 The app uses the same colours as your Home Assistant theme, including dark mode and custom themes, and changes when Home Assistant does. Times use the 12 or 24-hour clock set in your Home Assistant profile.

@@ -9,6 +9,7 @@ on:
     branches: [master]
     paths:
       - "wellbeing_tracker/**"
+      - "integration_tests/**"
       - ".github/workflows/build.yaml"
   pull_request:
   workflow_dispatch:
@@ -32,8 +33,24 @@ jobs:
         working-directory: wellbeing_tracker
         run: python -m pytest -q
 
+  integration:
+    # The companion integration, run inside a real Home Assistant test instance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install Home Assistant test tools
+        run: |
+          pip install pytest-homeassistant-custom-component
+          pip install "$(python -c "import json,importlib.resources as r; print(json.loads((r.files('homeassistant.components.frontend')/'manifest.json').read_text())['requirements'][0])")"
+      - name: Run tests
+        working-directory: integration_tests
+        run: python -m pytest -q -p no:cacheprovider
+
   build:
-    needs: test
+    needs: [test, integration]
     if: github.event_name != 'pull_request'
     strategy:
       matrix:

@@ -1,0 +1,44 @@
+answer_reminder:
+  fields:
+    reminder_id:
+      required: true
+      example: 12
+      selector:
+        number:
+          min: 1
+          max: 100000000
+          mode: box
+    answer:
+      required: true
+      example: taken
+      selector:
+        select:
+          custom_value: true
+          options:
+            - taken
+            - snooze
+            - skip
+    reason:
+      example: Felt fine
+      selector:
+        text:
+
+log_dose:
+  fields:
+    medication:
+      required: true
+      example: Clonidine
+      selector:
+        text:
+    quantity:
+      example: 0.5
+      selector:
+        number:
+          min: 0.25
+          max: 100
+          step: 0.25
+          mode: box
+    person:
+      example: Matthew Poppell
+      selector:
+        text:

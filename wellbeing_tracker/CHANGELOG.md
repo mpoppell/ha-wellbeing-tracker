@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.13.0
+
+**Wellbeing in Home Assistant: a dashboard card, entities and actions.**
+
+The app now installs a small companion integration for you. After updating, restart Home Assistant, then add **Wellbeing Tracker** in Settings → Devices & services (one click, nothing to type).
+
+- **Dashboard card** (`custom:wellbeing-card`, listed as "Wellbeing" when you add a card). It shows reminders waiting with the same buttons as your phone (including skip reasons), today's medications (tap one that's due to log it), supply warnings and when to see your doctor, and today's mood. It shows whoever is signed in, or a chosen person, and has a visual editor. No resource to add by hand.
+- **Entities** for each person: Reminders waiting, Next dose, Mood today and See the doctor by. For each medication you count: Supply left (days) and New script needed by.
+- **Actions** for automations, scripts and voice: `wellbeing_tracker.answer_reminder` (taken, snooze or skip) and `wellbeing_tracker.log_dose`. People can answer their own reminders; admins and automations can answer anyone's.
+- Updates within seconds of any reminder changing, and every 30 seconds otherwise.
+- The app can now write to Home Assistant's config folder, only to install and update this integration.
+- Fixed: a dose logged in the same second the supply count was set wasn't counted.
+
 ## 0.12.0
 
 - **Fill in from Home Assistant.** Counts, amounts and Sleep can be linked to any Home Assistant sensor, such as steps, sleep or weight from Google Health, or your scales. Choose which reading counts for the day: the latest (weight, last night's sleep), the highest (daily totals like steps) or the average (heart rate). Linking fills in the last 30 days from Home Assistant's history, then keeps up every 15 minutes. Anything you enter or correct yourself always wins. Sleep in minutes or seconds is turned into hours.

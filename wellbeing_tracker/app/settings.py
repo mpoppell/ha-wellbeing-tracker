@@ -26,6 +26,8 @@ class Settings:
     ha_api_url: str
     port: int
     panel_path: str | None = None  # where tapping a reminder opens the app
+    ha_config_dir: Path | None = None  # Home Assistant's config folder, to install the companion integration
+    hostname: str | None = None        # how Home Assistant reaches this app on the internal network
 
     @property
     def db_path(self) -> Path:
@@ -57,4 +59,6 @@ def load_settings() -> Settings:
         ha_api_url=os.environ.get("WELLBEING_HA_API_URL", "http://supervisor/core/api"),
         port=int(os.environ.get("WELLBEING_PORT", "8099")),
         panel_path=panel_path,
+        ha_config_dir=Path(os.environ.get("WELLBEING_HA_CONFIG", "/homeassistant")),
+        hostname=hostname,
     )

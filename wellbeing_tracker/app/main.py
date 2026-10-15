@@ -10,15 +10,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from datetime import datetime
+
+from fastapi import Body, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
+from . import companion
 from .api import build_router
 from .db import Database, NotFound
 from .engine import Engine
@@ -44,6 +48,7 @@ def create_app(settings: Settings, background: bool = False) -> FastAPI:
     log.info("Database ready at %s (schema v%s)", settings.db_path, version)
 
     ha = HomeAssistant(settings.ha_api_url, settings.supervisor_token)
+    token = companion.integration_token(settings.data_dir)
     engine = Engine(db, ha, tz=_zone(os.environ.get("TZ")), panel_path=settings.panel_path)
 
     @asynccontextmanager
@@ -55,6 +60,17 @@ def create_app(settings: Settings, background: bool = False) -> FastAPI:
             if tz:
                 engine.tz = tz
             log.info("Reminders use time zone %s", engine.tz.key)
+            if settings.hostname and settings.supervisor_token:
+                state = companion.install(settings.ha_config_dir, f"http://{settings.hostname}:{settings.port}", token)
+                if state in ("installed", "updated"):
+                    await ha.call_service("persistent_notification", "create", {
+                        "notification_id": "wellbeing_tracker_companion",
+                        "title": "Wellbeing Tracker",
+                        "message": ("The Wellbeing dashboard card and entities are ready. Restart Home Assistant, then add "
+                                    "**Wellbeing Tracker** in Settings → Devices & services."
+                                    if state == "installed" else
+                                    "The Wellbeing integration was updated. Restart Home Assistant to use the new version."),
+                    })
             tasks.append(asyncio.create_task(engine.run()))
             tasks.append(asyncio.create_task(
                 ha.listen(engine.handle_event, ["mobile_app_notification_action", "state_changed"])))
@@ -73,6 +89,11 @@ def create_app(settings: Settings, background: bool = False) -> FastAPI:
     @app.middleware("http")
     async def only_from_ingress(request: Request, call_next):
         client_ip = request.client.host if request.client else None
+        # The companion integration talks to /api/integration/* with its own key, from Home Assistant itself.
+        if request.url.path.startswith("/api/integration/"):
+            if secrets.compare_digest(request.headers.get("Authorization", ""), f"Bearer {token}"):
+                return await call_next(request)
+            return JSONResponse({"detail": "Wrong or missing key"}, status_code=401)
         if not settings.dev_mode and client_ip != INGRESS_IP:
             log.warning("Rejected request from %s (not Home Assistant ingress)", client_ip)
             return JSONResponse({"detail": "Access only through Home Assistant"}, status_code=403)
@@ -121,6 +142,47 @@ def create_app(settings: Settings, background: bool = False) -> FastAPI:
         return JSONResponse({"detail": str(exc)}, status_code=404)
 
     app.include_router(build_router(current_user))
+
+    # ----- for the companion Home Assistant integration (key-protected, see the middleware) -----
+
+    @app.get("/api/integration/overview")
+    async def integration_overview() -> dict:
+        await engine.tick()
+        return {"version": __version__, "panel_path": settings.panel_path,
+                "people": [engine.person_overview(u) for u in db.list_users()]}
+
+    def _person(user_id: str) -> dict:
+        user = next((u for u in db.list_users() if u["id"] == user_id), None)
+        if not user:
+            raise NotFound("No such person in Wellbeing")
+        return user
+
+    @app.post("/api/integration/answer")
+    async def integration_answer(payload: dict = Body(...)) -> dict:
+        user = _person(str(payload.get("user_id") or ""))
+        verb = str(payload.get("answer") or "").upper()
+        verb = {"TAKE": "TAKEN", "DONE": "TAKEN", "NOT_NOW": "SKIP"}.get(verb, verb)
+        try:
+            rid = int(payload.get("reminder_id"))
+        except (TypeError, ValueError):
+            raise ValidationError("reminder_id must be a number") from None
+        await engine.answer_from_app(user["id"], rid, verb, payload.get("reason"))
+        await engine.tick()
+        return engine.person_overview(user)
+
+    @app.post("/api/integration/log_dose")
+    async def integration_log_dose(payload: dict = Body(...)) -> dict:
+        user = _person(str(payload.get("user_id") or ""))
+        meds = [t for t in db.list_trackers(user["id"]) if t["kind"] == "medication"]
+        want = str(payload.get("medication") or "").strip().lower()
+        med = next((t for t in meds if str(t["id"]) == want or t["name"].lower() == want), None)
+        if not med:
+            raise NotFound(f"No medication called {payload.get('medication')!r}")
+        qty = payload.get("quantity") or med["config"].get("quantity") or 1
+        result = db.save_checkin(user["id"], datetime.now(engine.tz).isoformat(timespec="seconds"),
+                                 [{"tracker_id": med["id"], "value_num": qty}], source="homeassistant")
+        await engine.medication_logged(user["id"], result["saved"])
+        return engine.person_overview(user)
 
     index_html = (STATIC_DIR / "index.html").read_text().replace("{{v}}", __version__)
 

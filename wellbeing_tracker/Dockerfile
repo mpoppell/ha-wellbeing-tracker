@@ -10,5 +10,6 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 COPY app ./app
+COPY integration ./integration
 
 CMD ["python", "-m", "app.main"]

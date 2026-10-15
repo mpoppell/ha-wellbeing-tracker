@@ -1574,7 +1574,10 @@ class Engine:
             "SELECT logged_at, value_num FROM entries WHERE tracker_id = ? AND day >= ?",
             (tracker_id, (start.astimezone(self.tz).date() - timedelta(days=1)).isoformat()),
         ).fetchall()
-        return sum(float(r["value_num"] or 0) for r in rows if parse(r["logged_at"]) > start)
+        # Logged times are to the second, so compare to the second: a dose logged in the same
+        # second as the count was taken still comes off.
+        start = start.replace(microsecond=0)
+        return sum(float(r["value_num"] or 0) for r in rows if parse(r["logged_at"]) >= start)
 
     def _supply_view(self, conn, tracker: dict, now: datetime) -> dict:
         s = self._supply_settings(conn, tracker["id"])
@@ -1748,6 +1751,51 @@ class Engine:
                               "tracker_id": sup["tracker_id"], "level": alert["level"],
                               "title": alert["text"], "message": "", "actions": []})
         return items
+
+    def person_overview(self, user: dict) -> dict:
+        """Everything the dashboard card and Home Assistant entities show for one person."""
+        uid = user["id"]
+        now = self.clock()
+        today = self._local_today(now)
+        doses = [d for d in self.doses_today(uid) if d["local_day"] == today.isoformat()]
+        upcoming = sorted((d for d in doses if d["status"] in ("scheduled", "due")), key=lambda d: d["time"])
+        next_dose = None
+        if upcoming:
+            d = upcoming[0]
+            h, m = map(int, d["time"].split(":"))
+            next_dose = {"at": datetime.combine(today, time(h, m), self.tz).isoformat(), "name": d["name"],
+                         "amount": d["amount"], "status": d["status"]}
+        trackers = {t["id"]: t for t in self.db.list_trackers(uid, include_hidden=True)}
+        supply = []
+        for s in self.supply_overview(uid):
+            t = trackers.get(s["tracker_id"])
+            if t:
+                supply.append({"tracker_id": t["id"], "name": t["name"], **s["status"]})
+        due_scripts = sorted((s for s in supply if s.get("script_by")), key=lambda s: s["script_by"])
+        mood = None
+        mood_t = next((t for t in trackers.values() if t.get("key") == "mood" and t["kind"] == "rating"), None)
+        if mood_t:
+            entries = self.db.list_entries(uid, today.isoformat(), today.isoformat())
+            e = next((x for x in entries if x["tracker_id"] == mood_t["id"]), None)
+            if e:
+                labels = mood_t["config"].get("labels") or []
+                v = int(e["value_num"])
+                label = labels[v - mood_t["config"]["min"]] if labels else None
+                mood = {"value": v, "max": mood_t["config"]["max"], "label": label, "at": e["logged_at"]}
+        return {
+            "user_id": uid,
+            "name": user["display_name"] or user["username"] or "Someone",
+            "inbox": self.inbox(uid),
+            "doses": [{k: d[k] for k in ("dose_id", "tracker_id", "name", "amount", "quantity", "time", "status")} for d in doses],
+            "next_dose": next_dose,
+            "supply": supply,
+            "doctor": {"by": due_scripts[0]["script_by"], "by_text": due_scripts[0]["script_by_text"],
+                       "names": [s["name"] for s in due_scripts if s["script_by"] == due_scripts[0]["script_by"]]}
+            if due_scripts else None,
+            "medications": [{"id": t["id"], "name": t["name"]} for t in trackers.values()
+                            if t["kind"] == "medication" and not t["hidden"]],
+            "mood": mood,
+        }
 
     async def answer_from_app(self, user_id: str, rid: int, verb: str, reply: str | None) -> None:
         with self.db.connect() as conn:

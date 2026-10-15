@@ -27,3 +27,9 @@ def test_changelog_has_current_version():
 def test_store_images_present():
     for name in ("icon.png", "logo.png"):
         assert (APP_DIR / name).exists(), f"{name} missing"
+
+
+def test_companion_integration_version_matches():
+    import json
+    manifest = json.loads((APP_DIR / "integration" / "wellbeing_tracker" / "manifest.json").read_text())
+    assert manifest["version"] == config_version(), "Bump integration/wellbeing_tracker/manifest.json too"

@@ -303,6 +303,10 @@ class Database:
                 row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
             return dict(row)
 
+    def list_users(self) -> list[dict]:
+        with self.connect() as conn:
+            return [dict(r) for r in conn.execute("SELECT * FROM users ORDER BY first_seen")]
+
     def user_count(self) -> int:
         with self.connect() as conn:
             return conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
