@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.1
+
+- **Choosing devices and speakers works like Home Assistant.** What you've chosen shows as chips (tap × to remove), and **Add a device** / **Add a speaker** searches what Home Assistant has right now, with an icon and a line saying what each one is ("Phone · with Taken, Snooze and Skip", "Notify entity · message only"). Arrow keys and Enter work too.
+
 ## 0.11.0
 
 - **When to see your doctor.** Settings → **Supply and scripts** now starts with "See your doctor by 4 Nov for a new Vyvanse script. Then Clonidine by 12 Dec." It's worked out from what you have left, your repeats and when each script ends.

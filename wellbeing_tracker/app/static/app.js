@@ -2705,6 +2705,75 @@ async function openWaterSheet(view) {
   if (!sheet.open) sheet.showModal();
 }
 
+/* ---------- Home Assistant-style picker: chosen items as chips, plus a search to add more ---------- */
+
+Object.assign(ICONS, {
+  phone: "M8 2.5h8a1.5 1.5 0 0 1 1.5 1.5v16a1.5 1.5 0 0 1-1.5 1.5H8A1.5 1.5 0 0 1 6.5 20V4A1.5 1.5 0 0 1 8 2.5zM11 18.5h2",
+  speaker: "M7 2.5h10a1 1 0 0 1 1 1v17a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-17a1 1 0 0 1 1-1zM12 18a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM12 7h.01",
+  home: "M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z",
+  search: "M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM20 20l-4-4",
+  message: "M4 5h16v11H8l-4 4z",
+});
+
+// items: [{ id, name, sub, icon }]. Returns { node, value() }.
+function entityPicker({ items, selected, addLabel, empty }) {
+  let chosen = selected.filter(Boolean);
+  const byId = new Map(items.map((x) => [x.id, x]));
+  for (const id of chosen) if (!byId.has(id)) byId.set(id, { id, name: id, sub: "Not found in Home Assistant right now", icon: ICONS.bell, missing: true });
+  const chips = el("div", { class: "ha-chips" });
+  const input = el("input", { type: "search", class: "ha-search", placeholder: addLabel, "aria-label": addLabel,
+    role: "combobox", "aria-expanded": "false", autocomplete: "off" });
+  const list = el("div", { class: "ha-list", role: "listbox", hidden: true });
+  const searchBox = el("div", { class: "ha-search-box" }, svgIcon(ICONS.search), input);
+  let active = -1;
+
+  const changed = () => { markSheetChanged(); drawChips(); drawList(); };
+  function drawChips() {
+    chips.replaceChildren(...chosen.map((id) => {
+      const x = byId.get(id);
+      return el("span", { class: `ha-chip${x.missing ? " missing" : ""}`, title: x.sub || "" },
+        el("span", { class: "ha-chip-icon" }, svgIcon(x.icon)),
+        el("span", { class: "ha-chip-name" }, x.name),
+        el("button", { type: "button", class: "ha-chip-remove", "aria-label": `Remove ${x.name}`,
+          onclick: () => { chosen = chosen.filter((c) => c !== id); changed(); } }, svgIcon(ICONS.close)));
+    }));
+    chips.hidden = !chosen.length;
+  }
+  function options() {
+    const q = input.value.trim().toLowerCase();
+    return items.filter((x) => !chosen.includes(x.id))
+      .filter((x) => !q || `${x.name} ${x.sub || ""} ${x.id}`.toLowerCase().includes(q));
+  }
+  function drawList() {
+    const open = document.activeElement === input || list.contains(document.activeElement);
+    const opts = options();
+    if (active >= opts.length) active = opts.length - 1;
+    list.replaceChildren(...(opts.length ? opts.map((x, i) => el("button", {
+      type: "button", role: "option", class: `ha-option${i === active ? " active" : ""}`, "aria-selected": String(i === active),
+      onmousedown: (ev) => ev.preventDefault(), // keep focus in the search box
+      onclick: () => { chosen.push(x.id); input.value = ""; active = -1; changed(); input.focus(); },
+    }, el("span", { class: "ha-option-icon" }, svgIcon(x.icon)),
+      el("span", { class: "ha-option-text" }, el("span", {}, x.name), x.sub ? el("span", { class: "row-sub" }, x.sub) : null)))
+      : [el("p", { class: "row-sub ha-none" }, input.value ? "No matches" : "Everything available is already added")]));
+    list.hidden = !open;
+    input.setAttribute("aria-expanded", String(open));
+  }
+  input.addEventListener("focus", drawList);
+  input.addEventListener("input", () => { active = 0; drawList(); });
+  input.addEventListener("blur", () => setTimeout(drawList, 120));
+  input.addEventListener("keydown", (ev) => {
+    const opts = options();
+    if (ev.key === "ArrowDown") { ev.preventDefault(); active = Math.min(opts.length - 1, active + 1); drawList(); }
+    else if (ev.key === "ArrowUp") { ev.preventDefault(); active = Math.max(0, active - 1); drawList(); }
+    else if (ev.key === "Enter") { ev.preventDefault(); if (opts[active]) { chosen.push(opts[active].id); input.value = ""; changed(); } }
+    else if (ev.key === "Escape" && !list.hidden) { ev.preventDefault(); ev.stopPropagation(); input.blur(); }
+  });
+  drawChips();
+  const node = el("div", { class: "ha-picker" }, chips,
+    items.length || chosen.length ? searchBox : null, items.length || chosen.length ? list : notice(empty));
+  return { node, value: () => chosen.slice() };
+}
+
 /* ---------- phones and alerts ---------- */
 
 async function openPersonSheet(view) {
@@ -2716,27 +2785,17 @@ async function openPersonSheet(view) {
   } catch (err) { toast(err.message); return; }
   const err = el("p", { class: "form-error", hidden: true });
 
-  // Everywhere a reminder can go. Anything chosen before but not found now stays listed, so it isn't lost.
-  const targets = (ha.targets || ha.phones.map((p) => ({ id: p.service, name: p.name, kind: "phone", buttons: true }))).slice();
-  for (const id of s.devices) {
-    if (!targets.some((x) => x.id === id)) targets.push({ id, name: `${id} (not found right now)`, kind: "missing", buttons: id.startsWith("mobile_app_") });
-  }
-  const box = (x) => {
-    const b = el("input", { type: "checkbox", value: x.id });
-    b.checked = s.devices.includes(x.id);
-    return el("label", { class: "check" }, b, el("span", {}, x.name));
-  };
-  const withButtons = targets.filter((x) => x.buttons).map(box);
-  const textOnly = targets.filter((x) => !x.buttons).map(box);
-  const phoneBoxes = [...withButtons, ...textOnly];
-  const phones = targets.length ? el("div", {},
-    withButtons.length ? el("div", { class: "target-group" }, el("span", { class: "row-sub" }, "Phones with the Home Assistant app (with Taken, Snooze and Skip buttons)"),
-      el("div", { class: "checks" }, withButtons)) : null,
-    textOnly.length ? el("div", { class: "target-group" }, el("span", { class: "row-sub" }, "Other places (the message only, with \"Open Wellbeing to answer\")"),
-      el("div", { class: "checks" }, textOnly)) : null)
-    : notice(ha.connected
+  // Everywhere a reminder can go, straight from Home Assistant each time this opens.
+  const SUBS = { phone: "Phone · with Taken, Snooze and Skip", entity: "Notify entity · message only",
+    service: "Notify service · message only", ha: "Home Assistant sidebar · message only" };
+  const ICON_FOR = { phone: ICONS.phone, entity: ICONS.message, service: ICONS.message, ha: ICONS.home };
+  const targets = (ha.targets || ha.phones.map((p) => ({ id: p.service, name: p.name, kind: "phone", buttons: true })))
+    .map((x) => ({ id: x.id, name: x.name, sub: SUBS[x.kind] || x.id, icon: ICON_FOR[x.kind] || ICONS.bell }));
+  const devicePicker = entityPicker({ items: targets, selected: s.devices, addLabel: "Add a device",
+    empty: ha.connected
       ? "Nothing that can receive notifications was found. Install the Home Assistant Companion app on your phone, sign in, then come back."
-      : "Can't reach Home Assistant right now, so devices can't be listed.");
+      : "Can't reach Home Assistant right now, so devices can't be listed." });
+  const phones = devicePicker.node;
   const testBtn = el("button", { type: "button", class: "secondary small", onclick: async () => {
     try {
       await saveIt(false);
@@ -2758,29 +2817,27 @@ async function openPersonSheet(view) {
   quiet.input.addEventListener("change", drawQuiet);
   drawQuiet();
 
-  const speakerBoxes = ha.speakers.map((p) => {
-    const box = el("input", { type: "checkbox", value: p.entity_id });
-    box.checked = s.speakers.includes(p.entity_id);
-    return el("label", { class: "check" }, box, el("span", {}, p.name));
-  });
+  const speakerPicker = entityPicker({
+    items: ha.speakers.map((p) => ({ id: p.entity_id, name: p.name, sub: p.entity_id, icon: ICONS.speaker })),
+    selected: s.speakers, addLabel: "Add a speaker", empty: "No speakers found in Home Assistant." });
   const voice = selectOf([["", "Choose a voice"], ...ha.voices.map((v) => [v.entity_id, v.name])], s.tts_entity);
   const onlyHome = switchField("Only when I'm home", s.announce_only_home,
     ha.people.some((p) => p.is_you) ? "Uses your Home Assistant person to tell if you're home." : "Needs a Home Assistant person linked to your user.");
   const speakerDetails = el("details", { class: "more", open: !!s.speakers.length },
     el("summary", {}, "Speaker announcements"),
     el("p", { class: "hint" }, "Used when a medication reminder is set to be announced."),
-    speakerBoxes.length ? el("div", { class: "checks" }, speakerBoxes) : notice("No speakers found."),
+    el("div", { class: "field", role: "group", "aria-label": "Speakers" }, el("span", {}, "Speakers"), speakerPicker.node),
     field("Voice", voice), onlyHome.node);
 
   async function saveIt(close = true) {
     const payload = {
-      devices: phoneBoxes.map((l) => l.querySelector("input")).filter((b) => b.checked).map((b) => b.value),
+      devices: devicePicker.value(),
       group_doses: group.input.checked,
       undo: undo.input.checked,
       swipe_away: swipe.input.checked,
       snooze_minutes: Number(snooze.value),
       quiet: { enabled: quiet.input.checked, start: qStart.value, end: qEnd.value },
-      speakers: speakerBoxes.map((l) => l.querySelector("input")).filter((b) => b.checked).map((b) => b.value),
+      speakers: speakerPicker.value(),
       tts_entity: voice.value || null,
       announce_only_home: onlyHome.input.checked,
     };
@@ -2796,8 +2853,9 @@ async function openPersonSheet(view) {
     el("h2", {}, "Devices and alerts"),
     err,
     el("div", { class: "field", role: "group", "aria-label": "Send reminders to" }, el("span", {}, "Send reminders to"),
-      phones, targets.length ? testBtn : null,
-      el("span", { class: "hint" }, "Answering on one clears it from the others where it can.")),
+      phones,
+      el("span", { class: "hint" }, "Phones with the Home Assistant app get Taken, Snooze and Skip. Everything else gets the message, with \"Open Wellbeing to answer\"."),
+      targets.length ? el("div", { style: "margin-top:8px" }, testBtn) : null),
     group.node, undo.node, swipe.node,
     field("Snooze length", snooze),
     quiet.node, quietPanel,
@@ -2935,7 +2993,11 @@ async function start() {
   sheetEl.addEventListener("input", markSheetChanged);
   sheetEl.addEventListener("change", (ev) => { if (!ev.target.closest(".emoji-panel")) markSheetChanged(); });
   sheetEl.addEventListener("close", () => { sheetChanged = false; });
-  sheetEl.addEventListener("cancel", (ev) => { ev.preventDefault(); askBeforeClosing(); }); // Escape
+  sheetEl.addEventListener("cancel", (ev) => { // Escape
+    ev.preventDefault();
+    if (document.activeElement && document.activeElement.classList.contains("ha-search")) { document.activeElement.blur(); return; }
+    askBeforeClosing();
+  });
   sheetEl.addEventListener("click", (ev) => {
     if (ev.target.id === "sheet") askBeforeClosing(); // tap outside
   });

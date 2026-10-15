@@ -1198,3 +1198,58 @@ details.more[open] > summary { margin-bottom: 8px; }
 .doctor-line.danger strong { color: var(--danger); }
 
 .ask .actions { flex-wrap: wrap; }
+
+/* ---------- Home Assistant-style picker ---------- */
+
+.ha-picker { display: grid; gap: 8px; }
+
+.ha-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.ha-chip {
+  display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 4px 0 6px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--surface); font-weight: 700; font-size: 0.92rem;
+}
+
+.ha-chip.missing { border-style: dashed; color: var(--muted); }
+
+.ha-chip-icon, .ha-option-icon {
+  display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface)); color: var(--accent);
+}
+
+.ha-chip-icon svg, .ha-option-icon svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+.ha-chip-remove { display: inline-grid; place-items: center; width: 26px; height: 26px; border: 0; border-radius: 50%; background: none; color: var(--muted); cursor: pointer; }
+
+.ha-chip-remove:hover, .ha-chip-remove:focus-visible { background: var(--sunken); color: var(--ink); }
+
+.ha-chip-remove svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
+
+.ha-search-box { position: relative; }
+
+.ha-search-box > svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); width: 18px; height: 18px; fill: none; stroke: var(--muted); stroke-width: 2; stroke-linecap: round; pointer-events: none; }
+
+.ha-search { width: 100%; padding-left: 38px !important; }
+
+.ha-list { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); overflow: hidden; max-height: 260px; overflow-y: auto; }
+
+.ha-option {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 8px 12px;
+  border: 0; background: none; font: inherit; color: var(--ink); text-align: left; cursor: pointer;
+}
+
+.ha-option + .ha-option { border-top: 1px solid var(--line); }
+
+.ha-option:hover, .ha-option.active { background: var(--sunken); }
+
+.ha-option-icon { width: 32px; height: 32px; flex: none; }
+
+.ha-option-icon svg { width: 18px; height: 18px; }
+
+.ha-option-text { display: grid; min-width: 0; }
+
+.ha-option-text > span:first-child { font-weight: 700; }
+
+.ha-option-text .row-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0; }
+
+.ha-none { margin: 0; padding: 12px; }
