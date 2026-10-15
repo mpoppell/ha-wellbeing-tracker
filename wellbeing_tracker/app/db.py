@@ -199,6 +199,23 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (tracker_id, kind)
     );
     """,
+    # 10: nights of sleep from Home Assistant (Sleep as Android or Android's sleep detection),
+    # kept here because Home Assistant only keeps detailed history for about ten days.
+    """
+    CREATE TABLE sleep_nights (
+        id           INTEGER PRIMARY KEY,
+        user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        tracker_id   INTEGER NOT NULL REFERENCES trackers(id) ON DELETE CASCADE,
+        night        TEXT NOT NULL,
+        start_at     TEXT NOT NULL,
+        end_at       TEXT NOT NULL,
+        phases       TEXT NOT NULL,
+        source       TEXT NOT NULL,
+        updated_at   TEXT NOT NULL,
+        UNIQUE (tracker_id, start_at)
+    );
+    CREATE INDEX sleep_nights_night ON sleep_nights (tracker_id, night);
+    """,
 ]
 
 

@@ -1,0 +1,85 @@
+"""Nights of sleep from Sleep as Android and Android's sleep detection."""
+
+import asyncio
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from app import sleep
+from app.db import Database
+from app.engine import Engine
+
+from .test_engine import Clock, FakeHA
+
+SYD = ZoneInfo("Australia/Sydney")
+
+
+def ev(when_utc, kind, recorded=None):
+    return {"state": when_utc, "attributes": {"event_type": kind}, "last_changed": recorded or when_utc}
+
+
+# Matthew's night of 13-14 Oct 2026, as Home Assistant recorded it (times UTC)
+TRACKING = [
+    ev("2026-10-05T21:00:31.208+00:00", "stopped"),                                 # an older night
+    ev("2026-10-05T21:00:31.208+00:00", "stopped", "2026-10-13T04:22:40+00:00"),    # re-recorded on restart
+    ev("2026-10-13T14:51:03.779+00:00", "started"),
+    ev("2026-10-13T19:03:50.168+00:00", "stopped"),
+    ev("2026-10-13T19:03:50.168+00:00", "stopped", "2026-10-13T21:40:25+00:00"),
+]
+PHASES = [
+    ev("2026-10-05T20:40:36.402+00:00", "rem"),
+    ev("2026-10-13T14:56:13.393+00:00", "deep_sleep"),
+    ev("2026-10-13T15:38:23.663+00:00", "light_sleep"),
+    ev("2026-10-13T15:43:33.519+00:00", "deep_sleep"),
+    ev("2026-10-13T16:08:53.962+00:00", "rem"),
+    ev("2026-10-13T16:15:03.692+00:00", "deep_sleep"),
+    ev("2026-10-13T17:35:34.419+00:00", "light_sleep"),
+    ev("2026-10-13T18:30:00.000+00:00", "awake"),
+    ev("2026-10-13T18:40:00.000+00:00", "light_sleep"),
+    ev("2026-10-13T19:03:43.925+00:00", "light_sleep"),
+    ev("2026-10-13T19:03:43.925+00:00", "light_sleep", "2026-10-14T23:46:02+00:00"),
+]
+
+
+def test_a_night_from_sleep_as_android():
+    [night] = sleep.nights_from_sleep_as_android(TRACKING, PHASES)
+    info = sleep.summary(night, SYD)
+    assert info["night"] == "2026-10-14"
+    assert (info["start"], info["end"]) == ("2026-10-14T01:51+11:00", "2026-10-14T06:03+11:00")
+    assert info["in_bed"] == 253 and info["fell_asleep_after"] == 5
+    assert info["totals"] == {"awake": 15, "rem": 6, "light": 83, "deep": 148}
+    assert info["asleep"] == 238
+    assert [p["phase"] for p in info["phases"]][:4] == ["awake", "deep", "light", "deep"]
+
+
+def test_unfinished_night_waits_until_it_ends():
+    assert sleep.nights_from_sleep_as_android(TRACKING[:3], PHASES) == []
+
+
+def test_nights_from_android_sleep_segments():
+    rows = [{"state": "17640000.0", "attributes": {"start": 1791991724896, "end": 1792009364896, "status": "successful"}}] * 2
+    [night] = sleep.nights_from_segments(rows)
+    info = sleep.summary(night, SYD)
+    assert info["in_bed"] == 294 and info["asleep"] == 294 and info["has_phases"] is False
+
+
+def test_engine_saves_nights_and_fills_in_sleep(tmp_path):
+    db = Database(tmp_path / "w.db")
+    db.migrate()
+    db.touch_user("u1", "matt", "Matthew")
+    ha = FakeHA()
+
+    async def get_history(entity_id, start, end, attributes=False):
+        return TRACKING if "tracking" in entity_id else PHASES
+    ha.get_history = get_history
+    clock = Clock("2026-10-14T09:00")
+    engine = Engine(db, ha, tz=SYD, clock=clock)
+    tracker = next(t for t in db.list_trackers("u1") if t["kind"] == "sleep")
+    db.update_tracker("u1", tracker["id"], {"config": {"goal": 7.5, "nights": {
+        "tracking": "event.sleep_as_android_sleep_tracking_2", "phases": "event.sleep_as_android_sleep_phase_2"}}})
+    assert asyncio.run(engine.sync_nights()) == 1
+    assert asyncio.run(engine.sync_nights()) == 0  # nothing new
+    view = engine.sleep_view("u1")
+    assert view["configured"] and view["goal"] == 7.5
+    assert [n["night"] for n in view["nights"]] == ["2026-10-14"]
+    [entry] = db.list_entries("u1", "2026-10-14", "2026-10-14")
+    assert entry["value_json"]["hours"] == 3.97 and entry["source"] == "ha"

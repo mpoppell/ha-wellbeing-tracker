@@ -21,7 +21,7 @@ The Check-in screen is a dashboard of sections, each a card you can open or clos
 
 ### Arranging your dashboard
 
-Tap the pencil at the top of Check-in to edit it, much like a Home Assistant dashboard. You can move sections up and down, rename them, hide them, or add a new one. For anything in a section you can move it, edit it, send it to another section, or hide it. Tap **Done** when you're finished. Each section's ••• menu has shortcuts too.
+Tap the pencil at the top of Check-in to edit it, much like a Home Assistant dashboard. Drag the grip handle (⠿) beside a section or anything in it to reorder it, or focus the handle and use the arrow keys. You can also rename sections, hide them, or add a new one. For anything in a section you can move it, edit it, send it to another section, or hide it. Tap **Done** when you're finished. Each section's ••• menu has shortcuts too.
 
 ## Meds/Supplements
 
@@ -120,6 +120,17 @@ Steps, sleep, weight, heart rate and anything else Home Assistant already knows 
 Linking fills in the last 30 days from Home Assistant's history, then keeps up every 15 minutes. Values filled in this way say "from Home Assistant" on Check-in. Anything you enter or correct yourself always wins and isn't overwritten.
 
 Good sources: the Google Health integration (Fitbit, Pixel Watch and other devices that sync to Google), Health Connect sensors in the Home Assistant Companion app, Withings, and Sleep as Android.
+
+## Sleep
+
+If you use **Sleep as Android** with its Home Assistant integration, Check-in can show your nights the way Sleep as Android does. On the **Sleep** row tap **Show your nights from Sleep as Android**, check the suggested entities and tap **Save and import**. To change them later, open a night and tap **Change** beside the source.
+
+- **Sleep tracking** events (started and stopped) mark each night; **Sleep phase** events (deep, light, REM, awake) fill it in.
+- No Sleep as Android? Pick the Home Assistant Companion app's **Sleep segment** sensor instead. You'll get bedtimes and wake times, without phases.
+
+Importing brings in the last 10 days (all Home Assistant keeps), and new nights are added every 15 minutes. Nights are kept by the app from then on, so your history keeps growing. Each night also fills in **Sleep** hours for that morning; anything you enter yourself still wins.
+
+Tap a night on Check-in to see it in full: when you fell asleep and woke, a graph of your phases (tap a block to see its times), time in each phase, and the last 14 nights against your sleep goal.
 
 ## Dashboard card, entities and actions
 

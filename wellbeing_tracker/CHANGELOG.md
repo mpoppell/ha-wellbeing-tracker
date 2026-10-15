@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.15.0
+
+**Drag to arrange Check-in, and your nights from Sleep as Android.**
+
+- In edit mode, drag the grip handle beside a section or anything in it to reorder. Arrow keys work on the handle too.
+- **Sleep**: link Sleep as Android (or Android's sleep segments) and see each night:
+  - bedtime, wake time and how long you slept;
+  - a phase graph (awake, REM, light, deep) you can tap for times;
+  - time in each phase, and the last 14 nights against your sleep goal;
+  - your usual bedtime and wake time, and how far short you've been this week.
+- The last 10 days are imported straight away; after that the app keeps every night, beyond what Home Assistant remembers.
+- Sleep hours fill in from each night automatically. Your own entries still win.
+
 ## 0.14.0
 
 **Choose what the dashboard card shows, and use it with Bubble Card.**

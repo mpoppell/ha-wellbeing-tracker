@@ -70,13 +70,16 @@ class HomeAssistant:
     async def get_states(self) -> list[dict]:
         return await self._get("/states") or []
 
-    async def get_history(self, entity_id: str, start: str, end: str) -> list[dict]:
-        """Every recorded state of one entity between two ISO times, oldest first."""
+    async def get_history(self, entity_id: str, start: str, end: str, attributes: bool = False) -> list[dict]:
+        """Every recorded state of one entity between two ISO times, oldest first.
+        attributes=True keeps each state's attributes (needed for events and sleep segments)."""
         if not self.token:
             return []
+        params = {"filter_entity_id": entity_id, "end_time": end}
+        if not attributes:
+            params.update({"minimal_response": "", "no_attributes": ""})
         try:
-            resp = await self._http().get(f"/history/period/{start}", params={
-                "filter_entity_id": entity_id, "end_time": end, "minimal_response": "", "no_attributes": ""})
+            resp = await self._http().get(f"/history/period/{start}", params=params)
             if resp.status_code == 200:
                 data = resp.json()
                 return data[0] if data else []

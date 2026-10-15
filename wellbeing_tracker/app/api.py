@@ -156,6 +156,26 @@ def build_router(current_user) -> APIRouter:
         days = max(1, min(90, int(payload.get("days") or 30)))
         return {"days": await e.sync_sources(days=days, user_id=user["id"], tracker_id=tracker_id)}
 
+    @router.get("/sleep")
+    async def sleep(request: Request, days: int = 14, user: dict = Depends(current_user), e=Depends(engine)) -> dict:
+        view = e.sleep_view(user["id"], max(1, min(120, days)))
+        if not view["configured"]:
+            # suggest the right Home Assistant entities, so setting up is one tap
+            states = await request.app.state.ha.get_states()
+            ids = [s.get("entity_id", "") for s in states]
+            pick = lambda pred: next((i for i in ids if pred(i)), None)  # noqa: E731
+            view["suggested"] = {
+                "tracking": pick(lambda i: i.startswith("event.") and "sleep_tracking" in i),
+                "phases": pick(lambda i: i.startswith("event.") and "sleep_phase" in i),
+                "segments": pick(lambda i: i.startswith("sensor.") and i.endswith("sleep_segment")),
+            }
+        return view
+
+    @router.post("/sleep/import")
+    async def sleep_import(user: dict = Depends(current_user), e=Depends(engine)) -> dict:
+        """Fetch everything Home Assistant still has (about ten days)."""
+        return {"nights": await e.sync_nights(days=10, user_id=user["id"])}
+
     @router.get("/inbox")
     def inbox(user: dict = Depends(current_user), e=Depends(engine)) -> list[dict]:
         return e.inbox(user["id"])
@@ -269,6 +289,7 @@ def build_router(current_user) -> APIRouter:
                 and by_id.get(x["entity_id"], {}).get("attributes", {}).get("has_time")
             ],
             "people": people,
+            "events": entities("event"),
             # Numbers that can fill in an item: sensors and number helpers with a numeric state or a unit.
             "sensors": sorted(
                 ({"entity_id": s["entity_id"], "name": name_of(s["entity_id"]), "state": s.get("state"),

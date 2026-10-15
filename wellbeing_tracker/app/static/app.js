@@ -309,6 +309,7 @@ async function loadDay() {
     api("GET", "api/supply").catch(() => []),
   ]);
   state.inbox = isToday ? await api("GET", "api/inbox").catch(() => []) : [];
+  state.sleep = all.some((t) => t.kind === "sleep" && !t.hidden) ? await api("GET", "api/sleep?days=30").catch(() => null) : null;
   state.supply = new Map(supply.map((x) => [x.tracker_id, x]));
   state.dayEntries = entries;
   state.prevEntries = prevEntries;
@@ -533,7 +534,7 @@ function drawCheckin(view) {
     el("div", {},
       el("h1", {}, editing ? "Edit your dashboard" : isToday ? (name ? `How are you, ${name}?` : "How are you?")
         : `Check-in for ${state.day === addDays(today, -1) ? "yesterday" : dayLabel(state.day)}`),
-      editing ? el("p", {}, "Reorder, rename or hide sections, and edit, move or hide anything in them.")
+      editing ? el("p", {}, "Drag the handles to reorder sections and what's in them. Rename, hide or edit anything.")
         : el("div", { class: "dayswitch" },
             el("button", { type: "button", class: "iconbtn", "aria-label": "Previous day", onclick: () => changeDay(-1) }, svgIcon(ICONS.left)),
             el("span", { class: "day-label" }, longDate(state.day)),
@@ -548,7 +549,16 @@ function drawCheckin(view) {
   );
 
   const sections = dashboardSections(editing).filter((s) => editing || (!s.hidden && s.items.length));
-  const cards = sections.map((s, i) => editing ? editSectionCard(s, i, sections, view) : sectionCard(s, view));
+  let cards = sections.map((s, i) => editing ? editSectionCard(s, i, sections, view) : sectionCard(s, view));
+  if (editing) {
+    const sectionList = el("div", { class: "sortable-list sections" }, cards);
+    makeSortable(sectionList, async (from, to, keyboard) => {
+      await saveLayout(moved(sections, from, to));
+      drawCheckin(view);
+      if (keyboard) document.querySelector(`.card.editing[data-name="${CSS.escape(sections[from].name)}"] .drag-handle`)?.focus();
+    });
+    cards = [sectionList];
+  }
 
   const banners = [];
   if (!editing && !isToday) {
@@ -824,6 +834,77 @@ async function copyYesterday(s) {
   });
 }
 
+/* ---------- drag to reorder ---------- */
+
+ICONS.grip = "M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01";
+
+// Drag rows inside `list` by their handle, with a finger or a mouse. The arrow keys on a focused
+// handle move it too. onMove(from, to) is called once, when it's dropped somewhere new.
+function makeSortable(list, onMove) {
+  const rows = () => [...list.children].filter((c) => c.classList.contains("sortable"));
+  list.addEventListener("keydown", (ev) => {
+    const handle = ev.target.closest(".drag-handle");
+    if (!handle || !["ArrowUp", "ArrowDown"].includes(ev.key)) return;
+    const row = handle.closest(".sortable");
+    if (!row || row.parentElement !== list) return; // a list inside this one handles its own rows
+    ev.preventDefault();
+    const from = rows().indexOf(row);
+    const to = from + (ev.key === "ArrowUp" ? -1 : 1);
+    if (to >= 0 && to < rows().length) onMove(from, to, true);
+  });
+  list.addEventListener("pointerdown", (ev) => {
+    const handle = ev.target.closest(".drag-handle");
+    if (!handle || ev.button > 0) return;
+    const row = handle.closest(".sortable");
+    if (!row || row.parentElement !== list) return;
+    ev.preventDefault();
+    const all = rows();
+    const from = all.indexOf(row);
+    const rect = row.getBoundingClientRect();
+    const startY = ev.clientY;
+    const placeholder = el("div", { class: "drag-placeholder", style: `height:${rect.height}px` });
+    row.after(placeholder);
+    row.classList.add("dragging");
+    Object.assign(row.style, { position: "fixed", left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, zIndex: 50 });
+    handle.setPointerCapture(ev.pointerId);
+    const move = (e) => {
+      const dy = e.clientY - startY;
+      row.style.transform = `translateY(${dy}px)`;
+      const mid = rect.top + dy + rect.height / 2;
+      const others = rows().filter((r) => r !== row);
+      const before = others.find((r) => { const b = r.getBoundingClientRect(); return mid < b.top + b.height / 2; });
+      if (before) list.insertBefore(placeholder, before); else (others.length ? others[others.length - 1].after(placeholder) : list.append(placeholder));
+      // keep scrolling when dragging near the edge
+      if (e.clientY < 60) window.scrollBy(0, -12); else if (e.clientY > window.innerHeight - 60) window.scrollBy(0, 12);
+    };
+    const end = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", end);
+      handle.removeEventListener("pointercancel", end);
+      placeholder.replaceWith(row);
+      row.classList.remove("dragging");
+      row.removeAttribute("style");
+      const to = rows().indexOf(row);
+      if (to !== from) onMove(from, to, false);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", end);
+    handle.addEventListener("pointercancel", end);
+  });
+}
+
+function dragHandle(label) {
+  return el("button", { type: "button", class: "iconbtn plain drag-handle", "aria-label": `Drag to move ${label}. Or use the arrow keys`,
+    title: "Drag to move" }, svgIcon(ICONS.grip));
+}
+
+function moved(list, from, to) {
+  const out = list.slice();
+  const [x] = out.splice(from, 1);
+  out.splice(to, 0, x);
+  return out;
+}
+
 /* ---------- edit mode ---------- */
 
 function editSectionCard(s, i, sections, view) {
@@ -850,17 +931,26 @@ function editSectionCard(s, i, sections, view) {
     } catch (err) { toast(err.message); }
   };
   const header = el("div", { class: "card-head edit" },
+    dragHandle(s.name),
     el("span", { class: "card-icon" }, sectionIcon(s.name)),
     el("span", { class: "card-title" }, s.name, s.hidden ? el("span", { class: "muted-tag" }, " Hidden") : null),
     el("div", { class: "edit-tools" },
-      el("button", { type: "button", class: "iconbtn plain", "aria-label": `Move ${s.name} up`, disabled: i === 0, onclick: () => move(-1) }, svgIcon(ICONS.up)),
-      el("button", { type: "button", class: "iconbtn plain", "aria-label": `Move ${s.name} down`, disabled: i === sections.length - 1, onclick: () => move(1) }, svgIcon(ICONS.down)),
       el("button", { type: "button", class: "iconbtn plain", "aria-label": `Rename ${s.name}`, onclick: rename }, svgIcon(ICONS.edit)),
       el("button", { type: "button", class: "iconbtn plain", "aria-label": s.hidden ? `Show ${s.name}` : `Hide ${s.name}`,
         title: s.hidden ? "Show section" : "Hide section", onclick: toggleHidden }, svgIcon(s.hidden ? ICONS.eye : ICONS.eyeOff))));
 
   const meds = s.items.some(isMeds) || /med|supplement/i.test(s.name);
   const rows = s.items.map((t, j) => editItemRow(t, j, s, sections, view));
+  const itemList = el("div", { class: "sortable-list" }, rows);
+  makeSortable(itemList, async (from, to, keyboard) => {
+    // the section's items keep the same places in the overall order, just shuffled among themselves
+    const order = state.allTrackers.map((x) => x.id);
+    const slots = s.items.map((t) => order.indexOf(t.id)).sort((a, b) => a - b);
+    moved(s.items, from, to).forEach((t, k) => { order[slots[k]] = t.id; });
+    await api("POST", "api/trackers/order", { ids: order });
+    await refreshCheckin();
+    if (keyboard) document.querySelector(`.edit-row[data-id="${s.items[from].id}"] .drag-handle`)?.focus();
+  });
   const add = el("button", { type: "button", class: "secondary small add-in-section",
     onclick: () => openTrackerSheet(meds ? { kind: "medication", group_name: s.name } : { kind: "rating", group_name: s.name }, view) },
     `+ Add to ${s.name}`);
@@ -869,8 +959,8 @@ function editSectionCard(s, i, sections, view) {
     el("div", { class: "bchips small" },
       state.person.med_groups.map((g) => el("button", { type: "button", class: "chip", onclick: () => openGroupSheet(g, view) }, g.name, svgIcon(ICONS.edit))),
       el("button", { type: "button", class: "chip", onclick: () => openGroupSheet(null, view) }, "+ New group"))) : null;
-  return el("section", { class: `card editing${s.hidden ? " dim" : ""}` }, header,
-    el("div", { class: "card-body" }, rows.length ? rows : el("p", { class: "row-sub" }, "Nothing here yet."), groups, add));
+  return el("section", { class: `card editing sortable${s.hidden ? " dim" : ""}`, "data-name": s.name }, header,
+    el("div", { class: "card-body" }, rows.length ? itemList : el("p", { class: "row-sub" }, "Nothing here yet."), groups, add));
 }
 
 function editItemRow(t, j, s, sections, view) {
@@ -903,11 +993,10 @@ function editItemRow(t, j, s, sections, view) {
       el("div", { class: "actions" }, el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Cancel"))));
     sheet.showModal();
   };
-  return el("div", { class: `edit-row${t.hidden ? " dim" : ""}` },
+  return el("div", { class: `edit-row sortable${t.hidden ? " dim" : ""}`, "data-id": t.id },
+    dragHandle(t.name),
     el("div", { class: "brow-text" }, rowName(t), el("span", { class: "row-sub" }, t.hidden ? "Hidden" : describeTracker(t))),
     el("div", { class: "edit-tools" },
-      el("button", { type: "button", class: "iconbtn plain", "aria-label": `Move ${t.name} up`, disabled: j === 0, onclick: () => move(-1) }, svgIcon(ICONS.up)),
-      el("button", { type: "button", class: "iconbtn plain", "aria-label": `Move ${t.name} down`, disabled: j === siblings.length - 1, onclick: () => move(1) }, svgIcon(ICONS.down)),
       el("button", { type: "button", class: "iconbtn plain", "aria-label": `Edit ${t.name}`, title: "Edit", onclick: () => openTrackerSheet(t, view) }, svgIcon(ICONS.edit)),
       el("button", { type: "button", class: "iconbtn plain", "aria-label": `Move ${t.name} to another section`, title: "Move to another section", onclick: moveTo }, svgIcon(ICONS.move)),
       el("button", { type: "button", class: "iconbtn plain", "aria-label": t.hidden ? `Show ${t.name}` : `Hide ${t.name}`,
@@ -1586,9 +1675,17 @@ function trackerRow(t, view) {
         "aria-label": `Sleep quality ${qcfg.labels[v - 1]}`, onclick: () => save(hours, quality === v ? null : v) }))));
     const text = [hours != null ? `${fmtNum(hours)} hours` : null, quality ? `${qcfg.labels[quality - 1]} sleep` : null].filter(Boolean).join(", ")
       + (latest && latest.source === "ha" ? " · from Home Assistant" : "");
+    const night = state.sleep && state.sleep.nights.find((x) => x.night === state.day);
+    const nightLink = state.sleep && state.sleep.configured
+      ? el("button", { type: "button", class: "night-link", onclick: () => openSleepSheet(night ? night.night : null) },
+          night ? [hypnogram(night, { mini: true }), el("span", { class: "row-sub" }, `${clockOf(night.start)} to ${clockOf(night.end)} · ${hm(night.asleep)} asleep · see the night`)]
+            : el("span", { class: "row-sub" }, "No night tracked for this day · see your sleep"))
+      : state.sleep && state.sleep.tracker_id === t.id && state.sleep.suggested && (state.sleep.suggested.tracking || state.sleep.suggested.segments)
+        ? el("button", { type: "button", class: "link inline", onclick: () => openSleepSetup(state.sleep) }, "Show your nights from Sleep as Android")
+        : null;
     return brow(t, levelLine(text || `Not logged yet${yesterdayText(t)}`, quality ? scaleColor(qcfg, quality) : "var(--muted)",
       latest ? () => removeEntry(latest) : null), stepper,
-      el("div", { class: "brow-below" }, el("span", { class: "row-sub" }, "How well did you sleep?"), qualityTiles));
+      el("div", { class: "brow-below" }, nightLink, el("span", { class: "row-sub" }, "How well did you sleep?"), qualityTiles));
   }
 
   if (t.kind === "note") {
@@ -1678,7 +1775,237 @@ async function takenNow(t) {
 // Kept for other screens that open the dose editor
 function openDoseSheet(t, view, entry = null) { openDoseDialog(t, entry); }
 
+/* ================= sleep: nights from Sleep as Android ================= */
+
+const PHASE_ORDER = ["awake", "rem", "light", "deep"]; // top to bottom, like Sleep as Android
+const PHASE_LABEL = { awake: "Awake", rem: "REM", light: "Light", deep: "Deep" };
+const SVGNS = "http://www.w3.org/2000/svg";
+
+function svgEl(tag, attrs = {}, ...kids) {
+  const n = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) if (v != null) n.setAttribute(k, v);
+  for (const k of kids.flat()) if (k != null) n.append(k instanceof Node ? k : document.createTextNode(String(k)));
+  return n;
+}
+
+function hm(minutes) {
+  if (minutes == null) return "";
+  const m = Math.round(minutes);
+  const h = Math.floor(m / 60);
+  return h ? (m % 60 ? `${h} h ${m % 60} min` : `${h} h`) : `${m} min`;
+}
+
+const clockOf = (iso) => niceTime(/T(\d{2}:\d{2})/.exec(iso)[1]);
+const msOf = (iso) => new Date(iso).getTime();
+
+// The night graph: a row for each phase, a block for each stretch of time in it.
+function hypnogram(n, opts = {}) {
+  const W = 340, labelW = opts.mini ? 0 : 46, rowH = opts.mini ? 9 : 26, gap = opts.mini ? 1 : 4;
+  const rows = n.has_phases ? PHASE_ORDER : ["light"];
+  const H = rows.length * (rowH + gap) + (opts.mini ? 0 : 22);
+  const t0 = msOf(n.start), t1 = msOf(n.end), span = Math.max(1, t1 - t0);
+  const x = (iso) => labelW + ((msOf(iso) - t0) / span) * (W - labelW);
+  const y = (p) => rows.indexOf(p) * (rowH + gap);
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: opts.mini ? "hypno mini" : "hypno", role: "img",
+    "aria-label": `Sleep from ${clockOf(n.start)} to ${clockOf(n.end)}: ${n.has_phases
+      ? PHASE_ORDER.map((p) => `${PHASE_LABEL[p]} ${hm(n.totals[p])}`).join(", ") : `${hm(n.asleep)} asleep`}` });
+  if (!opts.mini) {
+    rows.forEach((p) => {
+      svg.append(svgEl("rect", { x: labelW, y: y(p), width: W - labelW, height: rowH, rx: 4, class: "hypno-lane" }));
+      svg.append(svgEl("text", { x: 0, y: y(p) + rowH / 2 + 4, class: "hypno-label" }, n.has_phases ? PHASE_LABEL[p] : "Asleep"));
+    });
+  }
+  const caption = opts.caption;
+  for (const b of n.phases) {
+    const p = n.has_phases ? b.phase : "light";
+    const w = Math.max(1.5, x(b.end) - x(b.start) - (opts.mini ? 0 : 1));
+    const rect = svgEl("rect", { x: x(b.start), y: y(p), width: w, height: rowH, rx: opts.mini ? 1 : 4,
+      class: `ph ph-${n.has_phases ? p : "asleep"}`, tabindex: opts.mini ? null : 0 },
+      svgEl("title", {}, `${n.has_phases ? PHASE_LABEL[p] : "Asleep"} ${clockOf(b.start)}–${clockOf(b.end)}`));
+    if (caption) {
+      const show = () => {
+        svg.querySelectorAll(".ph.on").forEach((r) => r.classList.remove("on"));
+        rect.classList.add("on");
+        caption.textContent = `${n.has_phases ? PHASE_LABEL[p] : "Asleep"} · ${clockOf(b.start)} to ${clockOf(b.end)} · ${hm((msOf(b.end) - msOf(b.start)) / 60000)}`;
+      };
+      rect.addEventListener("pointerenter", show);
+      rect.addEventListener("click", show);
+      rect.addEventListener("focus", show);
+    }
+    svg.append(rect);
+  }
+  if (!opts.mini) {
+    // hour marks along the bottom
+    const first = new Date(t0); first.setMinutes(0, 0, 0); first.setHours(first.getHours() + 1);
+    const hours = Math.round(span / 3600000);
+    const every = hours > 8 ? 2 : 1;
+    for (let t = first.getTime(); t < t1; t += 3600000) {
+      const d = new Date(t);
+      if (d.getHours() % every) continue;
+      const tx = labelW + ((t - t0) / span) * (W - labelW);
+      svg.append(svgEl("line", { x1: tx, x2: tx, y1: 0, y2: rows.length * (rowH + gap) - gap, class: "hypno-hour" }));
+      svg.append(svgEl("text", { x: tx, y: H - 4, class: "hypno-tick", "text-anchor": "middle" },
+        niceTime(`${pad(d.getHours())}:00`)));
+    }
+  }
+  return svg;
+}
+
+// Last 14 nights: deep, light and REM stacked, with the goal as a dashed line.
+function sleepTrend(nights, goalH, selected, onPick) {
+  const days = [];
+  for (let i = 13; i >= 0; i--) days.push(addDays(isoDay(new Date()), -i));
+  const byNight = new Map(nights.map((n) => [n.night, n]));
+  const W = 340, H = 150, base = 120, top = 8;
+  const maxMin = Math.max(goalH * 60, ...nights.map((n) => n.asleep)) * 1.1;
+  const yOf = (min) => base - (min / maxMin) * (base - top);
+  const bw = W / days.length;
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: "sleep-trend", role: "img",
+    "aria-label": `Sleep over the last 14 nights, against a goal of ${goalH} hours` });
+  svg.append(svgEl("line", { x1: 0, x2: W, y1: base, y2: base, class: "trend-base" }));
+  days.forEach((day, i) => {
+    const n = byNight.get(day);
+    const x0 = i * bw + 3, w = bw - 6;
+    const g = svgEl("g", { class: `trend-night${n ? "" : " none"}${n && n.night === selected ? " on" : ""}`, tabindex: n ? 0 : null },
+      svgEl("rect", { x: i * bw, y: 0, width: bw, height: H, class: "trend-hit" }));
+    if (n) {
+      let acc = 0;
+      const parts = n.has_phases ? [["deep", n.totals.deep], ["light", n.totals.light], ["rem", n.totals.rem]] : [["asleep", n.asleep]];
+      parts.forEach(([p, m], k) => {
+        if (!m) return;
+        const y0 = yOf(acc), y1 = yOf(acc + m);
+        // 2px gap between stacked parts, rounded only at the top of the bar
+        g.append(svgEl("rect", { x: x0, y: y1, width: w, height: Math.max(0, y0 - y1 - (k ? 2 : 0)), rx: k === parts.length - 1 ? 3 : 0,
+          class: `ph ph-${p}` }));
+        acc += m;
+      });
+      g.append(svgEl("title", {}, `${dayLabel(n.night)}: ${hm(n.asleep)} asleep, ${clockOf(n.start)} to ${clockOf(n.end)}`));
+      g.addEventListener("click", () => onPick(n.night));
+      g.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); onPick(n.night); } });
+    }
+    const d = dayToDate(day);
+    g.append(svgEl("text", { x: i * bw + bw / 2, y: H - 14, class: "trend-tick", "text-anchor": "middle" },
+      d.toLocaleDateString(undefined, { weekday: "narrow" })));
+    g.append(svgEl("text", { x: i * bw + bw / 2, y: H - 2, class: "trend-tick", "text-anchor": "middle" }, String(d.getDate())));
+    svg.append(g);
+  });
+  const gy = yOf(goalH * 60);
+  svg.append(svgEl("line", { x1: 0, x2: W, y1: gy, y2: gy, class: "trend-goal" }));
+  svg.append(svgEl("text", { x: W - 2, y: gy - 4, class: "trend-goal-label", "text-anchor": "end" }, `Goal ${goalH} h`));
+  return svg;
+}
+
+// Average clock time of a set of times around midnight (e.g. bedtimes either side of 12am).
+function usualTime(isos) {
+  if (!isos.length) return null;
+  const mins = isos.map((s) => { const [h, m] = /T(\d{2}):(\d{2})/.exec(s).slice(1).map(Number); return ((h * 60 + m) + 720) % 1440; });
+  const avg = Math.round(mins.reduce((a, b) => a + b, 0) / mins.length);
+  const real = (avg + 720) % 1440;
+  return niceTime(`${pad(Math.floor(real / 60))}:${pad(real % 60)}`);
+}
+
+async function openSleepSheet(pickNight) {
+  const sheet = document.getElementById("sheet");
+  let view;
+  try { view = await api("GET", "api/sleep?days=30"); } catch (err) { toast(err.message); return; }
+  if (!view.tracker_id) { toast("Add a Sleep item first"); return; }
+  if (!view.configured) { openSleepSetup(view); return; }
+  const nights = view.nights;
+  let current = pickNight && nights.find((n) => n.night === pickNight) ? pickNight : (nights[0] || {}).night;
+  const draw = () => {
+    const i = nights.findIndex((n) => n.night === current);
+    const n = nights[i];
+    const caption = el("p", { class: "row-sub hypno-caption", "aria-live": "polite" }, n && n.has_phases ? "Tap the graph to see each part of the night." : "");
+    const recent = nights.filter((x) => x.night > addDays(isoDay(new Date()), -14));
+    const week = nights.filter((x) => x.night > addDays(isoDay(new Date()), -7));
+    const avg = recent.length ? recent.reduce((a, x) => a + x.asleep, 0) / recent.length : null;
+    const debt = week.length ? Math.max(0, week.length * view.goal * 60 - week.reduce((a, x) => a + x.asleep, 0)) : null;
+    const tiles = n && n.has_phases ? el("div", { class: "phase-tiles" }, ["deep", "light", "rem", "awake"].map((p) =>
+      el("div", { class: "phase-tile" },
+        el("span", { class: `dot ph-${p}` }),
+        el("span", { class: "phase-name" }, PHASE_LABEL[p]),
+        el("strong", {}, hm(n.totals[p])),
+        p !== "awake" && n.asleep ? el("span", { class: "row-sub" }, `${Math.round((n.totals[p] / n.asleep) * 100)}%`) : null))) : null;
+    sheet.replaceChildren(el("div", { class: "sheet-body sleep-sheet" },
+      el("div", { class: "med-sheet-head" }, el("h2", {}, "Sleep"),
+        el("button", { type: "button", class: "iconbtn plain", "aria-label": "Close", onclick: () => sheet.close() }, svgIcon(ICONS.close))),
+      n ? [
+        el("div", { class: "night-nav" },
+          el("button", { type: "button", class: "iconbtn", "aria-label": "Night before", disabled: i >= nights.length - 1,
+            onclick: () => { current = nights[i + 1].night; draw(); } }, svgIcon(ICONS.left)),
+          el("span", {}, `Night to ${longDate(n.night)}`),
+          el("button", { type: "button", class: "iconbtn", "aria-label": "Night after", disabled: i <= 0,
+            onclick: () => { current = nights[i - 1].night; draw(); } }, svgIcon(ICONS.right))),
+        el("div", { class: "sleep-hero" },
+          el("div", { class: "supply-big" }, `${hm(n.asleep)} asleep`),
+          el("p", { class: "row-sub" }, `${clockOf(n.start)} to ${clockOf(n.end)} · in bed ${hm(n.in_bed)}`
+            + (n.fell_asleep_after != null && n.has_phases ? ` · asleep after ${hm(n.fell_asleep_after)}` : ""))),
+        hypnogram(n, { caption }), caption, tiles,
+      ] : el("p", { class: "row-sub" }, "No nights yet. They appear here the morning after Sleep as Android tracks one."),
+      el("h3", { class: "sleep-h3" }, "Last 14 nights"),
+      sleepTrend(nights, view.goal, current, (night) => { current = night; draw(); }),
+      el("ul", { class: "sleep-facts" },
+        avg != null ? el("li", {}, el("strong", {}, `Average ${hm(avg)}`), ` against a goal of ${view.goal} h`) : null,
+        debt != null ? el("li", {}, debt ? `${hm(debt)} short of your goal over the last ${week.length === 1 ? "night" : week.length + " nights"}` : "On or over your goal all week") : null,
+        recent.length ? el("li", {}, `Usually asleep by ${usualTime(recent.map((x) => x.start))}, up at ${usualTime(recent.map((x) => x.end))}`) : null),
+      el("div", { class: "sleep-legend", "aria-hidden": "true" }, ["deep", "light", "rem"].map((p) =>
+        el("span", {}, el("span", { class: `dot ph-${p}` }), PHASE_LABEL[p]))),
+      el("p", { class: "row-sub sleep-source" }, view.source.tracking ? "From Sleep as Android, through Home Assistant. " : "From Android's sleep detection, through Home Assistant. ",
+        el("button", { type: "button", class: "link inline", onclick: () => openSleepSetup(view) }, "Change"))));
+    if (!sheet.open) sheet.showModal();
+  };
+  draw();
+}
+
+async function openSleepSetup(view) {
+  const sheet = document.getElementById("sheet");
+  let ha;
+  try { haOptionsCache = null; ha = await haOptions(); } catch { ha = { events: [], sensors: [] }; }
+  const tracker = state.allTrackers.find((t) => t.id === view.tracker_id) || (await api("GET", "api/trackers?include_hidden=true")).find((t) => t.id === view.tracker_id);
+  const was = view.source || view.suggested || {};
+  const events = (ha.events || []).map((x) => ({ id: x.entity_id, name: x.name, sub: x.entity_id, icon: ICONS.bell }));
+  const sensors = (ha.sensors || []).filter((x) => /sleep/.test(x.entity_id)).map((x) => ({ id: x.entity_id, name: x.name, sub: x.entity_id, icon: ICONS.home }));
+  const pick = (items, id, label) => entityPicker({ items, selected: id ? [id] : [], addLabel: label, single: true, empty: "Nothing like this in Home Assistant." });
+  const tracking = pick(events, was.tracking, "Search events");
+  const phases = pick(events, was.phases, "Search events");
+  const segments = pick(sensors, was.segments, "Search sensors");
+  const goal = el("input", { type: "number", min: "4", max: "14", step: "0.5", inputmode: "decimal", value: view.goal || 8, style: "width:6em" });
+  const err = el("p", { class: "form-error", hidden: true });
+  const form = el("form", { method: "dialog" },
+    el("h2", {}, "Your nights"),
+    el("p", { class: "row-sub", style: "margin:-8px 0 14px" },
+      "See each night's deep, light and REM sleep, like Sleep as Android, plus your sleep over the last two weeks. Sleep hours on Check-in fill in by themselves; anything you enter yourself wins."),
+    err,
+    el("div", { class: "field" }, el("span", {}, "Sleep as Android: sleep tracking"), tracking.node,
+      el("span", { class: "hint" }, "Marks when each night starts and ends.")),
+    el("div", { class: "field" }, el("span", {}, "Sleep as Android: sleep phase"), phases.node,
+      el("span", { class: "hint" }, "Deep, light, REM and awake through the night.")),
+    el("details", { class: "more", open: !was.tracking && !!was.segments },
+      el("summary", {}, "Without Sleep as Android"),
+      el("div", { class: "field" }, el("span", {}, "Android sleep segment"), segments.node,
+        el("span", { class: "hint" }, "From the Home Assistant app on your phone: when you slept, without phases. Used when Sleep as Android has nothing."))),
+    field("Sleep goal", el("div", { class: "inline-field" }, goal, el("span", {}, "hours a night"))),
+    el("div", { class: "actions" },
+      el("button", { type: "submit", class: "primary" }, "Save and import"),
+      view.configured ? el("button", { type: "button", class: "link", onclick: () => openSleepSheet() }, "Cancel")
+        : el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Not now")));
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const nights = { tracking: tracking.value()[0] || null, phases: phases.value()[0] || null, segments: segments.value()[0] || null };
+    try {
+      await api("PATCH", `api/trackers/${view.tracker_id}`, { config: { ...(tracker ? tracker.config : {}), nights, goal: Number(goal.value) || 8 } });
+      const r = await api("POST", "api/sleep/import");
+      toast(r.nights ? `Imported ${r.nights === 1 ? "1 night" : r.nights + " nights"} from Home Assistant` : "Saved. Nights appear the morning after they're tracked");
+      await redraw();
+      openSleepSheet();
+    } catch (e) { err.textContent = e.message; err.hidden = false; }
+  });
+  sheet.replaceChildren(form);
+  if (!sheet.open) sheet.showModal();
+}
+
 /* ================= history ================= */
+
 
 async function renderHistory(view) {
   view.replaceChildren(el("p", { class: "loading" }, "Loading…"));

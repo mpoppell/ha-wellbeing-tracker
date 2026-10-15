@@ -1276,3 +1276,72 @@ details.more[open] > summary { margin-bottom: 8px; }
 .inbox-message { white-space: pre-wrap; color: var(--ink); }
 
 .inbox-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* ---------- drag to reorder ---------- */
+
+.drag-handle { cursor: grab; touch-action: none; flex: none; color: var(--muted); }
+
+.drag-handle svg { fill: none; stroke: currentColor; stroke-width: 3.2; stroke-linecap: round; }
+
+.dragging { opacity: 0.92; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28); background: var(--surface); border-radius: var(--radius-sm); cursor: grabbing; }
+
+.dragging .drag-handle { cursor: grabbing; }
+
+.drag-placeholder { border: 2px dashed var(--accent); border-radius: var(--radius-sm); opacity: 0.5; margin: 4px 0; }
+
+.sortable-list.sections { display: grid; gap: 14px; }
+
+.sortable-list.sections > .card { margin: 0; }
+
+.edit-row .drag-handle { margin-left: -8px; }
+
+/* ---------- sleep (colours checked for colour blindness, in both light and dark) ---------- */
+
+:root { --ph-awake: #eda100; --ph-rem: #6250d6; --ph-light: #1baf7a; --ph-deep: #2a78d6; }
+
+:root[data-theme="dark"] { --ph-awake: #c98500; --ph-rem: #9085e9; --ph-light: #199e70; --ph-deep: #3987e5; }
+
+.ph-awake { fill: var(--ph-awake); background: var(--ph-awake); }
+.ph-rem { fill: var(--ph-rem); background: var(--ph-rem); }
+.ph-light { fill: var(--ph-light); background: var(--ph-light); }
+.ph-deep { fill: var(--ph-deep); background: var(--ph-deep); }
+.ph-asleep { fill: var(--ph-deep); background: var(--ph-deep); }
+
+.hypno { width: 100%; height: auto; display: block; margin-top: 12px; overflow: visible; }
+.hypno.mini { margin: 6px 0 4px; max-height: 44px; }
+.hypno-lane { fill: var(--sunken); opacity: 0.6; }
+.hypno-label { font-size: 11px; fill: var(--muted); }
+.hypno-tick { font-size: 10px; fill: var(--muted); }
+.hypno-hour { stroke: var(--line); stroke-width: 1; }
+.hypno .ph { cursor: pointer; outline: none; }
+.hypno .ph.on, .hypno .ph:focus-visible { stroke: var(--ink); stroke-width: 2; }
+.hypno-caption { min-height: 1.4em; margin: 6px 0 0; }
+
+.night-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 10px 0 4px; font-weight: 700; }
+.sleep-hero .supply-big { margin: 8px 0 2px; }
+.sleep-hero p { margin: 0; }
+
+.phase-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.phase-tile { display: grid; gap: 2px; padding: 10px; border-radius: var(--radius-sm); background: var(--sunken); }
+.phase-tile strong { font-size: 0.95rem; }
+.phase-name { font-size: 0.85rem; color: var(--muted); }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: baseline; }
+
+.sleep-h3 { margin: 22px 0 6px; font-size: 1rem; }
+.sleep-trend { width: 100%; height: auto; display: block; }
+.trend-base { stroke: var(--line); }
+.trend-goal { stroke: var(--ink); stroke-dasharray: 4 4; stroke-width: 1; opacity: 0.6; }
+.trend-goal-label { font-size: 10px; fill: var(--muted); }
+.trend-tick { font-size: 10px; fill: var(--muted); }
+.trend-hit { fill: transparent; }
+.trend-night:not(.none) { cursor: pointer; outline: none; }
+.trend-night.on .trend-hit, .trend-night:focus-visible .trend-hit { fill: var(--sunken); opacity: 0.7; }
+.trend-night.on .trend-tick { fill: var(--ink); font-weight: 700; }
+.trend-night .trend-hit { pointer-events: all; }
+.trend-night rect.ph { pointer-events: none; }
+
+.sleep-facts { list-style: none; padding: 0; margin: 10px 0 0; display: grid; gap: 4px; }
+.sleep-legend { display: flex; gap: 14px; margin-top: 10px; font-size: 0.85rem; color: var(--muted); }
+.sleep-source { margin-top: 14px; }
+
+.night-link { display: grid; gap: 2px; width: 100%; border: 0; background: none; padding: 0; text-align: left; cursor: pointer; font: inherit; margin-bottom: 6px; }

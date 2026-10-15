@@ -23,7 +23,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Callable
 from zoneinfo import ZoneInfo
 
@@ -41,6 +41,7 @@ from .schedule import (
     person_settings,
     schedule_settings,
 )
+from . import sleep as sleepdata
 from .supply import normalise_supply, status as supply_status, supply_settings
 from .trackers import ValidationError
 
@@ -252,6 +253,7 @@ class Engine:
             self._next_source_sync = now + SOURCE_SYNC_EVERY
             try:
                 await self.sync_sources()
+                await self.sync_nights()
             except Exception:
                 log.exception("Filling in from Home Assistant failed")
 
@@ -1705,6 +1707,67 @@ class Engine:
                 out.add("event", r["user_id"], None, kind, [{"name": r["name"], "time": None}], "supply")
 
 
+    # ================= nights of sleep =================
+
+    async def sync_nights(self, days: int = 3, user_id: str | None = None) -> int:
+        """Save recent nights from Home Assistant, and fill in Sleep hours. Returns nights saved."""
+        if not hasattr(self.ha, "get_history"):
+            return 0
+        with self.db.connect() as conn:
+            rows = conn.execute("SELECT * FROM trackers WHERE kind = 'sleep'").fetchall()
+        trackers = [{**dict(r), "config": json.loads(r["config"] or "{}")} for r in rows]
+        trackers = [t for t in trackers if t["config"].get("nights") and (user_id is None or t["user_id"] == user_id)]
+        now = self.clock()
+        start = iso(now - timedelta(days=days))
+        saved = 0
+        for t in trackers:
+            src = t["config"]["nights"]
+            nights = []
+            if src.get("tracking"):
+                tracking = await self.ha.get_history(src["tracking"], start, iso(now), attributes=True)
+                phases = await self.ha.get_history(src["phases"], start, iso(now), attributes=True) if src.get("phases") else []
+                nights = sleepdata.nights_from_sleep_as_android(tracking, phases)
+            if not nights and src.get("segments"):
+                nights = sleepdata.nights_from_segments(
+                    await self.ha.get_history(src["segments"], start, iso(now), attributes=True))
+            with self.db.connect() as conn:
+                for n in nights:
+                    info = sleepdata.summary(n, self.tz)
+                    phases_json = json.dumps([[iso(s), iso(e), p] for s, e, p in n["phases"]])
+                    cur = conn.execute(
+                        "INSERT INTO sleep_nights (user_id, tracker_id, night, start_at, end_at, phases, source, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(tracker_id, start_at) DO UPDATE SET "
+                        "end_at = excluded.end_at, phases = excluded.phases, night = excluded.night, source = excluded.source, "
+                        "updated_at = excluded.updated_at WHERE sleep_nights.phases != excluded.phases OR sleep_nights.end_at != excluded.end_at",
+                        (t["user_id"], t["id"], info["night"], iso(n["start"]), iso(n["end"]), phases_json, n["source"], iso(now)))
+                    saved += cur.rowcount
+                    # Sleep hours for that morning, unless you've entered them yourself
+                    self._write_from_ha(conn, t, date.fromisoformat(info["night"]), info["asleep"] / 60, n["end"])
+        return saved
+
+    def sleep_view(self, user_id: str, days: int = 14) -> dict:
+        """Recent nights, newest first, for the sleep screen."""
+        tracker = next((t for t in self.db.list_trackers(user_id, include_hidden=True) if t["kind"] == "sleep"), None)
+        if not tracker:
+            return {"tracker_id": None, "configured": False, "nights": []}
+        cfg = tracker["config"]
+        since = (self._local_today(self.clock()) - timedelta(days=days)).isoformat()
+        with self.db.connect() as conn:
+            rows = conn.execute("SELECT * FROM sleep_nights WHERE tracker_id = ? AND night > ? ORDER BY start_at DESC",
+                                (tracker["id"], since)).fetchall()
+        nights = []
+        for r in rows:
+            n = {"start": parse(r["start_at"]), "end": parse(r["end_at"]), "source": r["source"],
+                 "phases": [(parse(s), parse(e), p) for s, e, p in json.loads(r["phases"])]}
+            nights.append(sleepdata.summary(n, self.tz))
+        # one night per morning: if there were two (a nap, a restart), keep the longest
+        best: dict[str, dict] = {}
+        for n in nights:
+            if n["night"] not in best or n["in_bed"] > best[n["night"]]["in_bed"]:
+                best[n["night"]] = n
+        return {"tracker_id": tracker["id"], "configured": bool(cfg.get("nights")), "source": cfg.get("nights"),
+                "goal": cfg.get("goal") or 8, "nights": sorted(best.values(), key=lambda n: n["night"], reverse=True)}
+
     # ================= notifications inside the app =================
 
     def _preview(self, rid: int, now: datetime) -> dict | None:
@@ -1818,6 +1881,8 @@ class Engine:
         linked = []
         for r in rows:
             cfg = json.loads(r["config"] or "{}")
+            if r["kind"] == "sleep" and cfg.get("nights"):
+                continue  # nights from Sleep as Android fill in Sleep instead
             if cfg.get("source") and (user_id is None or r["user_id"] == user_id) and (tracker_id is None or r["id"] == tracker_id):
                 linked.append({**dict(r), "config": cfg})
         if not linked:

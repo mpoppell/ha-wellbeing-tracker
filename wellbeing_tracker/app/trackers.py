@@ -117,7 +117,17 @@ def normalise_config(kind: str, config: dict | None) -> dict:
             out["source"] = normalise_source(config["source"])
         return out
     if kind == "sleep":
-        return {"source": normalise_source(config["source"])} if config.get("source") else {}
+        out = {}
+        if config.get("source"):
+            out["source"] = normalise_source(config["source"])
+        if config.get("nights"):
+            out["nights"] = normalise_nights(config["nights"])
+        if config.get("goal") not in (None, ""):
+            goal = _positive(config["goal"], "Sleep goal")
+            if goal > 14:
+                raise ValidationError("Sleep goal must be 14 hours or less")
+            out["goal"] = goal
+        return out
     if kind == "medication":
         out = {}
         if config.get("dose") not in (None, ""):
@@ -151,6 +161,23 @@ def normalise_source(src) -> dict:
     if value not in SOURCE_VALUES:
         raise ValidationError("Choose which reading counts for the day")
     return {"entity_id": entity, "value": value}
+
+
+def normalise_nights(src) -> dict:
+    """Where nights of sleep come from: Sleep as Android's event entities, or Android's sleep segment sensor."""
+    if not isinstance(src, dict):
+        raise ValidationError("Choose where your nights come from")
+    out = {}
+    for key, domain in (("tracking", "event"), ("phases", "event"), ("segments", "sensor")):
+        value = src.get(key)
+        if value in (None, ""):
+            continue
+        if not re.match(rf"^{domain}\.[a-z0-9_]+$", str(value)):
+            raise ValidationError("Choose where your nights come from")
+        out[key] = str(value)
+    if not (out.get("tracking") or out.get("segments")):
+        raise ValidationError("Choose Sleep as Android's sleep tracking, or Android's sleep segments")
+    return out
 
 
 def _positive(value, label: str) -> float | int:
