@@ -1193,3 +1193,99 @@ def test_when_to_see_the_doctor(env):
     engine.save_supply("u1", c["id"], {"expires": "2026-10-01"})
     [alert] = engine.get_supply("u1", c["id"])["status"]["alerts"]
     assert (alert["level"], alert["text"]) == ("danger", "Script expired. See your doctor")
+
+
+# ----- filled in from Home Assistant -----
+
+def history_ha(ha, entity, unit, points):
+    """points: [(local "2026-10-13T08:00", state)]"""
+    ha.states.append({"entity_id": entity, "state": str(points[-1][1]), "attributes": {"unit_of_measurement": unit}})
+
+    async def get_history(entity_id, start, end):
+        assert entity_id == entity
+        return [{"state": str(v), "last_changed": datetime.fromisoformat(t).replace(tzinfo=SYD).isoformat()}
+                for t, v in points]
+    ha.get_history = get_history
+
+
+def test_steps_take_the_highest_of_each_day(env):
+    db, ha, clock, engine, med = env
+    steps = db.create_tracker("u1", {"kind": "factor", "name": "Steps", "config": {
+        "mode": "count", "unit": "steps", "source": {"entity_id": "sensor.health_google_health_steps", "value": "highest"}}})
+    history_ha(ha, "sensor.health_google_health_steps", "steps", [
+        ("2026-10-12T23:59", 9000),  # before the window: ignored
+        ("2026-10-13T09:00", 2000), ("2026-10-13T21:00", 8431), ("2026-10-14T00:05", 12), ("2026-10-14T05:30", 344),
+    ])
+    assert run(engine.sync_sources(days=2)) == 2
+    got = {e["day"]: (e["value_num"], e["source"]) for e in db.list_entries("u1", "2026-10-12", "2026-10-14")}
+    assert got == {"2026-10-13": (8431, "ha"), "2026-10-14": (344, "ha")}
+    # nothing changed, nothing written
+    assert run(engine.sync_sources(days=2)) == 0
+
+
+def test_your_own_answer_wins(env):
+    db, ha, clock, engine, med = env
+    weight = db.create_tracker("u1", {"kind": "factor", "name": "Weight", "config": {
+        "mode": "amount", "unit": "kg", "source": {"entity_id": "sensor.health_google_health_weight", "value": "latest"}}})
+    history_ha(ha, "sensor.health_google_health_weight", "kg", [("2026-10-13T07:00", 88.4), ("2026-10-14T06:30", 88.0)])
+    db.save_checkin("u1", "2026-10-14T05:00:00+11:00", [{"tracker_id": weight["id"], "value_num": 87.5}])
+    run(engine.sync_sources(days=2))
+    got = {e["day"]: (e["value_num"], e["source"]) for e in db.list_entries("u1", "2026-10-13", "2026-10-14")}
+    assert got == {"2026-10-13": (88.4, "ha"), "2026-10-14": (87.5, "app")}
+    # correcting a filled-in day makes it yours
+    e = [x for x in db.list_entries("u1", "2026-10-13", "2026-10-13")][0]
+    db.update_entry("u1", e["id"], {"value_num": 88.2})
+    run(engine.sync_sources(days=2))
+    assert db.list_entries("u1", "2026-10-13", "2026-10-13")[0]["value_num"] == 88.2
+
+
+def test_sleep_minutes_become_hours(env):
+    db, ha, clock, engine, med = env
+    sleep = next(t for t in db.list_trackers("u1") if t["kind"] == "sleep")
+    db.update_tracker("u1", sleep["id"], {"config": {"source": {"entity_id": "sensor.health_google_health_time_asleep"}}})
+    history_ha(ha, "sensor.health_google_health_time_asleep", "min", [("2026-10-14T07:10", 444)])
+    run(engine.sync_sources(days=1))
+    [e] = db.list_entries("u1", "2026-10-14", "2026-10-14")
+    assert e["value_json"] == {"hours": 7.4, "quality": None} and e["source"] == "ha"
+
+
+def test_source_is_validated(env):
+    db, ha, clock, engine, med = env
+    with pytest.raises(ValidationError):
+        db.create_tracker("u1", {"kind": "factor", "name": "X", "config": {"mode": "count", "source": {"entity_id": "light.lounge"}}})
+    with pytest.raises(ValidationError):
+        db.create_tracker("u1", {"kind": "factor", "name": "X", "config": {"mode": "count",
+                                 "source": {"entity_id": "sensor.x", "value": "sum"}}})
+
+
+# ----- notifications inside the app -----
+
+def test_inbox_shows_what_the_phone_shows_and_answers_it(env):
+    db, ha, clock, engine, med = env
+    c = med("Clonidine", dose="100", unit="mcg")
+    schedule(engine, c["id"], times=["19:00"], amounts={"19:00": 0.5}, nag="once")
+    clock.set("2026-10-14T19:00")
+    run(engine.tick())
+    [item] = engine.inbox("u1")
+    assert item["title"] == "Time for Clonidine"
+    assert "Clonidine ½ dose (50 mcg)" in item["message"]
+    assert [a["verb"] for a in item["actions"]] == ["TAKEN", "SNOOZE", "SKIP"]
+    assert item["actions"][2]["reason"] is True
+    # looking doesn't send anything or change anything
+    sent = len(ha.notifications())
+    engine.inbox("u1")
+    assert len(ha.notifications()) == sent
+    rid = item["id"]
+    run(engine.answer_from_app("u1", rid, "TAKEN", None))
+    assert engine.inbox("u1") == []
+    assert dose_rows(db, c["id"])[0]["status"] == "taken"
+    assert ha.clears()[-1] == f"wbt-reminder-{rid}"  # gone from the phone too
+    with pytest.raises(Exception):
+        run(engine.answer_from_app("u2", rid, "TAKEN", None))
+
+
+def test_inbox_includes_supply_warnings(env):
+    db, ha, clock, engine, med = env
+    supply_env(env, count=10)
+    [item] = engine.inbox("u1")
+    assert (item["kind"], item["title"]) == ("supply", "5 days left")

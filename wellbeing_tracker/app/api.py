@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 
 from fastapi import APIRouter, Body, Depends, Query, Request
 
 from .db import Database
 from .trackers import SEVERITY_LABELS, ValidationError
+
+
+def _numeric(value) -> bool:
+    try:
+        float(value)
+        return True
+    except (TypeError, ValueError):
+        return False
 
 
 def build_router(current_user) -> APIRouter:
@@ -140,6 +149,27 @@ def build_router(current_user) -> APIRouter:
     async def preview_schedule(tracker_id: int, user: dict = Depends(current_user), e=Depends(engine)) -> dict:
         return {"sent_to": await e.send_preview(user["id"], tracker_id)}
 
+    @router.post("/trackers/{tracker_id}/source/fill")
+    async def fill_from_ha(tracker_id: int, payload: dict = Body(default={}), user: dict = Depends(current_user),
+                           e=Depends(engine), d: Database = Depends(db)) -> dict:
+        d.get_tracker(user["id"], tracker_id)  # NotFound if not theirs
+        days = max(1, min(90, int(payload.get("days") or 30)))
+        return {"days": await e.sync_sources(days=days, user_id=user["id"], tracker_id=tracker_id)}
+
+    @router.get("/inbox")
+    def inbox(user: dict = Depends(current_user), e=Depends(engine)) -> list[dict]:
+        return e.inbox(user["id"])
+
+    @router.post("/inbox/{reminder_id}")
+    async def answer_inbox(reminder_id: int, payload: dict = Body(...), user: dict = Depends(current_user),
+                           e=Depends(engine)) -> list[dict]:
+        verb = str(payload.get("verb") or "")
+        if not re.match(r"^[A-Z]+(_\d+)?$", verb):
+            raise ValidationError("Unknown answer")
+        await e.answer_from_app(user["id"], reminder_id, verb, payload.get("reason"))
+        await e.tick()
+        return e.inbox(user["id"])
+
     @router.get("/supply")
     def supply_overview(user: dict = Depends(current_user), e=Depends(engine)) -> list[dict]:
         return e.supply_overview(user["id"])
@@ -239,6 +269,16 @@ def build_router(current_user) -> APIRouter:
                 and by_id.get(x["entity_id"], {}).get("attributes", {}).get("has_time")
             ],
             "people": people,
+            # Numbers that can fill in an item: sensors and number helpers with a numeric state or a unit.
+            "sensors": sorted(
+                ({"entity_id": s["entity_id"], "name": name_of(s["entity_id"]), "state": s.get("state"),
+                  "unit": s.get("attributes", {}).get("unit_of_measurement"),
+                  "device_class": s.get("attributes", {}).get("device_class"),
+                  "state_class": s.get("attributes", {}).get("state_class")}
+                 for s in states
+                 if s.get("entity_id", "").split(".")[0] in ("sensor", "input_number", "number")
+                 and (s.get("attributes", {}).get("unit_of_measurement") or _numeric(s.get("state")))),
+                key=lambda x: x["name"].lower()),
         }
 
     @router.patch("/entries/{entry_id}")

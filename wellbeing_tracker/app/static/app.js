@@ -192,6 +192,7 @@ const state = {
 
 function fmtNum(n) {
   const v = Number(n);
+  if (Math.abs(v) >= 10000) return Math.round(v).toLocaleString();
   return Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100);
 }
 
@@ -307,6 +308,7 @@ async function loadDay() {
     api("GET", "api/trackers?include_hidden=true"),
     api("GET", "api/supply").catch(() => []),
   ]);
+  state.inbox = isToday ? await api("GET", "api/inbox").catch(() => []) : [];
   state.supply = new Map(supply.map((x) => [x.tracker_id, x]));
   state.dayEntries = entries;
   state.prevEntries = prevEntries;
@@ -539,8 +541,10 @@ function drawCheckin(view) {
       editing ? null : progressLine(isToday)),
     editing
       ? el("button", { type: "button", class: "primary small", onclick: () => { state.editing = false; drawCheckin(view); } }, "Done")
-      : el("button", { type: "button", class: "iconbtn", "aria-label": "Edit dashboard", title: "Edit dashboard",
-          onclick: () => { state.editing = true; drawCheckin(view); } }, svgIcon(ICONS.edit)),
+      : el("div", { class: "head-actions" },
+          inboxButton(),
+          el("button", { type: "button", class: "iconbtn", "aria-label": "Edit dashboard", title: "Edit dashboard",
+            onclick: () => { state.editing = true; drawCheckin(view); } }, svgIcon(ICONS.edit))),
   );
 
   const sections = dashboardSections(editing).filter((s) => editing || (!s.hidden && s.items.length));
@@ -592,6 +596,70 @@ function progressLine(isToday) {
       el("span", { style: `width:${Math.round((done / items.length) * 100)}%` })) : null,
     el("span", { class: "row-sub" }, parts.join(" · ")));
 }
+
+/* ---------- notifications inside the app ---------- */
+
+function inboxButton() {
+  const n = (state.inbox || []).length;
+  return el("button", { type: "button", class: "iconbtn inbox-btn", title: "Notifications",
+    "aria-label": n ? `Notifications, ${n} waiting` : "Notifications", onclick: openInbox },
+    svgIcon(ICONS.bell), n ? el("span", { class: "badge", "aria-hidden": "true" }, String(n)) : null);
+}
+
+async function answerInbox(item, verb, reason) {
+  try {
+    state.inbox = await api("POST", `api/inbox/${item.id}`, { verb, reason: reason || null });
+    toast(verb === "TAKEN" ? "Taken" : verb === "SNOOZE" ? "Snoozed" : verb === "SKIP" ? "Skipped" : "Done");
+    await refreshCheckin();
+    if (document.getElementById("sheet").open) drawInbox();
+  } catch (err) { toast(err.message); }
+}
+
+function drawInbox() {
+  const sheet = document.getElementById("sheet");
+  const items = state.inbox || [];
+  const card = (item) => {
+    if (item.kind === "supply") {
+      const t = state.trackers.find((x) => x.id === item.tracker_id);
+      return el("div", { class: "inbox-item" },
+        el("div", { class: "inbox-text" }, el("strong", {}, t ? t.name : "Medication"),
+          el("span", { class: `callout ${item.level}` }, item.title)),
+        t ? el("div", { class: "inbox-actions" }, el("button", { type: "button", class: "secondary small", onclick: () => openMedSheet(t) }, "Open")) : null);
+    }
+    const buttons = item.actions.map((a, i) => el("button", { type: "button", class: i === 0 ? "primary small" : "secondary small",
+      onclick: () => (a.reason ? openSkipSheet({ name: item.title.replace(/^Time for (your )?/, "") }, (r) => answerInbox(item, a.verb, r)) : answerInbox(item, a.verb)) },
+      a.label));
+    if (item.kind === "checkin") {
+      buttons.push(el("button", { type: "button", class: "secondary small", onclick: () => { sheet.close(); window.scrollTo({ top: 0, behavior: "smooth" }); } }, "Check in now"));
+    }
+    return el("div", { class: "inbox-item" },
+      el("div", { class: "inbox-text" },
+        el("strong", {}, item.title),
+        item.message ? el("span", { class: "inbox-message" }, item.message) : null,
+        item.snoozed_until ? el("span", { class: "row-sub" }, `Snoozed until ${niceTime(item.snoozed_until)}`) : null),
+      el("div", { class: "inbox-actions" }, buttons));
+  };
+  sheet.replaceChildren(el("div", { class: "sheet-body" },
+    el("div", { class: "med-sheet-head" }, el("h2", {}, "Notifications"),
+      el("button", { type: "button", class: "iconbtn plain", "aria-label": "Close", onclick: () => sheet.close() }, svgIcon(ICONS.close))),
+    items.length ? el("div", { class: "inbox" }, items.map(card))
+      : el("p", { class: "row-sub" }, "You're all caught up. Reminders show here as well as on your phone, and answering in either place clears both.")));
+}
+
+async function openInbox() {
+  try { state.inbox = await api("GET", "api/inbox"); } catch { /* show what we have */ }
+  drawInbox();
+  const sheet = document.getElementById("sheet");
+  if (!sheet.open) sheet.showModal();
+}
+
+// Keep Check-in current while it's open: new reminders appear without a reload.
+setInterval(() => {
+  const sheet = document.getElementById("sheet");
+  if (document.visibilityState === "visible" && currentTab() === "checkin" && !state.editing && sheet && !sheet.open
+      && state.day === isoDay(new Date()) && state.me
+      && !(document.activeElement && document.activeElement.matches("input, textarea, select"))) refreshCheckin().catch(() => {});
+}, 60000);
 
 /* ---------- pausing reminders ---------- */
 
@@ -1483,7 +1551,8 @@ function trackerRow(t, view) {
         tile(svgIcon(ICONS.minus), { class: "tile tile-square", "aria-label": `Fewer ${t.name}`, disabled: current <= 0, onclick: () => step(-1) }),
         el("output", { class: "tile-num", "aria-live": "polite" }, fmtNum(current)),
         tile(svgIcon(ICONS.plus), { class: "tile tile-square", "aria-label": `More ${t.name}`, onclick: () => step(1) }));
-      const text = goalAside(c, current) || (current ? `${fmtNum(current)} ${c.unit || ""}`.trim() : null);
+      const text = [goalAside(c, current) || (current ? `${fmtNum(current)} ${c.unit || ""}`.trim() : null),
+        latest && latest.source === "ha" ? "from Home Assistant" : null].filter(Boolean).join(" · ") || null;
       return brow(t, levelLine(text, current ? "var(--accent)" : "var(--muted)"), stepper);
     }
     const input = el("input", {
@@ -1494,7 +1563,7 @@ function trackerRow(t, view) {
         quickSave([v === "" ? { tracker_id: t.id, clear: true } : { tracker_id: t.id, value_num: Number(v) }]);
       },
     });
-    return brow(t, levelLine(goalAside(c, val ?? 0), "var(--accent)"),
+    return brow(t, levelLine([goalAside(c, val ?? 0), latest && latest.source === "ha" ? "from Home Assistant" : null].filter(Boolean).join(" · ") || null, "var(--accent)"),
       el("div", { class: "level-tiles" }, input, c.unit ? el("span", { class: "row-sub" }, c.unit) : null));
   }
 
@@ -1515,7 +1584,8 @@ function trackerRow(t, view) {
       faceIcon(v - 1),
       tile(String(v), { class: `tile tile-rating${quality === v ? " on" : ""}`, "aria-pressed": String(quality === v),
         "aria-label": `Sleep quality ${qcfg.labels[v - 1]}`, onclick: () => save(hours, quality === v ? null : v) }))));
-    const text = [hours != null ? `${fmtNum(hours)} hours` : null, quality ? `${qcfg.labels[quality - 1]} sleep` : null].filter(Boolean).join(", ");
+    const text = [hours != null ? `${fmtNum(hours)} hours` : null, quality ? `${qcfg.labels[quality - 1]} sleep` : null].filter(Boolean).join(", ")
+      + (latest && latest.source === "ha" ? " · from Home Assistant" : "");
     return brow(t, levelLine(text || `Not logged yet${yesterdayText(t)}`, quality ? scaleColor(qcfg, quality) : "var(--muted)",
       latest ? () => removeEntry(latest) : null), stepper,
       el("div", { class: "brow-below" }, el("span", { class: "row-sub" }, "How well did you sleep?"), qualityTiles));
@@ -2148,6 +2218,44 @@ function openTrackerSheet(t, view) {
       ].filter(Boolean));
     }
   }
+  // ----- fill in from Home Assistant (counts, amounts and sleep) -----
+  const VALUE_CHOICES = [["latest", "The latest reading (weight, last night's sleep)"],
+    ["highest", "The highest that day (totals that reset at midnight, like steps)"],
+    ["average", "The average that day (heart rate)"]];
+  const src = c.source || null;
+  let srcPicker = null;
+  const srcValue = selectOf(VALUE_CHOICES, src ? src.value : "latest");
+  const srcPickerSlot = el("div", {}, el("p", { class: "row-sub" }, "Loading sensors from Home Assistant…"));
+  const srcDetails = el("details", { class: "more", open: !!src },
+    el("summary", {}, "Fill in from Home Assistant"),
+    el("p", { class: "hint", style: "margin:0 0 10px" },
+      "Use a sensor you already have, such as steps or sleep from Google Health, weight from your scales, or anything else in Home Assistant. It fills in each day by itself, and anything you enter yourself always wins."),
+    el("div", { class: "field" }, el("span", {}, "Sensor"), srcPickerSlot),
+    field("Which reading counts for the day", srcValue));
+  haOptions().then((ha) => {
+    const sensors = (ha.sensors || []).map((x) => ({
+      id: x.entity_id, name: x.name, icon: ICONS.home,
+      sub: [x.state != null && x.state !== "unknown" ? `${x.state}${x.unit ? " " + x.unit : ""}` : null, x.entity_id].filter(Boolean).join(" · "),
+      stateClass: x.state_class }));
+    srcPicker = entityPicker({ items: sensors, selected: src ? [src.entity_id] : [], addLabel: "Search sensors", single: true,
+      empty: ha.connected ? "No sensors with numbers were found." : "Can't reach Home Assistant right now." });
+    srcPickerSlot.replaceChildren(srcPicker.node);
+    // guess the right reading when a sensor is picked: running totals use the highest
+    srcPicker.node.addEventListener("click", () => setTimeout(() => {
+      const id = srcPicker.value()[0];
+      const pick = sensors.find((x) => x.id === id);
+      if (pick && !src) srcValue.value = pick.stateClass === "total_increasing" || /step/.test(id) ? "highest" : "latest";
+    }, 0));
+  });
+  const readSource = () => {
+    const id = srcPicker && srcPicker.value()[0];
+    return id ? { entity_id: id, value: srcValue.value } : null;
+  };
+  const drawSource = () => {
+    const mode = inputs.mode ? inputs.mode.value : null;
+    srcDetails.hidden = !(kind === "sleep" || (kind === "factor" && mode && mode !== "bool"));
+  };
+
   drawExtra();
   kindSelect.addEventListener("change", () => {
     kind = kindSelect.value;
@@ -2163,6 +2271,9 @@ function openTrackerSheet(t, view) {
   };
   kindSelect.addEventListener("change", drawKindFields);
   kindSelect.addEventListener("change", drawKindExample);
+  kindSelect.addEventListener("change", () => { drawSource(); if (inputs.mode) inputs.mode.addEventListener("change", drawSource); });
+  if (inputs.mode) inputs.mode.addEventListener("change", drawSource);
+  drawSource();
   drawKindFields();
 
   function readConfig() {
@@ -2171,7 +2282,9 @@ function openTrackerSheet(t, view) {
       return { min: 1, max: Number(inputs.scale.value), labels };
     }
     if (kind === "tags") return { options: inputs.options.value.split("\n").map((s) => s.trim()).filter(Boolean) };
-    if (kind === "factor") return { mode: inputs.mode.value, unit: inputs.unit.value.trim(), goal: inputs.goal.value === "" ? null : inputs.goal.value };
+    if (kind === "factor") return { mode: inputs.mode.value, unit: inputs.unit.value.trim(), goal: inputs.goal.value === "" ? null : inputs.goal.value,
+      source: inputs.mode.value === "bool" ? null : readSource() };
+    if (kind === "sleep") return { source: readSource() };
     if (kind === "medication") return { dose: inputs.dose.value === "" ? null : inputs.dose.value, unit: inputs.unit.value.trim(),
       notes: inputs.notes.value.trim(), quantity: inputs.quantity.value || 1, counted_as: inputs.counted.value.trim() };
     return {};
@@ -2187,6 +2300,7 @@ function openTrackerSheet(t, view) {
     groupFieldNode,
     groupList,
     extra,
+    srcDetails,
     freqFieldNode,
     el("div", { class: "actions" },
       el("button", { type: "submit", class: "primary" }, isNew ? "Add" : "Save changes"),
@@ -2229,6 +2343,13 @@ function openTrackerSheet(t, view) {
         : await api("PATCH", `api/trackers/${t.id}`, payload);
       sheet.close();
       toast(isNew ? `${payload.name.trim()} added` : "Changes saved");
+      const newSrc = payload.config.source;
+      if (newSrc && (!src || src.entity_id !== newSrc.entity_id || src.value !== newSrc.value)) {
+        try {
+          const r = await api("POST", `api/trackers/${saved.id}/source/fill`, { days: 30 });
+          toast(r.days ? `Filled in ${r.days === 1 ? "1 day" : r.days + " days"} from Home Assistant` : "Linked. It fills in as new readings arrive");
+        } catch (e) { toast(e.message); }
+      }
       await redraw();
       if (isNew && kind === "medication") openScheduleSheet(saved, view, { turnOn: true });
     } catch (e) {
@@ -2716,7 +2837,7 @@ Object.assign(ICONS, {
 });
 
 // items: [{ id, name, sub, icon }]. Returns { node, value() }.
-function entityPicker({ items, selected, addLabel, empty }) {
+function entityPicker({ items, selected, addLabel, empty, single = false }) {
   let chosen = selected.filter(Boolean);
   const byId = new Map(items.map((x) => [x.id, x]));
   for (const id of chosen) if (!byId.has(id)) byId.set(id, { id, name: id, sub: "Not found in Home Assistant right now", icon: ICONS.bell, missing: true });
@@ -2751,7 +2872,7 @@ function entityPicker({ items, selected, addLabel, empty }) {
     list.replaceChildren(...(opts.length ? opts.map((x, i) => el("button", {
       type: "button", role: "option", class: `ha-option${i === active ? " active" : ""}`, "aria-selected": String(i === active),
       onmousedown: (ev) => ev.preventDefault(), // keep focus in the search box
-      onclick: () => { chosen.push(x.id); input.value = ""; active = -1; changed(); input.focus(); },
+      onclick: () => { if (single) chosen = [x.id]; else chosen.push(x.id); input.value = ""; active = -1; changed(); if (!single) input.focus(); else input.blur(); },
     }, el("span", { class: "ha-option-icon" }, svgIcon(x.icon)),
       el("span", { class: "ha-option-text" }, el("span", {}, x.name), x.sub ? el("span", { class: "row-sub" }, x.sub) : null)))
       : [el("p", { class: "row-sub ha-none" }, input.value ? "No matches" : "Everything available is already added")]));
@@ -2765,12 +2886,19 @@ function entityPicker({ items, selected, addLabel, empty }) {
     const opts = options();
     if (ev.key === "ArrowDown") { ev.preventDefault(); active = Math.min(opts.length - 1, active + 1); drawList(); }
     else if (ev.key === "ArrowUp") { ev.preventDefault(); active = Math.max(0, active - 1); drawList(); }
-    else if (ev.key === "Enter") { ev.preventDefault(); if (opts[active]) { chosen.push(opts[active].id); input.value = ""; changed(); } }
+    else if (ev.key === "Enter") { ev.preventDefault(); if (opts[active]) { if (single) chosen = [opts[active].id]; else chosen.push(opts[active].id); input.value = ""; changed(); } }
     else if (ev.key === "Escape" && !list.hidden) { ev.preventDefault(); ev.stopPropagation(); input.blur(); }
   });
   drawChips();
   const node = el("div", { class: "ha-picker" }, chips,
     items.length || chosen.length ? searchBox : null, items.length || chosen.length ? list : notice(empty));
+  if (single) {
+    // With one choice, the search box steps aside once something is chosen; × brings it back.
+    const draw = () => { searchBox.hidden = chosen.length > 0; };
+    chips.addEventListener("click", () => setTimeout(draw, 0));
+    input.addEventListener("blur", () => setTimeout(draw, 150));
+    draw();
+  }
   return { node, value: () => chosen.slice() };
 }
 

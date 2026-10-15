@@ -593,7 +593,8 @@ class Database:
                         raise ValidationError(f"{tracker['name']} already has an entry that day")
             conn.execute(
                 """
-                UPDATE entries SET day = ?, logged_at = ?, value_num = ?, value_json = ?, note = ?, updated_at = ?
+                UPDATE entries SET day = ?, logged_at = ?, value_num = ?, value_json = ?, note = ?, updated_at = ?,
+                                   source = CASE WHEN source = 'ha' THEN 'app' ELSE source END
                 WHERE id = ? AND user_id = ?
                 """,
                 (

@@ -70,6 +70,10 @@ The medication's sheet shows "About 28 days left", when it runs out, repeats lef
 
 Check-in shows one warning under a medication, only when something needs doing. Warnings are also sent to your devices once (between 9am and 8pm) and fire a `wellbeing_tracker_reminder` event with `type: supply` and `stage` set to `low`, `out` or `script`.
 
+### Notifications in the app
+
+The bell at the top of Check-in shows how many reminders are waiting. Tap it to see them with the same words and buttons as on your phone. Answering in either place clears both.
+
 ### Pausing and checking reminders
 
 - **Settings → Reminders → Pause reminders**: for an hour, until tomorrow morning, a few days, a week or a time you choose. Nothing is sent to phones or speakers until then, but doses still show in the app, and anything still due comes back afterwards. Check-in shows a banner with **Resume**.
@@ -104,6 +108,18 @@ Combine medications due at the same time into one reminder, offer **Undo** for a
 ## Water reminders
 
 Give **Water** (or any count or amount you track) a **daily goal** in Settings, then turn on **Settings → Reminders → Water reminders**. You'll get a nudge when you haven't logged any water for the time you choose, between the hours you choose, with buttons to log one or two drinks straight from the notification. Reminders stop once you reach your goal.
+
+## Filling things in from Home Assistant
+
+Steps, sleep, weight, heart rate and anything else Home Assistant already knows can fill in your tracking for you. Edit a count, an amount or Sleep, open **Fill in from Home Assistant**, search for the sensor, and choose which reading counts for the day:
+
+- **The latest reading**: weight, last night's sleep
+- **The highest that day**: totals that reset at midnight, like steps
+- **The average that day**: heart rate
+
+Linking fills in the last 30 days from Home Assistant's history, then keeps up every 15 minutes. Values filled in this way say "from Home Assistant" on Check-in. Anything you enter or correct yourself always wins and isn't overwritten.
+
+Good sources: the Google Health integration (Fitbit, Pixel Watch and other devices that sync to Google), Health Connect sensors in the Home Assistant Companion app, Withings, and Sleep as Android.
 
 ## Appearance
 

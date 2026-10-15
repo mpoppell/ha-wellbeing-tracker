@@ -20,6 +20,8 @@ Frequency:
 
 from __future__ import annotations
 
+import re
+
 from typing import Any
 
 KINDS = ("rating", "tags", "symptom", "medication", "factor", "sleep", "note")
@@ -111,7 +113,11 @@ def normalise_config(kind: str, config: dict | None) -> dict:
             out["unit"] = str(config["unit"])[:20]
         if mode != "bool" and config.get("goal") not in (None, "", 0):
             out["goal"] = _positive(config["goal"], "Daily goal")
+        if mode != "bool" and config.get("source"):
+            out["source"] = normalise_source(config["source"])
         return out
+    if kind == "sleep":
+        return {"source": normalise_source(config["source"])} if config.get("source") else {}
     if kind == "medication":
         out = {}
         if config.get("dose") not in (None, ""):
@@ -129,6 +135,22 @@ def normalise_config(kind: str, config: dict | None) -> dict:
                 out[field] = str(config[field]).strip()[:limit]
         return out
     return {}
+
+
+SOURCE_VALUES = ("latest", "highest", "average")
+
+
+def normalise_source(src) -> dict:
+    """Fill something in from a Home Assistant sensor. 'value' picks which reading counts for the day."""
+    if not isinstance(src, dict):
+        raise ValidationError("Choose a Home Assistant sensor")
+    entity = str(src.get("entity_id") or "")
+    if not re.match(r"^(sensor|input_number|number)\.[a-z0-9_]+$", entity):
+        raise ValidationError("Choose a Home Assistant sensor")
+    value = src.get("value") or "latest"
+    if value not in SOURCE_VALUES:
+        raise ValidationError("Choose which reading counts for the day")
+    return {"entity_id": entity, "value": value}
 
 
 def _positive(value, label: str) -> float | int:
@@ -186,7 +208,7 @@ def validate_value(tracker: dict, item: dict) -> dict:
                 raise ValidationError(f"{tracker['name']}: must be yes or no")
             v = int(v)
         elif mode == "count":
-            if v < 0 or v != int(v) or v > 1000:
+            if v < 0 or v != int(v) or v > 1000000:
                 raise ValidationError(f"{tracker['name']}: must be a whole number")
             v = int(v)
         elif v < 0 or v > 100000:

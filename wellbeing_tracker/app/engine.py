@@ -46,6 +46,8 @@ from .trackers import ValidationError
 
 log = logging.getLogger(__name__)
 
+SOURCE_SYNC_EVERY = timedelta(minutes=15)
+
 FRACTIONS = {0.25: "¼", 0.5: "½", 0.75: "¾"}
 
 
@@ -125,6 +127,7 @@ class Engine:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.lock = asyncio.Lock()
         self._toggle_echo: dict[str, datetime] = {}
+        self._next_source_sync: datetime | None = None
 
     # ================= settings =================
 
@@ -245,6 +248,12 @@ class Engine:
                 self._supply_alerts(conn, now, out)
             await self._flush(out)
             await self._send_due(now)
+        if self._next_source_sync is None or now >= self._next_source_sync:
+            self._next_source_sync = now + SOURCE_SYNC_EVERY
+            try:
+                await self.sync_sources()
+            except Exception:
+                log.exception("Filling in from Home Assistant failed")
 
     def _local_today(self, now: datetime):
         return now.astimezone(self.tz).date()
@@ -1691,6 +1700,155 @@ class Engine:
                 out.add("notify", r["user_id"], {"title": self.SUPPLY_TITLES[kind].format(name=r["name"]),
                                                  "message": message, "data": data})
                 out.add("event", r["user_id"], None, kind, [{"name": r["name"], "time": None}], "supply")
+
+
+    # ================= notifications inside the app =================
+
+    def _preview(self, rid: int, now: datetime) -> dict | None:
+        """The notification a reminder would send right now, without sending it or changing anything."""
+        out = Outbox()
+        try:
+            with self.db.connect() as conn:
+                self._send_one(conn, rid, now, out)
+                raise _DryRun
+        except _DryRun:
+            pass
+        return next((c[2] for c in out.calls if c[0] == "notify"), None)
+
+    def inbox(self, user_id: str) -> list[dict]:
+        """Reminders waiting for an answer, with the same words and buttons as on the phone,
+        plus supply warnings."""
+        now = self.clock()
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM reminders WHERE user_id = ? AND status IN ('active', 'snoozed') AND sends > 0 "
+                "AND kind IN ('dose', 'last_call', 'checkin', 'hydration') ORDER BY due_at",
+                (user_id,),
+            ).fetchall()
+        items = []
+        for r in rows:
+            payload = self._preview(r["id"], now)
+            if not payload:
+                continue
+            actions = []
+            for a in payload.get("data", {}).get("actions", []):
+                verb = a["action"][len(ACTION_PREFIX):].rsplit("_", 1)[0]
+                actions.append({"verb": verb, "label": a["title"], "reason": a.get("behavior") == "textInput"})
+            items.append({
+                "id": r["id"], "kind": r["kind"], "title": payload["title"],
+                "message": payload["message"].replace("\nOpen Wellbeing to answer.", ""),
+                "actions": actions,
+                "snoozed_until": parse(r["next_at"]).astimezone(self.tz).strftime("%H:%M")
+                if r["status"] == "snoozed" and r["next_at"] else None,
+                "since": parse(r["due_at"]).astimezone(self.tz).strftime("%H:%M") if r["due_at"] else None,
+            })
+        for sup in self.supply_overview(user_id):
+            for alert in sup["status"]["alerts"]:
+                items.append({"id": f"supply-{sup['tracker_id']}-{alert['kind']}", "kind": "supply",
+                              "tracker_id": sup["tracker_id"], "level": alert["level"],
+                              "title": alert["text"], "message": "", "actions": []})
+        return items
+
+    async def answer_from_app(self, user_id: str, rid: int, verb: str, reply: str | None) -> None:
+        with self.db.connect() as conn:
+            r = conn.execute("SELECT user_id FROM reminders WHERE id = ?", (rid,)).fetchone()
+        if not r or r["user_id"] != user_id:
+            raise NotFound("Reminder not found")
+        await self.answer_reminder(rid, verb, reply, source="app")
+
+    # ================= filled in from Home Assistant =================
+
+    async def sync_sources(self, days: int = 2, user_id: str | None = None, tracker_id: int | None = None) -> int:
+        """Fill in linked items from Home Assistant's history for the last few days. Returns days written."""
+        if not hasattr(self.ha, "get_history"):
+            return 0
+        with self.db.connect() as conn:
+            rows = conn.execute("SELECT * FROM trackers WHERE kind IN ('factor', 'sleep')").fetchall()
+        linked = []
+        for r in rows:
+            cfg = json.loads(r["config"] or "{}")
+            if cfg.get("source") and (user_id is None or r["user_id"] == user_id) and (tracker_id is None or r["id"] == tracker_id):
+                linked.append({**dict(r), "config": cfg})
+        if not linked:
+            return 0
+        units = {s.get("entity_id"): (s.get("attributes") or {}).get("unit_of_measurement")
+                 for s in await self.ha.get_states()}
+        now = self.clock()
+        today = self._local_today(now)
+        first = today - timedelta(days=days - 1)
+        start = datetime.combine(first, time(0, 0), self.tz)
+        written = 0
+        for t in linked:
+            src = t["config"]["source"]
+            points = await self.ha.get_history(src["entity_id"], iso(start), iso(now))
+            values = day_values(points, src["value"], self.tz, start)
+            scale = 1.0
+            if t["kind"] == "sleep":
+                scale = {"min": 1 / 60, "s": 1 / 3600, "ms": 1 / 3600000, "d": 24}.get(units.get(src["entity_id"]) or "h", 1.0)
+            with self.db.connect() as conn:
+                for day, (value, at) in values.items():
+                    if self._write_from_ha(conn, t, day, value * scale, at):
+                        written += 1
+        return written
+
+    def _write_from_ha(self, conn, t: dict, day, value: float, at: datetime) -> bool:
+        """One day's value. Anything you entered yourself that day is left alone."""
+        rows = conn.execute("SELECT id, source, value_num, value_json FROM entries WHERE tracker_id = ? AND day = ?",
+                            (t["id"], day.isoformat())).fetchall()
+        if any(r["source"] != "ha" for r in rows):
+            return False
+        if t["kind"] == "sleep":
+            if not 0 <= value <= 24:
+                return False
+            num, js = None, json.dumps({"hours": round(value, 2), "quality": None})
+        else:
+            if value < 0:
+                return False
+            num = int(round(value)) if t["config"].get("mode") == "count" else round(value, 2)
+            js = None
+        logged = at.astimezone(self.tz).isoformat(timespec="seconds")
+        stamp = iso(self.clock())
+        if rows:
+            r = rows[0]
+            if r["value_num"] == num and r["value_json"] == js:
+                return False
+            conn.execute("UPDATE entries SET value_num = ?, value_json = ?, logged_at = ?, updated_at = ? WHERE id = ?",
+                         (num, js, logged, stamp, r["id"]))
+        else:
+            conn.execute(
+                "INSERT INTO entries (user_id, tracker_id, day, logged_at, value_num, value_json, source, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'ha', ?, ?)",
+                (t["user_id"], t["id"], day.isoformat(), logged, num, js, stamp, stamp))
+        return True
+
+
+class _DryRun(Exception):
+    pass
+
+
+def day_values(points: list[dict], how: str, tz, start: datetime) -> dict:
+    """{local day: (value, time of the last reading)} from Home Assistant history.
+
+    latest: the last reading of the day (weight, last night's sleep)
+    highest: the highest that day (daily totals that reset at midnight, like steps)
+    average: the mean of the day's readings (heart rate)
+    """
+    by_day: dict = {}
+    for p in points:
+        try:
+            v = float(p.get("state"))
+        except (TypeError, ValueError):
+            continue  # unknown, unavailable
+        when = parse(p.get("last_changed") or p.get("last_updated"))
+        if when <= start + timedelta(seconds=1):
+            continue  # the state carried over from before the window, not a reading in it
+        by_day.setdefault(when.astimezone(tz).date(), []).append((when, v))
+    out = {}
+    for day, readings in by_day.items():
+        vals = [v for _, v in readings]
+        value = vals[-1] if how == "latest" else max(vals) if how == "highest" else sum(vals) / len(vals)
+        out[day] = (value, readings[-1][0])
+    return out
 
 
 def _hours(gap: timedelta) -> str:

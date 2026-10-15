@@ -1253,3 +1253,26 @@ details.more[open] > summary { margin-bottom: 8px; }
 .ha-option-text .row-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0; }
 
 .ha-none { margin: 0; padding: 12px; }
+
+/* ---------- notifications inside the app ---------- */
+
+.head-actions { display: flex; gap: 8px; }
+
+.inbox-btn { position: relative; }
+
+.inbox-btn svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+.inbox-btn .badge {
+  position: absolute; top: -4px; right: -4px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px;
+  background: var(--danger); color: #fff; font-size: 0.75rem; font-weight: 700; line-height: 20px; text-align: center;
+}
+
+.inbox { display: grid; gap: 10px; }
+
+.inbox-item { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+
+.inbox-text { display: grid; gap: 4px; justify-items: start; }
+
+.inbox-message { white-space: pre-wrap; color: var(--ink); }
+
+.inbox-actions { display: flex; flex-wrap: wrap; gap: 8px; }

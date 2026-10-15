@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.12.0
+
+- **Fill in from Home Assistant.** Counts, amounts and Sleep can be linked to any Home Assistant sensor, such as steps, sleep or weight from Google Health, or your scales. Choose which reading counts for the day: the latest (weight, last night's sleep), the highest (daily totals like steps) or the average (heart rate). Linking fills in the last 30 days from Home Assistant's history, then keeps up every 15 minutes. Anything you enter or correct yourself always wins. Sleep in minutes or seconds is turned into hours.
+- **Notifications in the app.** A bell on Check-in shows how many reminders are waiting. It lists the same reminders as your phone, worded the same, with the same buttons (Taken, Snooze, Skip, mood answers, water amounts), plus supply warnings. Answering in the app clears it from your phone, and the other way round.
+- Check-in keeps itself up to date while it's open, so new reminders appear without reloading (not while you're typing).
+- Big numbers have separators ("10,800 steps").
+- Counts can now go up to 1,000,000 (for steps).
+
 ## 0.11.1
 
 - **Choosing devices and speakers works like Home Assistant.** What you've chosen shows as chips (tap × to remove), and **Add a device** / **Add a speaker** searches what Home Assistant has right now, with an icon and a line saying what each one is ("Phone · with Taken, Snooze and Skip", "Notify entity · message only"). Arrow keys and Enter work too.
