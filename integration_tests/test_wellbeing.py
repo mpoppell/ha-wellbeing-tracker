@@ -31,8 +31,10 @@ def person(uid="u1", name="Matthew Poppell", inbox=None):
                     "script_reason": "repeats run out", "repeats": 1, "refill_from": None,
                     "alerts": [{"kind": "low", "level": "warning", "text": "8 days left"}]}],
         "doctor": {"by": "2026-12-12", "by_text": "12 Dec", "names": ["Clonidine"]},
-        "medications": [{"id": 18, "name": "Clonidine"}],
+        "medications": [{"id": 18, "name": "Clonidine", "emoji": None, "usual": 1}],
         "mood": {"value": 8, "max": 10, "label": "Good", "at": "2026-10-15T09:00:00+11:00"},
+        "mood_scale": {"tracker_id": 1, "min": 1, "max": 10, "labels": ["Awful", "Very bad", "Bad", "Poor", "Meh",
+                                                                       "Okay", "Fine", "Good", "Very good", "Great"]},
     }
 
 
@@ -118,3 +120,23 @@ async def test_card_is_served_and_loaded_everywhere(hass: HomeAssistant, aioclie
     urls = hass.data[DATA_EXTRA_MODULE_URL].urls
     assert any(u.startswith(CARD_URL) for u in urls)
 
+
+
+async def test_bubble_friendly_entities(hass: HomeAssistant, aioclient_mock):
+    await setup(hass, aioclient_mock)
+    button = hass.states.get("button.clonidine_log_dose")
+    assert button.attributes["due"] is True and button.attributes["next_amount"] == "½ dose (50 mcg)"
+    aioclient_mock.post(f"{URL}/api/integration/log_dose", json=person(inbox=[]))
+    await hass.services.async_call("button", "press", {"entity_id": "button.clonidine_log_dose"}, blocking=True)
+    assert aioclient_mock.mock_calls[-1][2] == {"user_id": "u1", "medication": "18", "quantity": 0.5}
+
+    mood = hass.states.get("select.wellbeing_matthew_poppell_mood")
+    assert mood.state == "8 Good"
+    assert mood.attributes["options"][0] == "10 Great" and len(mood.attributes["options"]) == 10
+    aioclient_mock.post(f"{URL}/api/integration/log", json=person(inbox=[]))
+    await hass.services.async_call("select", "select_option",
+                                   {"entity_id": "select.wellbeing_matthew_poppell_mood", "option": "6 Okay"}, blocking=True)
+    assert aioclient_mock.mock_calls[-1][2] == {"user_id": "u1", "item": "mood", "value": 6}
+
+    await hass.services.async_call(DOMAIN, "log", {"item": "Energy", "value": 7}, blocking=True)
+    assert aioclient_mock.mock_calls[-1][2] == {"user_id": "u1", "item": "Energy", "value": 7.0}

@@ -1792,9 +1792,12 @@ class Engine:
             "doctor": {"by": due_scripts[0]["script_by"], "by_text": due_scripts[0]["script_by_text"],
                        "names": [s["name"] for s in due_scripts if s["script_by"] == due_scripts[0]["script_by"]]}
             if due_scripts else None,
-            "medications": [{"id": t["id"], "name": t["name"]} for t in trackers.values()
-                            if t["kind"] == "medication" and not t["hidden"]],
+            "medications": [{"id": t["id"], "name": t["name"], "emoji": t.get("emoji"),
+                             "usual": t["config"].get("quantity") or 1}
+                            for t in trackers.values() if t["kind"] == "medication" and not t["hidden"]],
             "mood": mood,
+            "mood_scale": {"tracker_id": mood_t["id"], "min": mood_t["config"]["min"], "max": mood_t["config"]["max"],
+                           "labels": mood_t["config"].get("labels") or []} if mood_t else None,
         }
 
     async def answer_from_app(self, user_id: str, rid: int, verb: str, reply: str | None) -> None:

@@ -53,6 +53,9 @@ class WellbeingApi:
         return await self._request("POST", "answer", {"user_id": user_id, "reminder_id": reminder_id,
                                                        "answer": answer, "reason": reason})
 
+    async def log(self, user_id: str, item: str, value: float) -> dict:
+        return await self._request("POST", "log", {"user_id": user_id, "item": item, "value": value})
+
     async def log_dose(self, user_id: str, medication: str, quantity: float | None = None) -> dict:
         return await self._request("POST", "log_dose", {"user_id": user_id, "medication": medication,
                                                          "quantity": quantity})

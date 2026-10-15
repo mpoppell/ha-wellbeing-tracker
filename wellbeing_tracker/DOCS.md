@@ -134,7 +134,55 @@ The app installs a companion integration into Home Assistant for you. After inst
 
 It shows whoever is looking at the dashboard. To always show one person, choose their "Reminders waiting" sensor in the card's settings.
 
-**Entities**, for each person: *Reminders waiting*, *Next dose*, *Mood today*, *See the doctor by*. For each medication you count: *Supply left* (days) and *New script needed by*.
+Everything the card shows is set in its editor: which sections and in what order, only some medications, the style (Home Assistant, Bubble Card, or no background), compact, hiding the title, and hiding it when there's nothing to do.
+
+**Entities**, for each person: *Reminders waiting*, *Next dose*, *Mood today*, *See the doctor by*, and a *Mood* select (choosing an option logs it). For each medication: a *Log dose* button. For each medication you count: *Supply left* (days) and *New script needed by*.
+
+### With Bubble Card
+
+A pop-up with the card inside, styled to match:
+
+```yaml
+type: vertical-stack
+cards:
+  - type: custom:bubble-card
+    card_type: pop-up
+    hash: '#wellbeing'
+    name: Wellbeing
+    icon: mdi:heart-pulse
+  - type: custom:wellbeing-card
+    style: bubble
+    hide_header: true
+```
+
+A Bubble button that logs a dose, with today's supply as a sub-button:
+
+```yaml
+type: custom:bubble-card
+card_type: button
+button_type: name
+entity: button.clonidine_log_dose
+name: Clonidine
+icon: mdi:pill
+tap_action:
+  action: perform-action
+  perform_action: button.press
+  target:
+    entity_id: button.clonidine_log_dose
+sub_button:
+  - entity: sensor.clonidine_supply_left
+    show_state: true
+    show_background: false
+```
+
+Mood with Bubble's select card:
+
+```yaml
+type: custom:bubble-card
+card_type: select
+entity: select.wellbeing_matthew_poppell_mood
+name: Mood today
+```
 
 **Actions** for automations and scripts:
 
@@ -144,6 +192,13 @@ data:
   medication: Clonidine
   quantity: 0.5          # optional, the usual amount if left out
   person: Matthew Poppell  # optional when run by that person
+```
+
+```yaml
+action: wellbeing_tracker.log
+data:
+  item: Mood
+  value: 8
 ```
 
 ```yaml

@@ -26,7 +26,7 @@ from .api import WellbeingApi, WellbeingError, read_connection
 from .const import CARD_URL, DOMAIN, REMINDER_EVENT
 from .coordinator import WellbeingCoordinator
 
-PLATFORMS = [Platform.SENSOR]
+PLATFORMS = [Platform.BUTTON, Platform.SELECT, Platform.SENSOR]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 HERE = Path(__file__).parent
 
@@ -36,6 +36,11 @@ ANSWER_SCHEMA = vol.Schema({
     vol.Required("reminder_id"): vol.Coerce(int),
     vol.Required("answer"): cv.string,
     vol.Optional("reason"): cv.string,
+})
+LOG_SCHEMA = vol.Schema({
+    vol.Required("item"): cv.string,
+    vol.Required("value"): vol.Coerce(float),
+    vol.Optional("person"): cv.string,
 })
 LOG_DOSE_SCHEMA = vol.Schema({
     vol.Required("medication"): cv.string,
@@ -106,7 +111,18 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             raise HomeAssistantError(str(err)) from err
         coord.update_person(fresh)
 
+    async def log(call: ServiceCall) -> None:
+        coord = coordinator()
+        person = find_person(coord, call, call.data.get("person"))
+        await check_allowed(call, person["user_id"])
+        try:
+            fresh = await coord.api.log(person["user_id"], call.data["item"], call.data["value"])
+        except WellbeingError as err:
+            raise HomeAssistantError(str(err)) from err
+        coord.update_person(fresh)
+
     hass.services.async_register(DOMAIN, "answer_reminder", answer_reminder, schema=ANSWER_SCHEMA)
+    hass.services.async_register(DOMAIN, "log", log, schema=LOG_SCHEMA)
     hass.services.async_register(DOMAIN, "log_dose", log_dose, schema=LOG_DOSE_SCHEMA)
     return True
 

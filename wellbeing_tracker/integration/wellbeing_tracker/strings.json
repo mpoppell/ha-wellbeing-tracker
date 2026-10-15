@@ -19,18 +19,54 @@
       "name": "Answer a reminder",
       "description": "Answers a Wellbeing reminder, the same as tapping its button on your phone.",
       "fields": {
-        "reminder_id": {"name": "Reminder", "description": "The reminder's number, from the Reminders waiting sensor."},
-        "answer": {"name": "Answer", "description": "taken, snooze or skip. Mood and water buttons work too, for example MOOD_7 or WATER_1."},
-        "reason": {"name": "Reason", "description": "Why it was skipped (optional)."}
+        "reminder_id": {
+          "name": "Reminder",
+          "description": "The reminder's number, from the Reminders waiting sensor."
+        },
+        "answer": {
+          "name": "Answer",
+          "description": "taken, snooze or skip. Mood and water buttons work too, for example MOOD_7 or WATER_1."
+        },
+        "reason": {
+          "name": "Reason",
+          "description": "Why it was skipped (optional)."
+        }
       }
     },
     "log_dose": {
       "name": "Log a dose",
       "description": "Logs a medication as taken now. It counts towards a reminder that's due and comes off the supply.",
       "fields": {
-        "medication": {"name": "Medication", "description": "Its name, as in the Wellbeing app."},
-        "quantity": {"name": "How many", "description": "Leave empty for the usual amount."},
-        "person": {"name": "Person", "description": "Who took it. Leave empty for whoever runs the action."}
+        "medication": {
+          "name": "Medication",
+          "description": "Its name, as in the Wellbeing app."
+        },
+        "quantity": {
+          "name": "How many",
+          "description": "Leave empty for the usual amount."
+        },
+        "person": {
+          "name": "Person",
+          "description": "Who took it. Leave empty for whoever runs the action."
+        }
+      }
+    },
+    "log": {
+      "name": "Log a rating",
+      "description": "Logs a rating such as Mood or Energy, as of now.",
+      "fields": {
+        "item": {
+          "name": "Rating",
+          "description": "Its name, for example Mood."
+        },
+        "value": {
+          "name": "Value",
+          "description": "For example 8 on a 1 to 10 scale."
+        },
+        "person": {
+          "name": "Person",
+          "description": "Who it's for. Leave empty for whoever runs the action."
+        }
       }
     }
   }

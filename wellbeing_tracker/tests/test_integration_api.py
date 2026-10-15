@@ -39,7 +39,7 @@ def test_overview_and_logging_a_dose(tmp_path):
                                                                        "repeats": 0})
     [person] = core.get("/api/integration/overview", headers=auth).json()["people"]
     assert person["user_id"] == "u1" and person["name"] == "Matthew Poppell"
-    assert person["medications"] == [{"id": med["id"], "name": "Clonidine"}]
+    assert person["medications"] == [{"id": med["id"], "name": "Clonidine", "emoji": None, "usual": 1}]
     assert person["supply"][0]["name"] == "Clonidine" and person["supply"][0]["days_left"] == 15
     assert person["doctor"]["names"] == ["Clonidine"]
     after = core.post("/api/integration/log_dose", headers=auth, json={"user_id": "u1", "medication": "clonidine"}).json()
@@ -64,3 +64,14 @@ def test_installer_copies_once_and_writes_the_connection(tmp_path):
     assert companion.install(config, "http://app:8099", "key", source) == "updated"
     assert (target / "addon.json").exists()  # the connection survives an update
     assert companion.install(tmp_path / "missing", "u", "k", source) == "unavailable"
+
+
+def test_logging_mood(tmp_path):
+    _, token, ingress, core = setup(tmp_path)
+    auth = {"Authorization": f"Bearer {token}"}
+    ingress.get("/api/me", headers=user_headers("u1"))
+    after = core.post("/api/integration/log", headers=auth, json={"user_id": "u1", "item": "mood", "value": 8}).json()
+    assert after["mood"]["value"] == 8 and after["mood"]["label"] == "Good"
+    assert after["mood_scale"]["max"] == 10 and len(after["mood_scale"]["labels"]) == 10
+    bad = core.post("/api/integration/log", headers=auth, json={"user_id": "u1", "item": "mood", "value": 11})
+    assert bad.status_code == 422

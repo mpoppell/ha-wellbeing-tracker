@@ -7,16 +7,16 @@ from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import WellbeingConfigEntry
-from .const import DOMAIN
 from .coordinator import WellbeingCoordinator
+from .entity import medication_device, person_device
 
 # The card reads these. They change often and say little on their own, so they aren't recorded.
-CARD_ATTRIBUTES = frozenset({"inbox", "doses", "supply", "doctor", "medications", "mood", "next_dose", "panel_path"})
+CARD_ATTRIBUTES = frozenset({"inbox", "doses", "supply", "doctor", "medications", "mood", "mood_scale",
+                             "next_dose", "panel_path"})
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: WellbeingConfigEntry,
@@ -53,13 +53,8 @@ class PersonEntity(CoordinatorEntity[WellbeingCoordinator], SensorEntity):
     def __init__(self, coordinator: WellbeingCoordinator, user_id: str) -> None:
         super().__init__(coordinator)
         self.user_id = user_id
-        name = (coordinator.person(user_id) or {}).get("name", "Someone")
         self._attr_unique_id = f"{user_id}_{self.key}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, f"person_{user_id}")}, name=f"Wellbeing {name}",
-            manufacturer="Wellbeing Tracker", entry_type=DeviceEntryType.SERVICE,
-            # "Visit" on the device page opens the Wellbeing app inside Home Assistant
-            configuration_url=f"homeassistant:/{panel}" if (panel := (coordinator.data or {}).get("panel_path")) else None)
+        self._attr_device_info = person_device(coordinator, user_id)
 
     @property
     def person(self) -> dict:
@@ -91,7 +86,8 @@ class RemindersSensor(PersonEntity):
             "user_id": self.user_id,
             "person": p.get("name"),
             "panel_path": (self.coordinator.data or {}).get("panel_path"),
-            **{k: p.get(k) for k in ("inbox", "doses", "next_dose", "supply", "doctor", "medications", "mood")},
+            **{k: p.get(k) for k in ("inbox", "doses", "next_dose", "supply", "doctor", "medications", "mood",
+                                     "mood_scale")},
         }
 
 
@@ -156,12 +152,8 @@ class MedicationEntity(CoordinatorEntity[WellbeingCoordinator], SensorEntity):
         super().__init__(coordinator)
         self.user_id = user_id
         self.tracker_id = tracker_id
-        med = self.med or {}
         self._attr_unique_id = f"med_{tracker_id}_{self.key}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, f"med_{tracker_id}")}, name=med.get("name", "Medication"),
-            manufacturer="Wellbeing Tracker", model="Medication", entry_type=DeviceEntryType.SERVICE,
-            via_device=(DOMAIN, f"person_{user_id}"))
+        self._attr_device_info = medication_device(user_id, tracker_id, (self.med or {}).get("name", "Medication"))
 
     @property
     def med(self) -> dict | None:

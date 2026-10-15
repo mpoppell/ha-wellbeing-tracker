@@ -170,6 +170,20 @@ def create_app(settings: Settings, background: bool = False) -> FastAPI:
         await engine.tick()
         return engine.person_overview(user)
 
+    @app.post("/api/integration/log")
+    async def integration_log(payload: dict = Body(...)) -> dict:
+        """Log a rating such as Mood from Home Assistant (a dashboard button or a select)."""
+        user = _person(str(payload.get("user_id") or ""))
+        want = str(payload.get("item") or "").strip().lower()
+        items = [t for t in db.list_trackers(user["id"]) if t["kind"] == "rating"]
+        item = next((t for t in items if want in (str(t["id"]), (t.get("key") or "").lower(), t["name"].lower())), None)
+        if not item:
+            raise NotFound(f"No rating called {payload.get('item')!r}")
+        db.save_checkin(user["id"], datetime.now(engine.tz).isoformat(timespec="seconds"),
+                        [{"tracker_id": item["id"], "value_num": payload.get("value")}], source="homeassistant")
+        await engine.checkin_logged(user["id"])
+        return engine.person_overview(user)
+
     @app.post("/api/integration/log_dose")
     async def integration_log_dose(payload: dict = Body(...)) -> dict:
         user = _person(str(payload.get("user_id") or ""))

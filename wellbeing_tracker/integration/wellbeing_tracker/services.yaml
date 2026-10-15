@@ -42,3 +42,23 @@ log_dose:
       example: Matthew Poppell
       selector:
         text:
+
+log:
+  fields:
+    item:
+      required: true
+      example: Mood
+      selector:
+        text:
+    value:
+      required: true
+      example: 8
+      selector:
+        number:
+          min: 0
+          max: 10
+          mode: box
+    person:
+      example: Matthew Poppell
+      selector:
+        text:

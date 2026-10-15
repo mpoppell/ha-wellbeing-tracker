@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.14.0
+
+**Choose what the dashboard card shows, and use it with Bubble Card.**
+
+- In the card's visual editor:
+  - **What to show, in order**: reminders waiting, today's medications, supply and doctor, mood. Drag to reorder.
+  - **Only these medications**: pick their "Log dose" buttons.
+  - **Style**: Home Assistant, **Bubble Card** (rounded bubbles that follow Bubble Card's theme colours and accent), or **No background** for inside Bubble pop-ups and stacks.
+  - **Compact**, **Hide the title**, and **Hide when there's nothing to do** (it stays visible while you edit the dashboard).
+- **Mood on the card**: five quick answers (Great, Good, Okay, Bad, Awful) that log your mood straight away.
+- **New entities that Bubble Card's own cards can use**:
+  - a **Log dose** button for each medication (logs the dose that's due, or the next one today), for Bubble buttons;
+  - a **Mood** select for each person (choosing an option logs it), for Bubble's select card.
+- New action: `wellbeing_tracker.log` logs a rating such as Mood or Energy.
+
 ## 0.13.0
 
 **Wellbeing in Home Assistant: a dashboard card, entities and actions.**
