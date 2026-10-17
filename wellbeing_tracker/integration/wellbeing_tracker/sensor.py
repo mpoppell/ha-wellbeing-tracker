@@ -87,7 +87,7 @@ class RemindersSensor(PersonEntity):
             "person": p.get("name"),
             "panel_path": (self.coordinator.data or {}).get("panel_path"),
             **{k: p.get(k) for k in ("inbox", "doses", "next_dose", "supply", "doctor", "medications", "mood",
-                                     "mood_scale")},
+                                     "mood_scale", "delivery")},
         }
 
 

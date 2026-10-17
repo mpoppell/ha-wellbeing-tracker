@@ -219,6 +219,11 @@ def run() -> None:
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)  # one line per HA call is too chatty
     app = create_app(settings, background=True)
+    # The dashboard card asks for an update every 30 seconds; logging each one buries everything else.
+    class _QuietPolls(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            return "/api/integration/overview" not in record.getMessage()
+    logging.getLogger("uvicorn.access").addFilter(_QuietPolls())
     uvicorn.run(app, host="0.0.0.0", port=settings.port, log_level=settings.log_level.lower(), proxy_headers=False)
 
 

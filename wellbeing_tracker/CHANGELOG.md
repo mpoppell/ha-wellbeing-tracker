@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.21.2
+
+**See where your reminders went.**
+
+- Every notification the app tries to send is now written to its log: "Sent 'Time for Vyvanse' to mobile_app_s26u", or why it wasn't ("reminders are paused until…", "nowhere chosen to send reminders", or Home Assistant refusing it).
+- The "Reminders waiting" entity in Home Assistant shows a `delivery` attribute: where reminders go, any pause or quiet hours, and the last notification and what happened to it. (Restart Home Assistant after updating to get the new attribute.)
+- The log no longer fills up with the dashboard card's update every 30 seconds.
+
 ## 0.21.1
 
 - Only people who've used the app (logged something, added a medicine or changed a setting) get a device and entities in Home Assistant. Someone who only opened it once, or a tool that looked at it, no longer appears.

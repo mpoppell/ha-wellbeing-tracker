@@ -1342,3 +1342,20 @@ def test_too_late_for_a_prompt(env):
     clock.set("2026-10-14T16:00")  # the app was off at lunchtime: don't ask hours later
     run(engine.tick())
     assert ha.notifications() == []
+
+
+def test_delivery_status_says_what_happened(env):
+    db, ha, clock, engine, med = env
+    m = med("Vyvanse", dose=30, unit="mg")
+    run(engine.save_schedule("u1", m["id"], True, {"times": ["06:30"]}))
+    clock.set("2026-10-14T06:30")
+    run(engine.tick())
+    last = engine.delivery_status("u1")["last"]
+    assert last["result"] == "sent" and last["title"].startswith("Time for") and last["detail"] == "mobile_app_tablet"
+    engine.save_person("u1", {"devices": []})
+    run(engine._notify("u1", {"title": "Test", "message": "x"}))
+    assert engine.delivery_status("u1")["last"]["result"] == "nowhere"
+    engine.save_person("u1", {"devices": ["mobile_app_s26u"], "paused_until": "2026-10-15T07:00:00+11:00"})
+    run(engine._notify("u1", {"title": "Test", "message": "x"}))
+    s = engine.delivery_status("u1")
+    assert s["last"]["result"] == "paused" and s["paused_until"] == "2026-10-15T07:00:00+11:00"

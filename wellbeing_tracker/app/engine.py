@@ -128,6 +128,7 @@ class Engine:
         self.panel_path = panel_path
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.lock = asyncio.Lock()
+        self.last_delivery: dict[str, dict] = {}
         self._toggle_echo: dict[str, datetime] = {}
         self._next_source_sync: datetime | None = None
 
@@ -1519,21 +1520,35 @@ class Engine:
     async def _notify(self, user_id: str, payload: dict, force: bool = False) -> None:
         person = self.get_person(user_id)
         clearing = payload.get("message") == "clear_notification"
+        title = payload.get("title") or ""
         # While reminders are paused nothing new arrives, but old ones can still be cleared.
         if not force and not clearing and is_paused(person, self.clock()):
+            log.info("Not sent '%s': reminders are paused until %s", title, person["paused_until"])
+            self._delivery(user_id, title, "paused", f"Reminders paused until {person['paused_until']}")
+            return
+        if not person["devices"] and not clearing:
+            log.info("Not sent '%s': nowhere chosen to send reminders", title)
+            self._delivery(user_id, title, "nowhere", "No devices chosen in Settings, Where reminders go")
             return
         for target in person["devices"]:
             try:
-                await self._send_to(target, payload, clearing)
-            except Exception:
+                ok = await self._send_to(target, payload, clearing)
+                if not clearing:
+                    log.info("Sent '%s' to %s%s", title, target, "" if ok is not False else " (Home Assistant refused it)")
+                    self._delivery(user_id, title, "sent" if ok is not False else "failed", target)
+            except Exception as err:
                 log.exception("Sending to %s failed", target)
+                self._delivery(user_id, title, "failed", f"{target}: {err}")
+
+    def _delivery(self, user_id: str, title: str, result: str, detail: str) -> None:
+        """The last notification each person was sent, and what happened, for Home Assistant to show."""
+        self.last_delivery[user_id] = {"at": iso(self.clock()), "title": title, "result": result, "detail": detail}
 
     async def _send_to(self, target: str, payload: dict, clearing: bool) -> None:
         """Companion app phones get everything, including buttons. Anything else that can receive a
         notification gets the words, with a pointer to the app, since it can't show buttons."""
         if target.startswith("mobile_app_"):
-            await self.ha.call_service("notify", target, payload)
-            return
+            return await self.ha.call_service("notify", target, payload)
         data = payload.get("data") or {}
         tag = data.get("tag")
         if target == "persistent_notification":
@@ -2057,6 +2072,17 @@ class Engine:
                               "title": alert["text"], "message": "", "actions": []})
         return items
 
+    def delivery_status(self, user_id: str) -> dict:
+        """Where reminders go and whether anything would stop them, plus the last one sent."""
+        person = self.get_person(user_id)
+        now = self.clock()
+        return {
+            "devices": person["devices"],
+            "paused_until": person["paused_until"] if is_paused(person, now) else None,
+            "quiet_hours": f"{person['quiet']['start']}-{person['quiet']['end']}" if person["quiet"]["enabled"] else None,
+            "last": self.last_delivery.get(user_id),
+        }
+
     def person_overview(self, user: dict) -> dict:
         """Everything the dashboard card and Home Assistant entities show for one person."""
         uid = user["id"]
@@ -2090,6 +2116,7 @@ class Engine:
         return {
             "user_id": uid,
             "name": user["display_name"] or user["username"] or "Someone",
+            "delivery": self.delivery_status(uid),
             "inbox": self.inbox(uid),
             "doses": [{k: d[k] for k in ("dose_id", "tracker_id", "name", "amount", "quantity", "time", "status")} for d in doses],
             "next_dose": next_dose,
