@@ -149,7 +149,7 @@ def create_app(settings: Settings, background: bool = False) -> FastAPI:
     async def integration_overview() -> dict:
         await engine.tick()
         return {"version": __version__, "panel_path": settings.panel_path,
-                "people": [engine.person_overview(u) for u in db.list_users()]}
+                "people": [engine.person_overview(u) for u in db.active_users()]}
 
     def _person(user_id: str) -> dict:
         user = next((u for u in db.list_users() if u["id"] == user_id), None)

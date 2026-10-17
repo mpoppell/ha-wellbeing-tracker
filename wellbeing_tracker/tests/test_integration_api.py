@@ -75,3 +75,14 @@ def test_logging_mood(tmp_path):
     assert after["mood_scale"]["max"] == 10 and len(after["mood_scale"]["labels"]) == 10
     bad = core.post("/api/integration/log", headers=auth, json={"user_id": "u1", "item": "mood", "value": 11})
     assert bad.status_code == 422
+
+
+def test_people_who_never_used_the_app_are_left_out(tmp_path):
+    from app.db import Database
+    db = Database(tmp_path / "w.db")
+    db.migrate()
+    db.touch_user("real", "r", "Real")
+    db.touch_user("bot", None, "HA-MCP Server")
+    t = db.list_trackers("real")[0]
+    db.save_checkin("real", "2026-10-17T09:00:00+11:00", [{"tracker_id": t["id"], "value_num": 5}])
+    assert [u["id"] for u in db.active_users()] == ["real"]

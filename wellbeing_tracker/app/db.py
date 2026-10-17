@@ -343,6 +343,15 @@ class Database:
         with self.connect() as conn:
             return [dict(r) for r in conn.execute("SELECT * FROM users ORDER BY first_seen")]
 
+    def active_users(self) -> list[dict]:
+        """People who've actually used the app: logged something, added a medicine or changed a setting. Someone who
+        only opened it once (or a tool that looked at it) doesn't get entities in Home Assistant."""
+        with self.connect() as conn:
+            return [dict(r) for r in conn.execute(
+                "SELECT * FROM users u WHERE EXISTS (SELECT 1 FROM entries e WHERE e.user_id = u.id) "
+                "OR EXISTS (SELECT 1 FROM person_settings p WHERE p.user_id = u.id) "
+                "OR EXISTS (SELECT 1 FROM trackers t WHERE t.user_id = u.id AND t.kind = 'medication') ORDER BY first_seen")]
+
     def user_count(self) -> int:
         with self.connect() as conn:
             return conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]

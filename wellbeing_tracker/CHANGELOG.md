@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.21.1
+
+- Only people who've used the app (logged something, added a medicine or changed a setting) get a device and entities in Home Assistant. Someone who only opened it once, or a tool that looked at it, no longer appears.
+
 ## 0.21.0
 
 **A clock for every time, and an accessibility pass.**
