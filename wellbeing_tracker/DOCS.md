@@ -193,7 +193,17 @@ It shows whoever is looking at the dashboard. To always show one person, choose 
 
 Everything the card shows is set in its editor: which sections and in what order, only some medications, the style (Home Assistant, Bubble Card, or no background), compact, hiding the title, and hiding it when there's nothing to do.
 
-**Entities**, for each person: *Reminders waiting*, *Next dose*, *Mood today*, *See the doctor by*, and a *Mood* select (choosing an option logs it). For each medication: a *Log dose* button. For each medication you count: *Supply left* (days) and *New script needed by*.
+**Outdoors card**: add a card and choose **Outdoors** (or `type: custom:wellbeing-outdoors-card`). It turns the forecast into what to do:
+
+- **Heads-up**, only when it matters: weather warnings, fire danger of High or worse, strong UV (with the hours to protect your skin), rain soon or later today, pollen, a cold morning or a hot day. The three most important are shown in full and the rest as small chips. From 6pm it looks at tomorrow instead. Tap one for the details.
+- **Now and today**: the temperature now, marked on today's low-to-high range.
+- **Rain, next 12 hours**: one bar per hour. Filled bars reach your rain alert level, shown as a dashed line.
+- **UV, pollen and fire danger** on scales with a word for each level, so colour is never the only clue.
+- **Next days**: rain chance and each day's temperature range on one shared scale.
+
+Choose which parts to show and their order in the card's editor. **Alert levels** sets when something is called out (rain chance, UV index, pollen 0 to 5, cold below, hot from). Use a number helper (Settings → Helpers → Number) for any of them, and use the same helper in your automations so they agree. **Where the information comes from** is filled in automatically for Bureau of Meteorology and Google pollen; change anything there. Turn on **Hide the card on quiet days** and show only Heads-up to put it at the top of a dashboard.
+
+ *Reminders waiting*, *Next dose*, *Mood today*, *See the doctor by*, and a *Mood* select (choosing an option logs it). For each medication: a *Log dose* button. For each medication you count: *Supply left* (days) and *New script needed by*.
 
 ### With Bubble Card
 

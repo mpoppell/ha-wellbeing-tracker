@@ -33,3 +33,9 @@ def test_companion_integration_version_matches():
     import json
     manifest = json.loads((APP_DIR / "integration" / "wellbeing_tracker" / "manifest.json").read_text())
     assert manifest["version"] == config_version(), "Bump integration/wellbeing_tracker/manifest.json too"
+
+
+def test_dashboard_cards_are_ascii():
+    # Served without a charset; non-ASCII characters can arrive garbled.
+    for js in (APP_DIR / "integration" / "wellbeing_tracker" / "frontend").glob("*.js"):
+        js.read_text(encoding="utf-8").encode("ascii")

@@ -23,7 +23,7 @@ from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
 
 from .api import WellbeingApi, WellbeingError, read_connection
-from .const import CARD_URL, DOMAIN, REMINDER_EVENT
+from .const import CARD_URL, DOMAIN, OUTDOORS_CARD_URL, REMINDER_EVENT
 from .coordinator import WellbeingCoordinator
 
 PLATFORMS = [Platform.BUTTON, Platform.SELECT, Platform.SENSOR]
@@ -52,10 +52,13 @@ LOG_DOSE_SCHEMA = vol.Schema({
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """The dashboard card and the actions, set up once."""
     integration = await async_get_integration(hass, DOMAIN)
-    await hass.http.async_register_static_paths(
-        [StaticPathConfig(CARD_URL, str(HERE / "frontend" / "wellbeing-card.js"), False)])
-    # Loaded on every dashboard, so the card works without adding a resource by hand.
+    await hass.http.async_register_static_paths([
+        StaticPathConfig(CARD_URL, str(HERE / "frontend" / "wellbeing-card.js"), False),
+        StaticPathConfig(OUTDOORS_CARD_URL, str(HERE / "frontend" / "wellbeing-outdoors-card.js"), False),
+    ])
+    # Loaded on every dashboard, so the cards work without adding a resource by hand.
     add_extra_js_url(hass, f"{CARD_URL}?v={integration.version}")
+    add_extra_js_url(hass, f"{OUTDOORS_CARD_URL}?v={integration.version}")
 
     def coordinator() -> WellbeingCoordinator:
         entries = hass.config_entries.async_loaded_entries(DOMAIN)

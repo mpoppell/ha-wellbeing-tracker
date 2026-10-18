@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.22.0
+
+**An Outdoors card: what the weather means for your day.**
+
+- New dashboard card, **Outdoors** (`type: custom:wellbeing-outdoors-card`). At the top, a heads-up only when something needs doing: a Bureau weather warning, High-or-worse fire danger, strong UV with the hours to protect your skin, rain in the next few hours or later today, pollen, a cold morning or a hot day. Quiet days just say "Nothing to watch for today."
+- From 6pm it looks ahead to tomorrow, so you can lay out an umbrella or warm layers the night before. "Coming up" chips flag the next rainy, hot, cold or high-pollen day.
+- Below that: the temperature now on today's low-to-high range, rain chance for the next 12 hours, UV, pollen and fire danger on labelled scales, and the next few days on one shared temperature scale so they're easy to compare.
+- Alert levels can be numbers or helpers. Pointing the card and your automations at the same helpers keeps them in step.
+- It finds Bureau of Meteorology and Google pollen sensors automatically; anything can be changed in the card's editor. "Hide the card on quiet days" lets the heads-up sit at the top of a dashboard and only appear when it matters.
+- Restart Home Assistant after updating to load the new card.
+
 ## 0.21.2
 
 **See where your reminders went.**

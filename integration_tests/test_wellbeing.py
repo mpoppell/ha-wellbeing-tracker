@@ -9,7 +9,7 @@ from homeassistant.exceptions import ServiceValidationError, Unauthorized
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.wellbeing_tracker.const import CARD_URL, DOMAIN
+from custom_components.wellbeing_tracker.const import CARD_URL, DOMAIN, OUTDOORS_CARD_URL
 
 URL = "http://882b0587-wellbeing-tracker:8099"
 CONNECTION = {"url": URL, "token": "secret"}
@@ -119,6 +119,10 @@ async def test_card_is_served_and_loaded_everywhere(hass: HomeAssistant, aioclie
     from homeassistant.components.frontend import DATA_EXTRA_JS_URL_ES5, DATA_EXTRA_MODULE_URL  # noqa: F401
     urls = hass.data[DATA_EXTRA_MODULE_URL].urls
     assert any(u.startswith(CARD_URL) for u in urls)
+    resp = await client.get(OUTDOORS_CARD_URL)
+    assert resp.status == 200
+    assert "customElements.define(\"wellbeing-outdoors-card\"" in await resp.text()
+    assert any(u.startswith(OUTDOORS_CARD_URL) for u in urls)
 
 
 
