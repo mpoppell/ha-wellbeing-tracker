@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.23.0
+
+**Medications when you wake up, an antihistamine only on high-pollen days, and an easier time picker.**
+
+Medications
+- New way to time a reminder: **When I wake up**. The app counts you as up when your phone comes off the charger in the morning (after 4am, after at least 3 hours on charge), and reminds you anyway at 10am if it didn't see you get up. The Due card shows what's waiting, with an **I'm up** button.
+- New **Only on some days**: add a medication to the day only when a Home Assistant number is high enough, such as pollen at or above your alert level. It's checked through the day and added at most once a day. Google Pollen's forecast for today is used even before the sensor rolls over at midnight.
+
+Time picker
+- Tapping a number on the dial always updates the big numbers at the top (before, it didn't if you'd tapped the big hour first).
+- The big numbers switch between hours and minutes instead of opening the keyboard. Use the keyboard button to type, and the clock button to go back.
+- A tap on the minutes lands on the nearest 5; drag for an exact minute. A line under the time says what to do next.
+- Tapping outside the clock no longer closes it and loses your time; use Cancel.
+
+Outdoors card
+- Today's temperature is now a line graph: measured so far (solid) and forecast (dashed), with the high, low and now marked, and a reading for any time on hover or tap.
+- New cards fill in every source they find (including your Bureau thermometer), so the editor shows exactly what the card uses.
+
+Fixes
+- Choosing from a search list inside a form could un-choose it straight away. Fields with more than one control are now labelled groups, which also fixes screen reader names.
+
 ## 0.22.0
 
 **An Outdoors card: what the weather means for your day.**

@@ -70,6 +70,24 @@ Reminders are off until you switch them on for a medication.
 1. **Settings → Reminders → Devices and alerts → Change**: tick where your reminders should go, and tap **Send a test**. Phones signed in to the Home Assistant Companion app get **Taken**, **Snooze** and **Skip** buttons. Anything else Home Assistant can notify (a notify entity, Telegram, a TV, Home Assistant's own notification bell) gets the message with "Open Wellbeing to answer".
 2. **Settings → Meds/Supplements**: tap the bell next to a medication, turn on **Remind me**, and pick the times and days.
 
+### When I wake up
+
+Choose **When I wake up** instead of set times, for medications you take as soon as you're up.
+
+- The app counts you as up when your phone comes off the charger in the morning: after 4am, having charged for at least 3 hours, so a night-time unplug or a quick top-up doesn't count. Choose the phone's *Is charging* sensor from the Home Assistant app (Companion app → Manage sensors → Battery).
+- **Remind me anyway** at a set time (10am unless you change it) for mornings the phone wasn't on the charger.
+- The **Due** card shows what's waiting for you to get up, with an **I'm up** button.
+- These settings are shared by every "when I wake up" reminder. **Fine-tune** changes the earliest time and how long a charge counts as a night.
+- Set it up after you've already got up, and it starts tomorrow.
+
+### Only on some days
+
+Turn on **Only on some days** to add a medication to the day only when a Home Assistant number is high enough, for example an antihistamine when pollen is at least Moderate. Choose the sensor, then either type a number or follow a number helper (such as the Outdoors card's pollen alert level, so they always agree).
+
+- It's checked through the day: if pollen rises at lunchtime, it's added then.
+- Once added it stays for the day, and it's never added more than once a day.
+- Pollen sensors that forecast by day (Google Pollen) use today's forecast, even just after midnight before the sensor itself has moved on to the new day.
+
 ### A different amount at each time
 
 Under **Times and amounts**, each time has its own **How many**. For example, Clonidine:
@@ -196,7 +214,7 @@ Everything the card shows is set in its editor: which sections and in what order
 **Outdoors card**: add a card and choose **Outdoors** (or `type: custom:wellbeing-outdoors-card`). It turns the forecast into what to do:
 
 - **Heads-up**, only when it matters: weather warnings, fire danger of High or worse, strong UV (with the hours to protect your skin), rain soon or later today, pollen, a cold morning or a hot day. The three most important are shown in full and the rest as small chips. From 6pm it looks at tomorrow instead. Tap one for the details.
-- **Now and today**: the temperature now, marked on today's low-to-high range.
+- **Now and today**: the temperature now, and a line graph of today: solid for what your thermometer has measured so far, dashed for the forecast for the rest of the day. The high and low are labelled; hover or tap for any time.
 - **Rain, next 12 hours**: one bar per hour. Filled bars reach your rain alert level, shown as a dashed line.
 - **UV, pollen and fire danger** on scales with a word for each level, so colour is never the only clue.
 - **Next days**: rain chance and each day's temperature range on one shared scale.

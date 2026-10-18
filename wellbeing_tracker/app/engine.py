@@ -32,9 +32,11 @@ from .schedule import (
     amount_at,
     describe_time,
     due_times,
+    first_unplug,
     in_quiet_hours,
     is_paused,
     nag_params,
+    number_for_day,
     runs_on,
     normalise_person_settings,
     normalise_schedule,
@@ -49,6 +51,7 @@ from .trackers import ValidationError
 log = logging.getLogger(__name__)
 
 SOURCE_SYNC_EVERY = timedelta(minutes=15)
+CONDITIONS_EVERY = timedelta(minutes=1)  # how often to re-read wake-up and "only on days when" sensors
 
 FRACTIONS = {0.25: "¼", 0.5: "½", 0.75: "¾"}
 
@@ -131,6 +134,9 @@ class Engine:
         self.last_delivery: dict[str, dict] = {}
         self._toggle_echo: dict[str, datetime] = {}
         self._next_source_sync: datetime | None = None
+        self._ha_states: dict[str, dict] = {}   # states that wake-up and "only when" schedules need
+        self._conditions_at: datetime | None = None
+        self._wake_seen: dict[str, str] = {}    # user -> charger last_changed already looked at
 
     # ================= settings =================
 
@@ -143,7 +149,7 @@ class Engine:
         """Save person settings. Anything not included keeps its current value."""
         current = self.get_person(user_id)
         merged = {**current, **data}
-        for group in ("checkins", "hydration", "dashboard"):
+        for group in ("checkins", "hydration", "dashboard", "wake"):
             if isinstance(data.get(group), dict):
                 merged[group] = {**current[group], **data[group]}
         clean = normalise_person_settings(merged)
@@ -236,6 +242,10 @@ class Engine:
             await asyncio.sleep(interval)
 
     async def tick(self) -> None:
+        try:
+            await self._read_conditions(self.clock())
+        except Exception:
+            log.exception("Reading wake-up and condition sensors failed")
         async with self.lock:
             now = self.clock()
             out = Outbox()
@@ -274,7 +284,14 @@ class Engine:
             if s["mode"] == "after":
                 self._generate_after(conn, row, s, now)
                 continue
-            for day in (today, today + timedelta(days=1)):
+            if s["mode"] == "wake":
+                self._generate_wake(conn, row, s, now)
+                continue
+            # "Only on days when": decided for today only, once the day's number is known.
+            days = (today,) if s.get("only_when") else (today, today + timedelta(days=1))
+            if s.get("only_when") and not self._condition_met(s, today):
+                continue
+            for day in days:
                 for hhmm, due, latest in due_times(s, day, self.tz):
                     if iso(due) < row["active_from"]:
                         continue
@@ -287,6 +304,158 @@ class Engine:
                         (row["user_id"], row["tracker_id"], iso(due), day.isoformat(), hhmm,
                          iso(latest) if latest else None, amount_at(s, hhmm)),
                     )
+
+    # ================= when I wake up, and only on some days =================
+
+    def _wake_settings(self, conn, user_id: str) -> dict:
+        """The person's wake-up settings, with the charging sensor Sleep uses as the default."""
+        w = dict(self._person_for(conn, user_id)["wake"])
+        if not w["entity"]:
+            for r in conn.execute("SELECT config FROM trackers WHERE user_id = ? AND kind = 'sleep'", (user_id,)):
+                charging = (json.loads(r["config"] or "{}").get("nights") or {}).get("charging")
+                if charging:
+                    w["entity"] = charging
+                    break
+        return w
+
+    async def _read_conditions(self, now: datetime) -> None:
+        """At most once a minute: read the sensors that wake-up and "only on days when" schedules
+        need, and notice anyone who has just got up."""
+        if self._conditions_at and now - self._conditions_at < CONDITIONS_EVERY:
+            return
+        self._conditions_at = now
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                "SELECT s.user_id, s.settings FROM schedules s JOIN trackers t ON t.id = s.tracker_id "
+                "WHERE s.enabled = 1 AND t.hidden = 0").fetchall()
+            scheds = [(r["user_id"], schedule_settings(json.loads(r["settings"]))) for r in rows]
+            wake = {u: self._wake_settings(conn, u) for u, s in scheds if s["mode"] == "wake"}
+        wanted = {w["entity"] for w in wake.values() if w["entity"]}
+        for _, s in scheds:
+            ow = s.get("only_when") or {}
+            if ow.get("entity_id"):
+                wanted.add(ow["entity_id"])
+                if isinstance(ow.get("at_least"), str):
+                    wanted.add(ow["at_least"])
+        if not wanted:
+            self._ha_states = {}
+            return
+        states = await self.ha.get_states()
+        self._ha_states = {x.get("entity_id"): x for x in states or [] if x.get("entity_id") in wanted}
+        for user_id, w in wake.items():
+            await self._detect_wake(user_id, w, now)
+
+    async def _detect_wake(self, user_id: str, w: dict, now: datetime) -> None:
+        today = self._local_today(now)
+        h, m = map(int, w["earliest"].split(":"))
+        earliest = datetime.combine(today, time(h, m), self.tz)
+        if now < earliest or not w["entity"]:
+            return
+        with self.db.connect() as conn:
+            if conn.execute("SELECT 1 FROM wake_days WHERE user_id = ? AND day = ?", (user_id, today.isoformat())).fetchone():
+                return
+        st = self._ha_states.get(w["entity"])
+        if not st:
+            return
+        changed = f"{today}|{st.get('last_changed')}"
+        if self._wake_seen.get(user_id) == changed:
+            return  # nothing new since we last looked
+        if not hasattr(self.ha, "get_history"):
+            return
+        hist = await self.ha.get_history(w["entity"], iso(earliest - timedelta(hours=20)), iso(now))
+        if hist:
+            self._wake_seen[user_id] = changed  # only skip next time if this look actually worked
+        woke = first_unplug(hist, earliest, w["min_hours"])
+        if woke:
+            self.mark_awake(user_id, woke, "charger")
+
+    def mark_awake(self, user_id: str, at: datetime, source: str = "you") -> dict:
+        day = at.astimezone(self.tz).date().isoformat()
+        with self.db.connect() as conn:
+            conn.execute("INSERT OR IGNORE INTO wake_days (user_id, day, woke_at, source) VALUES (?, ?, ?, ?)",
+                         (user_id, day, iso(at), source))
+        log.info("%s is up (%s, %s)", user_id, at.astimezone(self.tz).strftime("%H:%M"), source)
+        return self.wake_status(user_id)
+
+    def _condition_met(self, s: dict, day) -> bool:
+        ow = s.get("only_when")
+        if not ow:
+            return True
+        value = number_for_day(self._ha_states.get(ow["entity_id"]), day)
+        limit = ow["at_least"]
+        if isinstance(limit, str):
+            limit = number_for_day(self._ha_states.get(limit), day)
+        return value is not None and limit is not None and value >= limit
+
+    def _generate_wake(self, conn, row, s: dict, now: datetime) -> None:
+        """One dose a day, due when you get up (or at the fallback time if no wake-up is seen)."""
+        tid = row["tracker_id"]
+        today = self._local_today(now)
+        if not runs_on(s, today):
+            return
+        if conn.execute("SELECT 1 FROM doses WHERE tracker_id = ? AND local_day = ? AND status != 'cancelled'",
+                        (tid, today.isoformat())).fetchone():
+            return
+        woke = conn.execute("SELECT woke_at FROM wake_days WHERE user_id = ? AND day = ?",
+                            (row["user_id"], today.isoformat())).fetchone()
+        w = self._wake_settings(conn, row["user_id"])
+        if woke:
+            due = parse(woke["woke_at"]) + timedelta(minutes=s["wake_after"])
+        elif w["fallback"]:
+            h, m = map(int, w["fallback"].split(":"))
+            due = datetime.combine(today, time(h, m), self.tz)
+            if now < due:
+                return
+        else:
+            return
+        if iso(due) < row["active_from"]:
+            return  # set up after today's wake-up (or fallback): starts tomorrow
+        if not self._condition_met(s, today):
+            return
+        latest = None
+        if s["latest_time"]:
+            h, m = map(int, s["latest_time"].split(":"))
+            latest = datetime.combine(today, time(h, m), self.tz)
+            if due >= latest:
+                return
+        local = due.astimezone(self.tz)
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO doses (user_id, tracker_id, due_at, local_day, local_time, latest_at, status)
+            VALUES (?, ?, ?, ?, ?, ?, 'scheduled')
+            """,
+            (row["user_id"], tid, iso(due), today.isoformat(), local.strftime("%H:%M"), iso(latest) if latest else None),
+        )
+
+    def wake_status(self, user_id: str) -> dict:
+        """Whether you're up today, and which medications are waiting for it."""
+        now = self.clock()
+        today = self._local_today(now)
+        with self.db.connect() as conn:
+            woke = conn.execute("SELECT woke_at, source FROM wake_days WHERE user_id = ? AND day = ?",
+                                (user_id, today.isoformat())).fetchone()
+            w = self._wake_settings(conn, user_id)
+            rows = conn.execute(
+                "SELECT s.tracker_id, s.settings, t.name FROM schedules s JOIN trackers t ON t.id = s.tracker_id "
+                "WHERE s.user_id = ? AND s.enabled = 1 AND t.hidden = 0 ORDER BY t.sort_order, t.name", (user_id,)).fetchall()
+            waiting = []
+            for r in rows:
+                s = schedule_settings(json.loads(r["settings"]))
+                if s["mode"] != "wake" or not runs_on(s, today):
+                    continue
+                if conn.execute("SELECT 1 FROM doses WHERE tracker_id = ? AND local_day = ? AND status != 'cancelled'",
+                                (r["tracker_id"], today.isoformat())).fetchone():
+                    continue
+                if s.get("only_when") and not self._condition_met(s, today):
+                    continue
+                waiting.append({"tracker_id": r["tracker_id"], "name": r["name"], "conditional": bool(s.get("only_when"))})
+        return {
+            "woke_at": parse(woke["woke_at"]).astimezone(self.tz).strftime("%H:%M") if woke else None,
+            "source": woke["source"] if woke else None,
+            "waiting": [] if woke else waiting,
+            "fallback": w["fallback"],
+            "entity": w["entity"],
+        }
 
     def _generate_after(self, conn, row, s: dict, now: datetime) -> None:
         """Doses timed from when another dose was actually taken, e.g. Dex 7 hours after Vyvanse."""

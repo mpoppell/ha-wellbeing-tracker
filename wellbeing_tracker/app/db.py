@@ -235,6 +235,17 @@ MIGRATIONS: list[str] = [
     FROM users u WHERE u.seeded = 1
       AND NOT EXISTS (SELECT 1 FROM trackers t WHERE t.user_id = u.id AND t.key = 'mindful');
     """,
+    # 13: when each person woke up, for medications due "when I wake up".
+    # source: charger (came off the charger in the morning) or you (tapped "I'm up").
+    """
+    CREATE TABLE wake_days (
+        user_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        day      TEXT NOT NULL,
+        woke_at  TEXT NOT NULL,
+        source   TEXT NOT NULL,
+        PRIMARY KEY (user_id, day)
+    );
+    """,
 ]
 
 

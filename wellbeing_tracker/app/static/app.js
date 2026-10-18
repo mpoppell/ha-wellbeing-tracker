@@ -33,6 +33,7 @@ function svgIcon(path) {
 }
 
 const ICONS = {
+  sun: "M12 4V2M12 22v-2M4 12H2M22 12h-2M5.6 5.6 4.2 4.2M19.8 19.8l-1.4-1.4M5.6 18.4l-1.4 1.4M19.8 4.2l-1.4 1.4M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0z",
   left: "M15 5l-7 7 7 7",
   right: "M9 5l7 7-7 7",
   up: "M6 15l6-6 6 6",
@@ -357,6 +358,7 @@ async function loadDay() {
     api("GET", "api/supply").catch(() => []),
   ]);
   state.inbox = isToday ? await api("GET", "api/inbox").catch(() => []) : [];
+  state.wake = isToday ? await api("GET", "api/wake").catch(() => null) : null;
   state.sleep = all.some((t) => t.kind === "sleep" && !t.hidden) ? await api("GET", "api/sleep?days=30").catch(() => null) : null;
   state.supply = new Map(supply.map((x) => [x.tracker_id, x]));
   state.dayEntries = entries;
@@ -1277,7 +1279,8 @@ function dueCard(view) {
     && minutesUntil(d.time) >= 0 && minutesUntil(d.time) <= 30);
   const checkinSoon = state.nextCheckin && !waiting.some((x) => x.kind === "checkin")
     && minutesUntil(state.nextCheckin) >= 0 && minutesUntil(state.nextCheckin) <= 30;
-  if (!due.length && !waiting.length && !soon.length && !checkinSoon) return null;
+  const upFor = (state.wake && state.wake.waiting) || [];
+  if (!due.length && !waiting.length && !soon.length && !checkinSoon && !upFor.length) return null;
 
   const act = async (d, action, reason) => {
     if (action === "skip" && reason === undefined) { openSkipSheet(d, (r) => act(d, "skip", r)); return; }
@@ -1328,7 +1331,25 @@ function dueCard(view) {
   if (checkinSoon) later.push({ time: state.nextCheckin, text: "Check-in" });
   later.sort((a, b) => a.time.localeCompare(b.time));
   const count = due.length + waiting.length;
+  // Medications due "when I wake up" that are still waiting for it
+  const wakeRow = upFor.length ? el("div", { class: "wake-row" },
+    el("span", { class: "card-icon" }, svgIcon(ICONS.sun)),
+    el("div", { class: "brow-text" },
+      el("span", { class: "brow-name" }, `When you're up: ${joinNames(upFor.map((x) => x.name))}`),
+      el("span", { class: "row-sub" }, state.wake.fallback
+        ? `Due when your phone comes off the charger, or at ${niceTime(state.wake.fallback)}.`
+        : "Due when your phone comes off the charger.")),
+    el("button", { type: "button", class: "primary small", onclick: async (ev) => {
+      ev.currentTarget.disabled = true;
+      try {
+        state.wake = await api("POST", "api/wake");
+        state.doses = await api("GET", "api/doses/today");
+        toast("Morning! Your wake-up medications are due now");
+        drawCheckin(view);
+      } catch (err) { toast(err.message); ev.currentTarget.disabled = false; }
+    } }, "I'm up")) : null;
   return el("section", { class: `card due-card${count ? "" : " soon-only"}`, "aria-label": count ? "Due now" : "Coming up" },
+    wakeRow,
     count ? [
       el("div", { class: "card-head" },
         el("span", { class: "card-icon" }, svgIcon(ICONS.bell)),
@@ -2612,12 +2633,25 @@ function describeSchedule(sch, t) {
     return text;
   }
   const days = describeDays(s.days) ? ", " + describeDays(s.days) : "";
+  const only = s.only_when ? `, only when ${shortEntityName(s.only_when.entity_id)} is ${typeof s.only_when.at_least === "number" ? s.only_when.at_least : "at your alert level"} or more` : "";
+  if (s.mode === "wake") {
+    const after = s.wake_after ? `${niceGap(s.wake_after)} after you wake up` : "when you wake up";
+    return `Reminds you ${after}${days}${only}`;
+  }
   const amounts = s.amounts || {};
   if (t && Object.keys(amounts).length) {
     const usual = t.config.quantity ?? 1;
-    return `Reminds you: ${joinNames(s.times.map((x) => `${qtyText(t, amounts[x] ?? usual)} at ${niceTime(x)}`))}${days}`;
+    return `Reminds you: ${joinNames(s.times.map((x) => `${qtyText(t, amounts[x] ?? usual)} at ${niceTime(x)}`))}${days}${only}`;
   }
-  return `Reminds you at ${joinNames(s.times.map(niceTime))}${days}`;
+  return `Reminds you at ${joinNames(s.times.map(niceTime))}${days}${only}`;
+}
+
+// "sensor.home_pollen_types_..._overall_pollen_risk_today" -> "overall pollen risk today", for short sentences
+function shortEntityName(id) {
+  const hit = ((haOptionsCache && haOptionsCache.sensors) || []).find((x) => x.entity_id === id);
+  const name = hit ? hit.name : String(id || "").split(".").pop().replace(/_/g, " ");
+  if (/pollen/i.test(name)) return "pollen";
+  return name.replace(/^Home - /, "").replace(/\s*\([^)]*\)/g, "").toLowerCase();
 }
 
 function describeDays(d) {
@@ -2795,8 +2829,25 @@ function settingsRow(t, all, view) {
       : null);
 }
 
+// A single input, select or text box sits in a <label>. Anything richer (pickers, button rows,
+// several inputs) is a labelled group instead: a <label> passes every click inside it on to its
+// first control, which would press the wrong button.
+let fieldSeq = 0;
 function field(label, control, hint) {
-  return el("label", { class: "field" }, el("span", {}, label), control, hint ? el("span", { class: "hint" }, hint) : null);
+  const hintEl = hint ? el("span", { class: "hint" }, hint) : null;
+  if (control instanceof HTMLElement && /^(INPUT|SELECT|TEXTAREA)$/.test(control.tagName)) {
+    return el("label", { class: "field" }, el("span", {}, label), control, hintEl);
+  }
+  const id = `field-${++fieldSeq}`;
+  if (hintEl) hintEl.id = `${id}-hint`;
+  // controls that relied on the label for their name get it from the field's title instead
+  if (control instanceof HTMLElement) {
+    for (const c of control.querySelectorAll("input:not([type=hidden]), select, textarea")) {
+      if (!c.hasAttribute("aria-label") && !c.hasAttribute("aria-labelledby")) c.setAttribute("aria-labelledby", id);
+    }
+  }
+  return el("div", { class: "field", role: "group", "aria-labelledby": id, "aria-describedby": hint ? `${id}-hint` : null },
+    el("span", { id }, label), control, hintEl);
 }
 
 /* ---------- emoji picker ---------- */
@@ -3347,18 +3398,76 @@ async function openScheduleSheet(t, view, opts = {}) {
       "Leave blank for no limit."),
   );
 
+  // ----- when I wake up (the wake-up settings are shared by every wake-up reminder) -----
+  const w = person.wake || {};
+  const wakeAfter = selectOf([[0, "As soon as I'm up"], [15, "15 minutes after"], [30, "30 minutes after"], [60, "1 hour after"],
+    [120, "2 hours after"]], s.wake_after || 0);
+  const chargers = (ha.binary_sensors || []).filter((x) => /charg/.test(x.entity_id))
+    .map((x) => ({ id: x.entity_id, name: x.name, sub: x.entity_id, icon: ICONS.phone }));
+  const otherBinary = (ha.binary_sensors || []).filter((x) => !/charg/.test(x.entity_id))
+    .map((x) => ({ id: x.entity_id, name: x.name, sub: x.entity_id, icon: ICONS.phone }));
+  const charger = entityPicker({ items: [...chargers, ...otherBinary], selected: w.entity ? [w.entity] : (chargers[0] ? [chargers[0].id] : []),
+    addLabel: "Search sensors", single: true, empty: "No sensors found in Home Assistant." });
+  const fallbackOn = switchField("Remind me anyway if I'm not seen getting up", !!w.fallback,
+    "For mornings the phone wasn't on the charger, or you're away.");
+  const fallbackAt = el("time-field", { value: w.fallback || "10:00", "aria-label": "Remind me anyway at" });
+  const fallbackPanel = el("div", { class: "subpanel" }, field("At", fallbackAt));
+  const drawFallback = () => { fallbackPanel.hidden = !fallbackOn.input.checked; };
+  fallbackOn.input.addEventListener("change", drawFallback);
+  drawFallback();
+  const earliest = el("time-field", { value: w.earliest || "04:00", "aria-label": "Not before" });
+  const minHours = selectOf([[1, "1 hour"], [2, "2 hours"], [3, "3 hours"], [4, "4 hours"], [5, "5 hours"]], w.min_hours || 3);
+  const wakeBlock = el("div", {},
+    field("Remind me", wakeAfter),
+    field("How the app knows you're up", charger.node,
+      "Your phone's charging sensor from the Home Assistant app. Coming off the charger in the morning counts as getting up."),
+    fallbackOn.node, fallbackPanel,
+    el("details", { class: "more" }, el("summary", {}, "Fine-tune"),
+      field("Not before", earliest, "Unplugging earlier than this (say, in the night) doesn't count."),
+      field("After charging for at least", minHours, "So a quick top-up isn't mistaken for a night's charge.")),
+    el("p", { class: "row-sub" }, "These wake-up settings are shared by all your \"when I wake up\" reminders. In the app you can also tap I'm up."));
+
+  // ----- only on some days -----
+  const ow = s.only_when || {};
+  const onlyOn = switchField("Only on some days", !!s.only_when,
+    "Add it to the day only when a Home Assistant number is high enough, like an antihistamine when pollen is high.");
+  const sensorItems = (ha.sensors || []).map((x) => ({ id: x.entity_id, name: x.name,
+    sub: `${x.entity_id}${x.state != null ? ` \u00b7 now ${x.state}${x.unit ? " " + x.unit : ""}` : ""}`, icon: ICONS.home }));
+  const onlyEntity = entityPicker({ items: sensorItems, selected: ow.entity_id ? [ow.entity_id] : [],
+    addLabel: "Search sensors, e.g. pollen", single: true, empty: "No sensors with numbers were found." });
+  const helpers = (ha.sensors || []).filter((x) => /^(input_number|number)\./.test(x.entity_id));
+  const limitHelper = selectOf([["", "A number I type"], ...helpers.map((x) => [x.entity_id, `${x.name} (now ${x.state})`])],
+    typeof ow.at_least === "string" ? ow.at_least : "");
+  const limitNum = el("input", { type: "number", step: "any", inputmode: "decimal", style: "width:6em", "aria-label": "At least",
+    value: typeof ow.at_least === "number" ? ow.at_least : 3 });
+  const drawLimit = () => { limitNum.hidden = !!limitHelper.value; };
+  limitHelper.addEventListener("change", drawLimit);
+  drawLimit();
+  const onlyPanel = el("div", { class: "subpanel" },
+    field("When this", onlyEntity.node, "Pollen sensors that forecast by day use today's forecast, even before their own day rolls over."),
+    field("Is at least", el("div", { class: "inline-field" }, limitNum, limitHelper),
+      "Following a helper keeps it in step with anything else that uses it, like the Outdoors card."),
+    el("p", { class: "row-sub" }, "Checked through the day. Once it's added, it stays for the day, at most once."));
+  const drawOnly = () => { onlyPanel.hidden = !onlyOn.input.checked; };
+  onlyOn.input.addEventListener("change", drawOnly);
+  drawOnly();
+
   let schedMode = s.mode;
   const timesBlock = el("div", {}, field("Times and amounts", times.node,
-    `Set how many to take at each time, for example half at 7pm and one at 10pm. Usually ${usualText(t)}.`),
-    field("Days", days.node));
+    `Set how many to take at each time, for example half at 7pm and one at 10pm. Usually ${usualText(t)}.`));
+  const daysBlock = field("Days", days.node);
+  const onlyBlock = el("div", {}, onlyOn.node, onlyPanel);
   const whenSeg = el("div", { class: "seg", role: "group", "aria-label": "How to time it" });
   const drawWhen = () => {
     whenSeg.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === schedMode)));
     timesBlock.hidden = schedMode !== "times";
     afterBlock.hidden = schedMode !== "after";
+    wakeBlock.hidden = schedMode !== "wake";
+    daysBlock.hidden = schedMode === "after";
+    onlyBlock.hidden = schedMode === "after";
   };
-  [["times", "At set times"], ["after", "After another dose"]].forEach(([m, label]) =>
-    whenSeg.append(el("button", { type: "button", "data-mode": m, onclick: () => { schedMode = m; drawWhen(); } }, label)));
+  [["times", "At set times"], ["wake", "When I wake up"], ["after", "After another dose"]].forEach(([m, label]) =>
+    whenSeg.append(el("button", { type: "button", "data-mode": m, onclick: () => { schedMode = m; drawWhen(); markSheetChanged(); } }, label)));
   drawWhen();
 
   const nag = nagEditor(s);
@@ -3398,7 +3507,10 @@ async function openScheduleSheet(t, view, opts = {}) {
   body.append(
     field("When", whenSeg),
     timesBlock,
+    wakeBlock,
     afterBlock,
+    daysBlock,
+    onlyBlock,
     field("If I don't answer", nag.node),
     latestOn.node, latestPanel,
     hard.node, hardPanel,
@@ -3444,8 +3556,23 @@ async function openScheduleSheet(t, view, opts = {}) {
       linked_entity: linked.value || null,
       linked_time_entity: linkedTime.value || null,
       early_window: Number(early.value),
+      wake_after: Number(wakeAfter.value),
+      only_when: onlyOn.input.checked && schedMode !== "after"
+        ? { entity_id: onlyEntity.value()[0] || "", at_least: limitHelper.value || limitNum.value } : null,
     };
+    if (settings.only_when && !settings.only_when.entity_id) {
+      err.textContent = "Choose what to check for \"Only on some days\", or turn it off.";
+      err.hidden = false; err.scrollIntoView({ block: "nearest" }); return;
+    }
     try {
+      if (schedMode === "wake") {
+        await api("PUT", "api/reminders/settings", { wake: {
+          entity: charger.value()[0] || null,
+          fallback: fallbackOn.input.checked ? fallbackAt.value : null,
+          earliest: earliest.value,
+          min_hours: Number(minHours.value),
+        } });
+      }
       await api("PUT", `api/trackers/${t.id}/schedule`, { enabled: enabled.input.checked, settings });
       sheet.close();
       toast(enabled.input.checked ? `Reminders for ${t.name} saved` : `Reminders for ${t.name} turned off`);
@@ -4175,10 +4302,15 @@ function openTimePicker({ value, label, onSave }) {
   let [h, m] = (value || nowHHMM()).split(":").map(Number);
   let mode = "hour"; // or "minute"
   const dlg = el("dialog", { class: "picker", "aria-label": label || "Choose a time" });
-  const hourIn = el("input", { type: "text", inputmode: "numeric", maxlength: "2", class: "picker-num", "aria-label": "Hour", autocomplete: "off" });
-  const minIn = el("input", { type: "text", inputmode: "numeric", maxlength: "2", class: "picker-num", "aria-label": "Minutes", autocomplete: "off" });
+  // Dial mode: the big numbers are buttons that say which part the dial is setting.
+  const hourBtn = el("button", { type: "button", class: "picker-num picker-num-btn" });
+  const minBtn = el("button", { type: "button", class: "picker-num picker-num-btn" });
+  // Keyboard mode: the same numbers as boxes to type into.
+  const hourIn = el("input", { type: "text", inputmode: "numeric", maxlength: "2", class: "picker-num picker-num-in", "aria-label": "Hour", autocomplete: "off" });
+  const minIn = el("input", { type: "text", inputmode: "numeric", maxlength: "2", class: "picker-num picker-num-in", "aria-label": "Minutes", autocomplete: "off" });
   const am = el("button", { type: "button", class: "picker-ampm" }, "AM");
   const pm = el("button", { type: "button", class: "picker-ampm" }, "PM");
+  const hint = el("p", { class: "picker-hint", "aria-live": "polite" });
   const dial = el("div", { class: "picker-dial", role: "slider", tabindex: "0" });
   const SVG = "http://www.w3.org/2000/svg";
   const hand = document.createElementNS(SVG, "svg");
@@ -4189,15 +4321,24 @@ function openTimePicker({ value, label, onSave }) {
   dial.append(hand, faces);
   const R_OUT = 100, R_IN = 66, C = 128;
   const pos = (i, r) => ({ x: C + r * Math.sin((i / 12) * 2 * Math.PI), y: C - r * Math.cos((i / 12) * 2 * Math.PI) });
+  const typing = () => dlg.classList.contains("typing");
 
   const hour12 = () => (h % 12) || 12;
+  const hourText = () => (clock24 ? pad(h) : String(hour12()));
   const draw = () => {
-    if (document.activeElement !== hourIn) hourIn.value = clock24 ? pad(h) : String(hour12());
+    hourBtn.textContent = hourText();
+    minBtn.textContent = pad(m);
+    hourBtn.setAttribute("aria-label", `Hour, ${hourText()}`);
+    minBtn.setAttribute("aria-label", `Minutes, ${pad(m)}`);
+    hourBtn.setAttribute("aria-pressed", String(mode === "hour"));
+    minBtn.setAttribute("aria-pressed", String(mode === "minute"));
+    if (document.activeElement !== hourIn) hourIn.value = hourText();
     if (document.activeElement !== minIn) minIn.value = pad(m);
-    hourIn.classList.toggle("on", mode === "hour");
-    minIn.classList.toggle("on", mode === "minute");
+    for (const n of [hourBtn, hourIn]) n.classList.toggle("on", mode === "hour");
+    for (const n of [minBtn, minIn]) n.classList.toggle("on", mode === "minute");
     am.setAttribute("aria-pressed", String(h < 12));
     pm.setAttribute("aria-pressed", String(h >= 12));
+    hint.textContent = typing() ? "Type the hour, then the minutes" : mode === "hour" ? "Tap the hour" : "Tap the minutes, or drag for an exact minute";
     // numbers on the face
     faces.replaceChildren();
     const marks = [];
@@ -4214,7 +4355,7 @@ function openTimePicker({ value, label, onSave }) {
         style: `left:${(p.x / 256) * 100}%;top:${(p.y / 256) * 100}%` }, k.text));
     }
     // the hand
-    const unit = mode === "hour" ? (clock24 ? h % 12 : h % 12) : m / 5;
+    const unit = mode === "hour" ? h % 12 : m / 5;
     const r = mode === "hour" && clock24 && (h === 0 || h > 12) ? R_IN : R_OUT;
     const tip = pos(unit, r);
     const mk = (tag, attrs) => { const n = document.createElementNS(SVG, tag); for (const [a, v] of Object.entries(attrs)) n.setAttribute(a, v); return n; };
@@ -4228,9 +4369,11 @@ function openTimePicker({ value, label, onSave }) {
     dial.classList.toggle("minutes", mode === "minute");
   };
   const setMode = (next) => { mode = next; draw(); };
+  hourBtn.addEventListener("click", () => { setMode("hour"); dial.focus(); });
+  minBtn.addEventListener("click", () => { setMode("minute"); dial.focus(); });
 
-  // dial: tap or drag
-  const fromPointer = (ev) => {
+  // dial: a tap lands on the nearest number (minutes snap to 5); dragging gives exact minutes
+  const fromPointer = (ev, exact) => {
     const box = dial.getBoundingClientRect();
     const x = ((ev.clientX - box.left) / box.width) * 256 - C;
     const y = ((ev.clientY - box.top) / box.height) * 256 - C;
@@ -4238,17 +4381,26 @@ function openTimePicker({ value, label, onSave }) {
     if (angle < 0) angle += 2 * Math.PI;
     const dist = Math.hypot(x, y);
     if (mode === "hour") {
-      let i = Math.round((angle / (2 * Math.PI)) * 12) % 12;
+      const i = Math.round((angle / (2 * Math.PI)) * 12) % 12;
       if (clock24) h = dist < (R_IN + R_OUT) / 2 ? (i === 0 ? 0 : i + 12) : (i === 0 ? 12 : i);
       else h = (h >= 12 ? 12 : 0) + i;
     } else {
-      m = Math.round((angle / (2 * Math.PI)) * 60) % 60;
+      const raw = (angle / (2 * Math.PI)) * 60;
+      m = exact ? Math.round(raw) % 60 : (Math.round(raw / 5) * 5) % 60;
     }
     draw();
   };
-  let dragging = false;
-  dial.addEventListener("pointerdown", (ev) => { dragging = true; dial.setPointerCapture(ev.pointerId); fromPointer(ev); ev.preventDefault(); });
-  dial.addEventListener("pointermove", (ev) => { if (dragging) fromPointer(ev); });
+  let dragging = false, moved = false, startX = 0, startY = 0;
+  dial.addEventListener("pointerdown", (ev) => {
+    dragging = true; moved = false; startX = ev.clientX; startY = ev.clientY;
+    dial.setPointerCapture(ev.pointerId); fromPointer(ev, false); ev.preventDefault(); dial.focus();
+  });
+  dial.addEventListener("pointermove", (ev) => {
+    if (!dragging) return;
+    if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 8) return;
+    moved = true;
+    fromPointer(ev, true);
+  });
   dial.addEventListener("pointerup", () => {
     if (!dragging) return;
     dragging = false;
@@ -4263,9 +4415,7 @@ function openTimePicker({ value, label, onSave }) {
     draw();
   });
 
-  // typing into the numbers at the top
-  // Type digits: the first one replaces what's there; when no more digits could fit, it moves on
-  // from the hour to the minutes, like a phone's clock.
+  // keyboard mode: type digits; the first replaces what's there and it moves on to the minutes
   const typed = (input, max, apply) => {
     let fresh = true;
     input.addEventListener("focus", () => { fresh = true; setMode(input === hourIn ? "hour" : "minute"); setTimeout(() => input.select(), 0); });
@@ -4287,6 +4437,7 @@ function openTimePicker({ value, label, onSave }) {
       if (input.value !== "" && v <= max) apply(v);
       fresh = false;
       draw();
+      if (input === hourIn && input.value.length === 2) minIn.focus();
     });
     input.addEventListener("blur", () => draw());
   };
@@ -4300,26 +4451,35 @@ function openTimePicker({ value, label, onSave }) {
 
   const close = () => { dlg.close(); dlg.remove(); };
   const ok = () => { close(); onSave(`${pad(h)}:${pad(m)}`); };
-  const typeMode = el("button", { type: "button", class: "iconbtn plain", "aria-label": "Type the time instead", title: "Type the time",
-    onclick: () => { dlg.classList.toggle("typing"); (dlg.classList.contains("typing") ? hourIn : dial).focus(); } },
-    svgIcon("M3 7h18v10H3zM6 10h.01M9 10h.01M12 10h.01M15 10h.01M18 10h.01M7 14h10"));
+  const KEYS = "M3 7h18v10H3zM6 10h.01M9 10h.01M12 10h.01M15 10h.01M18 10h.01M7 14h10";
+  const CLOCK = "M12 7v5l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z";
+  const typeMode = el("button", { type: "button", class: "iconbtn plain" });
+  const setTyping = (on) => {
+    dlg.classList.toggle("typing", on);
+    typeMode.setAttribute("aria-label", on ? "Use the clock" : "Type the time instead");
+    typeMode.title = on ? "Use the clock" : "Type the time";
+    typeMode.replaceChildren(svgIcon(on ? CLOCK : KEYS));
+    draw();
+  };
+  typeMode.addEventListener("click", () => { setTyping(!typing()); (typing() ? hourIn : dial).focus(); });
   dlg.append(
     el("div", { class: "picker-head" },
       el("p", { class: "picker-label" }, label || "Time"),
-      el("div", { class: "picker-time" }, hourIn, el("span", { class: "picker-colon", "aria-hidden": "true" }, ":"), minIn,
-        clock24 ? null : el("div", { class: "picker-ampms", role: "group", "aria-label": "Morning or afternoon" }, am, pm))),
+      el("div", { class: "picker-time" }, hourBtn, hourIn, el("span", { class: "picker-colon", "aria-hidden": "true" }, ":"), minBtn, minIn,
+        clock24 ? null : el("div", { class: "picker-ampms", role: "group", "aria-label": "Morning or afternoon" }, am, pm)),
+      hint),
     el("div", { class: "picker-body" }, dial),
     el("div", { class: "picker-actions" }, typeMode,
       el("button", { type: "button", class: "link", onclick: () => { const d = new Date(); h = d.getHours(); m = d.getMinutes(); draw(); } }, "Now"),
       el("span", { class: "picker-gap" }),
       el("button", { type: "button", class: "link", onclick: close }, "Cancel"),
       el("button", { type: "button", class: "primary small", onclick: ok }, "OK")));
+  // Escape and Cancel close it. A stray tap outside doesn't, so a chosen time isn't lost.
   dlg.addEventListener("cancel", (ev) => { ev.preventDefault(); close(); });
-  dlg.addEventListener("click", (ev) => { if (ev.target === dlg) close(); });
   document.body.append(dlg);
-  draw();
+  setTyping(window.innerHeight < 560); // no room for the dial: type instead
   dlg.showModal();
-  dial.focus();
+  (typing() ? hourIn : dial).focus();
 }
 
 // <time-field>: a button showing the time, which opens the clock. Has .value ("HH:MM" or "")

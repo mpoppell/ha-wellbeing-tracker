@@ -107,6 +107,28 @@ const STYLE = `
     background: var(--primary-text-color); box-shadow: 0 0 0 2px var(--card-background-color, #fff); }
   .range-note { grid-column: 1 / -1; font-size: 0.8rem; color: var(--secondary-text-color); }
 
+  /* today's temperature */
+  .chartwrap { position: relative; }
+  .daychart { display: block; width: 100%; height: auto; overflow: visible; touch-action: pan-y; }
+  .daychart .seen, .daychart .ahead { fill: none; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+  .daychart .ahead { stroke-dasharray: 5 5; }
+  .daychart .guide { stroke: var(--divider-color); stroke-width: 1; }
+  .daychart .axis { stroke: var(--divider-color); stroke-width: 1; }
+  .daychart .nowline { stroke: var(--secondary-text-color); stroke-width: 1; stroke-dasharray: 2 3; }
+  .daychart .nowdot { fill: var(--primary-text-color); stroke: var(--card-background-color, #fff); stroke-width: 2; }
+  .daychart .cross { stroke: var(--secondary-text-color); stroke-width: 1; }
+  .daychart .ring { fill: var(--card-background-color, #fff); stroke: var(--primary-text-color); stroke-width: 2; }
+  .daychart .lbl { font-size: 11px; font-weight: 600; fill: var(--primary-text-color); }
+  .daychart .tick { font-size: 10px; fill: var(--secondary-text-color); }
+  .tip { position: absolute; top: -6px; transform: translate(-50%, -100%); padding: 3px 8px; border-radius: 8px; font-size: 0.8rem; white-space: nowrap;
+    background: var(--primary-text-color); color: var(--card-background-color, #fff); pointer-events: none; }
+  .chart-key { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 0.8rem; color: var(--secondary-text-color); }
+  .chart-key span { display: inline-flex; align-items: center; gap: 6px; }
+  .chart-key i { display: inline-block; width: 18px; border-top: 2.5px solid var(--secondary-text-color); }
+  .chart-key i.k-ahead { border-top-style: dashed; }
+  .chart-key .k-note { margin-inline-start: auto; }
+  .today { margin-top: 12px; }
+
   /* rain next 12 hours */
   .bars { position: relative; margin-top: 22px; display: flex; align-items: flex-end; gap: 2px; height: 64px; border-bottom: 1px solid var(--divider-color); }
   .bars .col { flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; position: relative; }
@@ -199,6 +221,11 @@ function detect(hass, cfg) {
     const feat = Number((states[c.entity] && states[c.entity].attributes.supported_features) || 0);
     c.hourly_entity = states[`${c.entity}_hourly`] ? `${c.entity}_hourly` : (feat & 2 ? c.entity : find(/^weather\..*hourly/));
   }
+  if (!c.temperature_entity) {
+    // a Bureau observation station near the forecast location, e.g. sensor.viewbank_temp
+    c.temperature_entity = find(/^sensor\..*_temp$/, (s) => s.attributes.device_class === "temperature"
+      && /Bureau of Meteorology/i.test(s.attributes.attribution || ""));
+  }
   if (!c.uv_entity) c.uv_entity = find(/^sensor\..*uv_max_index_0$/);
   if (!c.uv_start_entity) c.uv_start_entity = sibling(c.uv_entity, /uv_max_index_0$/, "uv_start_time_0");
   if (!c.uv_end_entity) c.uv_end_entity = sibling(c.uv_entity, /uv_max_index_0$/, "uv_end_time_0");
@@ -287,9 +314,12 @@ class WellbeingOutdoorsCard extends HTMLElement {
     };
   }
 
+  // Everything found is written into the config, so the editor shows exactly what the card uses.
   static getStubConfig(hass) {
     const found = detect(hass, {});
-    return found.entity ? { entity: found.entity } : {};
+    const out = {};
+    for (const [k, v] of Object.entries(found)) if (v != null && v !== "") out[k] = v;
+    return out;
   }
 
   constructor() {
@@ -302,6 +332,7 @@ class WellbeingOutdoorsCard extends HTMLElement {
     this._raw = normalise(config);
     this._config = null;
     this._subKey = null;
+    this._histKey = null;
     this._built = false;
     if (this._hass) this.hass = this._hass;
   }
@@ -311,6 +342,7 @@ class WellbeingOutdoorsCard extends HTMLElement {
     if (!this._raw) return;
     if (!this._config) this._config = detect(hass, this._raw);
     this._subscribe();
+    if (!this._histKey) this._loadHistory();
     const watched = this._watched().map((id) => hass.states[id]);
     if (!this._lastStates || watched.some((s, i) => s !== this._lastStates[i])) {
       this._lastStates = watched;
@@ -326,7 +358,8 @@ class WellbeingOutdoorsCard extends HTMLElement {
 
   connectedCallback() {
     this._subscribe();
-    this._tick = setInterval(() => this._render(), 5 * 60 * 1000);
+    this._loadHistory();
+    this._tick = setInterval(() => { this._loadHistory(); this._render(); }, 5 * 60 * 1000);
   }
 
   disconnectedCallback() {
@@ -659,18 +692,142 @@ class WellbeingOutdoorsCard extends HTMLElement {
 
   _sectionNow(m) {
     const cond = this._condition(m.w && m.w.state);
-    const rows = [icon(cond.icon),
-      h("div", { class: "temp" }, m.t != null ? `${round(m.t)}${DEG}` : DASH),
-      h("div", { class: "cond" }, cond.word)];
-    if (m.low != null && m.high != null) {
-      const lo = Math.min(m.low, m.t != null ? m.t : m.low);
-      const hi = Math.max(m.high, m.t != null ? m.t : m.high);
-      const warm = m.peak && m.peak.t >= m.high - 1 ? `Warmest around ${this._time(m.peak.date, true)}` : "";
-      rows.push(h("div", { class: "range" },
-        h("span", { class: "lo" }, `${round(lo)}${DEG}`), this._rangeBar(m.low, m.high, lo, hi, m.t), h("span", { class: "hi" }, `${round(hi)}${DEG}`)),
-      h("div", { class: "range-note" }, h("span", { class: "sr" }, `Today ${round(m.low)} to ${round(m.high)} degrees. `), warm));
+    return h("div", {},
+      h("div", { class: "now" }, icon(cond.icon),
+        h("div", { class: "temp" }, m.t != null ? `${round(m.t)}${DEG}` : DASH),
+        h("div", { class: "cond" }, cond.word)),
+      this._dayChart(m));
+  }
+
+  // Today's temperature: measured so far (solid), forecast for the rest of the day (dashed).
+  _dayChart(m) {
+    const dayStart = this._startOfDay(m.now);
+    const dayEnd = new Date(dayStart.getTime() + 24 * 3600e3);
+    const seen = (this._hist || []).filter((p) => p.date >= dayStart && p.date <= m.now);
+    if (m.t != null) seen.push({ date: m.now, t: m.t });
+    const lastSeen = seen.length ? seen[seen.length - 1].date : null;
+    const ahead = ((this._fc.hourly) || [])
+      .map((f) => ({ date: new Date(f.datetime), t: num(f.temperature) }))
+      .filter((p) => p.t != null && p.date < dayEnd && p.date >= (lastSeen || dayStart));
+    if (lastSeen && ahead.length) ahead.unshift(seen[seen.length - 1]);
+    const all = seen.concat(ahead);
+    if (all.length < 2) return null;
+    const temps = all.map((p) => p.t);
+    const tMin = Math.min(...temps);
+    const tMax = Math.max(...temps);
+    const lo = Math.floor(tMin) - 2;
+    const hi = Math.ceil(tMax) + 2;
+    const W = 320, H = 112, L = 6, R = 6, T = 20, B = 20;
+    const x = (d) => L + ((d - dayStart) / (dayEnd - dayStart)) * (W - L - R);
+    const y = (t) => T + (1 - (t - lo) / (hi - lo || 1)) * (H - T - B);
+    const NS = "http://www.w3.org/2000/svg";
+    const s = (tag, attrs, ...kids) => {
+      const n = document.createElementNS(NS, tag);
+      for (const [k, v] of Object.entries(attrs)) if (v != null) n.setAttribute(k, v);
+      for (const k of kids) n.append(k instanceof Node ? k : document.createTextNode(String(k)));
+      return n;
+    };
+    const path = (pts) => pts.map((p, i) => `${i ? "L" : "M"}${x(p.date).toFixed(1)},${y(p.t).toFixed(1)}`).join("");
+    const gid = `wb-t-${Math.random().toString(36).slice(2, 8)}`;
+    const grad = s("linearGradient", { id: gid, gradientUnits: "userSpaceOnUse", x1: 0, y1: y(lo), x2: 0, y2: y(hi) },
+      ...[0, 0.25, 0.5, 0.75, 1].map((f) => s("stop", { offset: f, "stop-color": tempColour(lo + (hi - lo) * f) })));
+    const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, class: "daychart", "aria-hidden": "true" }, s("defs", {}, grad));
+    // recessive guides: 6am, noon, 6pm
+    for (const hr of [6, 12, 18]) {
+      const gx = x(new Date(dayStart.getTime() + hr * 3600e3));
+      svg.append(s("line", { x1: gx, x2: gx, y1: T - 6, y2: H - B, class: "guide" }));
     }
-    return h("div", { class: "now" }, ...rows);
+    svg.append(s("line", { x1: L, x2: W - R, y1: H - B, y2: H - B, class: "axis" }));
+    if (seen.length > 1) svg.append(s("path", { d: path(seen), class: "seen", stroke: `url(#${gid})` }));
+    if (ahead.length > 1) svg.append(s("path", { d: path(ahead), class: "ahead", stroke: `url(#${gid})` }));
+    // labels: only the high, the low, and now
+    const labels = [];
+    const label = (p, text, below) => {
+      const lx = clamp(x(p.date), L + 14, W - R - 14);
+      const ly = below ? y(p.t) + 14 : y(p.t) - 7;
+      if (labels.some((o) => Math.abs(o.x - lx) < 30 && Math.abs(o.y - ly) < 12)) return;
+      labels.push({ x: lx, y: ly });
+      svg.append(s("text", { x: lx, y: ly, class: "lbl", "text-anchor": "middle" }, text));
+    };
+    const top = all.reduce((a, b) => (b.t > a.t ? b : a));
+    const bottom = all.reduce((a, b) => (b.t < a.t ? b : a));
+    if (m.t != null) {
+      svg.append(s("line", { x1: x(m.now), x2: x(m.now), y1: T - 6, y2: H - B, class: "nowline" }));
+      svg.append(s("circle", { cx: x(m.now), cy: y(m.t), r: 4.5, class: "nowdot" }));
+      labels.push({ x: x(m.now), y: y(m.t) });
+    }
+    label(top, `${round(top.t)}${DEG}`, false);
+    label(bottom, `${round(bottom.t)}${DEG}`, true);
+    for (const [hr, txt] of [[6, "6am"], [12, "12pm"], [18, "6pm"]]) {
+      svg.append(s("text", { x: x(new Date(dayStart.getTime() + hr * 3600e3)), y: H - 5, class: "tick", "text-anchor": "middle" }, this._time(new Date(dayStart.getTime() + hr * 3600e3), true)));
+    }
+    // hover / tap: nearest reading
+    const tip = h("div", { class: "tip", hidden: true });
+    const cross = s("line", { y1: T - 6, y2: H - B, class: "cross", visibility: "hidden" });
+    const ring = s("circle", { r: 4, class: "ring", visibility: "hidden" });
+    svg.append(cross, ring);
+    const wrap = h("div", { class: "chartwrap" }, svg, tip);
+    const show = (ev) => {
+      const box = svg.getBoundingClientRect();
+      const px = ((ev.clientX - box.left) / box.width) * W;
+      const p = all.reduce((a, b) => (Math.abs(x(b.date) - px) < Math.abs(x(a.date) - px) ? b : a));
+      cross.setAttribute("x1", x(p.date)); cross.setAttribute("x2", x(p.date)); cross.setAttribute("visibility", "visible");
+      ring.setAttribute("cx", x(p.date)); ring.setAttribute("cy", y(p.t)); ring.setAttribute("visibility", "visible");
+      tip.hidden = false;
+      tip.textContent = `${this._time(p.date, true)} \u00b7 ${round(p.t)}${DEG}${p.date > m.now ? " forecast" : ""}`;
+      tip.style.left = `${clamp((x(p.date) / W) * 100, 12, 88)}%`;
+    };
+    const hide = () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); ring.setAttribute("visibility", "hidden"); };
+    svg.addEventListener("pointermove", show);
+    svg.addEventListener("pointerdown", show);
+    svg.addEventListener("pointerleave", hide);
+    const peakAhead = ahead.length > 1 && top.date > m.now ? `, warmest around ${this._time(top.date, true)}` : "";
+    const summary = `Today's temperature: low ${round(bottom.t)}, high ${round(top.t)} degrees${peakAhead}.${m.t != null ? ` Now ${round(m.t)}.` : ""}`;
+    const key = h("div", { class: "chart-key", "aria-hidden": "true" },
+      seen.length > 1 ? h("span", {}, h("i", { class: "k-seen" }), "So far") : null,
+      ahead.length > 1 ? h("span", {}, h("i", { class: "k-ahead" }), "Forecast") : null,
+      peakAhead ? h("span", { class: "k-note" }, `Warmest around ${this._time(top.date, true)}`) : null);
+    return h("div", { class: "today" }, h("p", { class: "label" }, "Today's temperature"), h("p", { class: "sr" }, summary), wrap, key);
+  }
+
+  _startOfDay(d) {
+    // midnight in the display time zone
+    const key = this._dayKey(d);
+    let t = new Date(d.getTime() - this._hour(d) * 3600e3 - d.getMinutes() * 60e3 - d.getSeconds() * 1e3 - d.getMilliseconds());
+    if (this._dayKey(t) !== key) t = new Date(t.getTime() + 3600e3); // daylight saving edge
+    return t;
+  }
+
+  async _loadHistory() {
+    const hass = this._hass;
+    const c = this._config;
+    if (!hass || !c || !hass.callWS || !this._raw.show.includes("now")) return;
+    const id = c.temperature_entity || c.entity;
+    if (!id || !hass.states[id]) return;
+    const now = new Date();
+    const key = `${id}|${this._dayKey(now)}`;
+    if (this._histKey === key && this._histAt && now - this._histAt < 10 * 60e3) return;
+    this._histKey = key;
+    this._histAt = now;
+    try {
+      const useAttr = !c.temperature_entity;
+      const res = await hass.callWS({ type: "history/history_during_period", start_time: this._startOfDay(now).toISOString(),
+        end_time: now.toISOString(), entity_ids: [id], minimal_response: !useAttr, no_attributes: !useAttr, significant_changes_only: false });
+      const rows = (res && res[id]) || [];
+      const pts = rows.map((r) => ({ date: new Date((r.lu || r.lc || 0) * 1000), t: useAttr ? num(r.a && r.a.temperature) : num(r.s) }))
+        .filter((p) => p.t != null && !isNaN(p.date));
+      // one point per 15 minutes keeps the line calm
+      const buckets = new Map();
+      for (const p of pts) {
+        const b = Math.floor(p.date.getTime() / 900e3);
+        const o = buckets.get(b) || { sum: 0, n: 0, date: p.date };
+        o.sum += p.t; o.n += 1; buckets.set(b, o);
+      }
+      this._hist = [...buckets.values()].map((o) => ({ date: o.date, t: o.sum / o.n }));
+      this._render();
+    } catch (err) {
+      this._hist = [];
+    }
   }
 
   _sectionHourly(m) {

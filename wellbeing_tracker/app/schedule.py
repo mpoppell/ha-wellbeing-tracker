@@ -69,10 +69,17 @@ PERSON_DEFAULTS = {
         "days": {"mode": "daily", "weekdays": [0, 1, 2, 3, 4, 5, 6], "every": 2, "start": None},
         "amount": 250,          # for trackers measured as an amount (ml): how much one tap adds
     },
+    # How the app knows you're up, for medications due "when I wake up".
+    "wake": {
+        "entity": None,         # binary_sensor that's on while the phone charges; None = the one Sleep uses
+        "earliest": "04:00",    # coming off the charger before this doesn't count
+        "min_hours": 3,         # ...and only after charging at least this long (a night, not a top-up)
+        "fallback": "10:00",    # remind anyway at this time if no wake-up was seen (None = don't)
+    },
 }
 
 SCHEDULE_DEFAULTS = {
-    "mode": "times",            # times: at set clock times | after: timed from another dose being taken
+    "mode": "times",            # times: at set clock times | after: timed from another dose | wake: when you wake up
     "times": ["08:00"],
     # How many to take at each time, when it isn't the usual number, e.g. {"19:00": 0.5}.
     "amounts": {},
@@ -92,6 +99,10 @@ SCHEDULE_DEFAULTS = {
     # The tracker can be this medication itself, which makes a chain (Dex every 3 hours).
     "after": [],
     "max_per_day": 3,           # mode "after": stop the chain after this many reminders a day (null = no limit)
+    "wake_after": 0,            # mode "wake": minutes after waking up
+    # Only on days when a Home Assistant number is high enough, e.g. pollen at or above 3.
+    # {"entity_id": "sensor.pollen", "at_least": 3 or "input_number.pollen_alert"}
+    "only_when": None,
 }
 
 
@@ -165,6 +176,7 @@ def normalise_person_settings(data: dict) -> dict:
     s["checkins"] = normalise_checkins(s["checkins"])
     s["hydration"] = normalise_hydration(s["hydration"])
     s["dashboard"] = normalise_dashboard(s["dashboard"])
+    s["wake"] = normalise_wake(s["wake"])
     s["med_groups"] = normalise_med_groups(s["med_groups"])
     return s
 
@@ -282,6 +294,95 @@ def normalise_hydration(data: dict | None) -> dict:
     return {k: s[k] for k in PERSON_DEFAULTS["hydration"]}
 
 
+def normalise_wake(data: dict | None) -> dict:
+    w = {**PERSON_DEFAULTS["wake"], **(data or {})}
+    w["entity"] = _entity(w["entity"], "binary_sensor", "Charging sensor")
+    w["earliest"] = _time(w["earliest"], "Earliest wake-up")
+    try:
+        w["min_hours"] = float(w["min_hours"])
+    except (TypeError, ValueError):
+        raise ValidationError("Charging for how many hours?") from None
+    if not 0.5 <= w["min_hours"] <= 12:
+        raise ValidationError("Charging for 0.5 to 12 hours")
+    if w["min_hours"] == int(w["min_hours"]):
+        w["min_hours"] = int(w["min_hours"])
+    w["fallback"] = _time(w["fallback"], "Remind anyway at") if w["fallback"] else None
+    if w["fallback"] and w["fallback"] <= w["earliest"]:
+        raise ValidationError("'Remind anyway at' must be after the earliest wake-up")
+    return {k: w[k] for k in PERSON_DEFAULTS["wake"]}
+
+
+THRESHOLD_ENTITY = re.compile(r"^(input_number|number|sensor)\.[a-z0-9_]+$")
+
+
+def normalise_only_when(data) -> dict | None:
+    if data in (None, "", {}):
+        return None
+    if not isinstance(data, dict):
+        raise ValidationError("Choose what to check")
+    entity = data.get("entity_id")
+    if entity in (None, ""):
+        return None
+    if not isinstance(entity, str) or not re.match(r"^(sensor|input_number|number|binary_sensor)\.[a-z0-9_]+$", entity):
+        raise ValidationError("Choose a sensor or number to check")
+    at_least = data.get("at_least")
+    if isinstance(at_least, str) and THRESHOLD_ENTITY.match(at_least):
+        pass
+    else:
+        try:
+            at_least = float(at_least)
+        except (TypeError, ValueError):
+            raise ValidationError("Only on days when it's at least what?") from None
+        at_least = int(at_least) if at_least == int(at_least) else at_least
+    return {"entity_id": entity, "at_least": at_least}
+
+
+def number_for_day(state: dict | None, day: date) -> float | None:
+    """A sensor's number for a day. Forecast-style sensors (Google pollen) list values by date,
+    and their main value can still be yesterday's just after midnight, so a dated entry wins."""
+    if not state:
+        return None
+    for f in (state.get("attributes") or {}).get("forecast") or []:
+        if isinstance(f, dict) and f.get("date") == day.isoformat():
+            try:
+                return float(f.get("value"))
+            except (TypeError, ValueError):
+                return None
+    value = state.get("state")
+    if value == "on":
+        return 1.0
+    if value == "off":
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def first_unplug(history: list[dict], earliest: datetime, min_hours: float) -> datetime | None:
+    """When the phone first came off the charger at or after `earliest`, having charged at least
+    `min_hours`. history: states oldest first, each with 'state' and 'last_changed'."""
+    on_since = None
+    last = None
+    for h in history:
+        st = h.get("state")
+        if st in ("unavailable", "unknown", None):
+            continue
+        try:
+            at = datetime.fromisoformat(h.get("last_changed") or h.get("last_updated"))
+        except (TypeError, ValueError):
+            continue
+        if st == "on":
+            if last != "on":
+                on_since = at
+        elif last == "on" and on_since is not None:
+            if at >= earliest and (at - on_since) >= timedelta(hours=min_hours):
+                return at
+            on_since = None
+        last = st
+    return None
+
+
 def normalise_dashboard(data) -> dict:
     sections = (data or {}).get("sections") if isinstance(data, dict) else None
     out, seen = [], set()
@@ -361,8 +462,8 @@ def _split_times(times, amounts) -> tuple[list, dict]:
 
 def normalise_schedule(data: dict) -> dict:
     s = schedule_settings(data)
-    if s["mode"] not in ("times", "after"):
-        raise ValidationError("Choose set times or after another dose")
+    if s["mode"] not in ("times", "after", "wake"):
+        raise ValidationError("Choose set times, after another dose, or when you wake up")
     times, amounts = _split_times(s["times"], s["amounts"] or {})
     if s["mode"] == "times":
         if isinstance(times, list) and len(set(times)) != len(times):
@@ -409,6 +510,13 @@ def normalise_schedule(data: dict) -> dict:
         s["max_per_day"] = None
 
     s["days"] = _days(s["days"])
+    try:
+        s["wake_after"] = int(s["wake_after"] or 0)
+    except (TypeError, ValueError):
+        raise ValidationError("How long after waking up?") from None
+    if not 0 <= s["wake_after"] <= 240:
+        raise ValidationError("Up to 4 hours after waking up")
+    s["only_when"] = normalise_only_when(s["only_when"])
 
     _nag(s)
 

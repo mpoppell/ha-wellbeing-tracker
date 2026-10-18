@@ -127,6 +127,18 @@ def build_router(current_user) -> APIRouter:
     ) -> dict:
         return e.save_person(user["id"], payload)
 
+    @router.get("/wake")
+    def get_wake(user: dict = Depends(current_user), e=Depends(engine)) -> dict:
+        """Are you up today, and which medications are waiting for it."""
+        return e.wake_status(user["id"])
+
+    @router.post("/wake")
+    async def post_wake(user: dict = Depends(current_user), e=Depends(engine)) -> dict:
+        """'I'm up': medications due when you wake up are due now."""
+        e.mark_awake(user["id"], e.clock(), "you")
+        await e.tick()
+        return e.wake_status(user["id"])
+
     @router.post("/reminders/test")
     async def test_reminder(user: dict = Depends(current_user), e=Depends(engine)) -> dict:
         sent = await e.send_test(user["id"])

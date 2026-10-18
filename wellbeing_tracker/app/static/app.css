@@ -1577,6 +1577,12 @@ time-field { display: inline-block; max-width: 100%; }
   font-variant-numeric: tabular-nums; caret-color: var(--accent);
 }
 .picker-num.on { color: var(--ink); background: color-mix(in srgb, var(--accent) 18%, var(--surface)); }
+button.picker-num { cursor: pointer; }
+button.picker-num:hover { color: var(--ink); }
+.picker:not(.typing) .picker-num-in, .picker.typing .picker-num-btn { display: none; }
+.picker.typing .picker-num-in { border-color: var(--line); background: var(--surface); }
+.picker.typing .picker-num-in.on { border-color: var(--accent); }
+.picker-hint { margin: 8px 0 0; text-align: center; font-size: 0.9rem; color: var(--muted); min-height: 1.3em; }
 .picker-num:focus-visible { border-color: var(--accent); outline: none; }
 .picker-colon { font-size: 3rem; font-weight: 700; color: var(--muted); padding-bottom: 6px; }
 .picker-ampms { display: grid; gap: 4px; margin-left: 8px; }
@@ -1604,7 +1610,7 @@ time-field { display: inline-block; max-width: 100%; }
 .picker-actions { display: flex; align-items: center; gap: 4px; padding: 10px 14px 14px; }
 .picker-gap { flex: 1; }
 .picker.typing .picker-body { display: none; }
-@media (max-height: 560px) { .picker-body { display: none; } }
+
 
 /* ---------- accessibility pass (0.21) ---------- */
 .card-h { flex: 1; min-width: 0; margin: 0; font: inherit; display: flex; }
@@ -1625,3 +1631,10 @@ h2.card-title { margin: 0; font-size: 1.05rem; }
   .chip[aria-pressed="true"], .spot-num:focus, .picker-ampm[aria-pressed="true"], button.plan-due { border: 2px solid CanvasText; }
   .level-dot, .good-dots span.on, .dot { forced-color-adjust: none; }
 }
+
+/* ---------- when I wake up (0.23) ---------- */
+.wake-row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.wake-row:last-child { border-bottom: 0; }
+.wake-row .brow-text { flex: 1; min-width: 0; }
+.wake-row .card-icon svg { stroke: var(--accent); }
+.due-card.soon-only .wake-row { border-bottom: 1px solid var(--line); }
