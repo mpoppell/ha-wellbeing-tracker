@@ -474,13 +474,18 @@ class WellbeingOutdoorsCard extends HTMLElement {
     const todayFc = days.find((d) => d.key === today) || null;
     const todayHours = hours.filter((x) => x.key === today);
 
-    // highs and lows: hourly fills gaps once part of the day has gone
+    // Today's range: the forecast, widened by what the thermometer has actually measured today.
+    // By evening the Bureau drops today's low (it's in the past), so measured readings fill it in.
+    const dayStart = this._startOfDay(now);
+    const measured = (this._hist || []).filter((p) => p.date >= dayStart).map((p) => p.t);
+    const temps = todayHours.map((x) => x.t).concat(measured).filter((v) => v != null);
+    if (t != null) temps.push(t);
     let high = todayFc ? todayFc.high : null;
     let low = todayFc ? todayFc.low : null;
-    const temps = todayHours.map((x) => x.t).filter((v) => v != null);
-    if (t != null) temps.push(t);
-    if (high == null && temps.length) high = Math.max(...temps);
-    if (low == null && temps.length) low = Math.min(...temps);
+    if (temps.length) {
+      high = high == null ? Math.max(...temps) : Math.max(high, ...temps);
+      low = low == null ? Math.min(...temps) : Math.min(low, ...temps);
+    }
     const peak = todayHours.filter((x) => x.t != null && x.date > now).sort((a, b) => b.t - a.t)[0];
 
     return { now, today, w, days, hours, t, todayFc, todayHours, high, low, peak,
@@ -801,7 +806,7 @@ class WellbeingOutdoorsCard extends HTMLElement {
   async _loadHistory() {
     const hass = this._hass;
     const c = this._config;
-    if (!hass || !c || !hass.callWS || !this._raw.show.includes("now")) return;
+    if (!hass || !c || !hass.callWS || !this._raw.show.some((x) => x === "now" || x === "days")) return;
     const id = c.temperature_entity || c.entity;
     if (!id || !hass.states[id]) return;
     const now = new Date();
@@ -896,12 +901,15 @@ class WellbeingOutdoorsCard extends HTMLElement {
     const rainAt = this._alert("rain_alert");
     const hotAt = this._alert("heat_alert");
     const coldAt = this._alert("cold_alert");
+    // today's row uses the measured-and-forecast range (see _model), not the Bureau's alone
+    days.forEach((d, i) => { if (i === 0 && d.key === m.today) days[0] = { ...d, low: m.low, high: m.high }; });
     const temps = days.flatMap((d) => [d.low, d.high]).filter((v) => v != null);
     const lo = Math.floor(Math.min(...temps)) - 1;
     const hi = Math.ceil(Math.max(...temps)) + 1;
     const list = h("ul", { class: "days" });
     days.forEach((d, i) => {
-      const cond = this._condition(d.condition);
+      // a day row describes the whole day, so the Bureau's evening "clear night" for today shows as sunny
+      const cond = this._condition(d.condition === "clear-night" ? "sunny" : d.condition);
       const name = i === 0 && d.key === m.today ? "Today" : i <= 1 && d.key > m.today && m.days[0].key === m.today ? "Tomorrow" : this._weekday(d.date);
       const longName = name === "Today" || name === "Tomorrow" ? name : this._weekday(d.date, true);
       const wet = d.rain != null && d.rain >= rainAt;

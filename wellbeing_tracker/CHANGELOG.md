@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.23.1
+
+- Outdoors card: in the evening the Bureau stops giving today's low (it's already happened), so Today's bar shrank to a sliver at the high and the "now" dot floated off on its own. Today's range now includes what your thermometer measured today, so it shows the real low to high with now on the bar.
+- The Today row no longer shows a moon after dark; it summarises the whole day.
+
 ## 0.23.0
 
 **Medications when you wake up, an antihistamine only on high-pollen days, and an easier time picker.**
