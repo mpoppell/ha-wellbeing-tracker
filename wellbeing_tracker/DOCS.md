@@ -214,7 +214,7 @@ Everything the card shows is set in its editor: which sections and in what order
 **Outdoors card**: add a card and choose **Outdoors** (or `type: custom:wellbeing-outdoors-card`). It turns the forecast into what to do:
 
 - **Heads-up**, only when it matters: weather warnings, fire danger of High or worse, strong UV (with the hours to protect your skin), rain soon or later today, pollen, a cold morning or a hot day. The three most important are shown in full and the rest as small chips. From 6pm it looks at tomorrow instead. Tap one for the details.
-- **Now and today**: the temperature now, and a line graph of today: solid for what your thermometer has measured so far, dashed for the forecast for the rest of the day. The high and low are labelled; hover or tap for any time.
+- **Now and today**: the temperature now, and a line graph of today: solid for what your thermometer has measured so far, dashed for the forecast for the rest of the day. The high and low are labelled; hover or tap for any time. Above the graph, up to six icons mark sunrise, sunset and the biggest changes in the sky (rain starting or clearing, storms, turning cloudy or clearing up), each with its time. Small one-hour flickers are ignored, and changes earlier today come from the weather's history when Home Assistant records it.
 - **Rain, next 12 hours**: one bar per hour. Filled bars reach your rain alert level, shown as a dashed line.
 - **UV, pollen and fire danger** on scales with a word for each level, so colour is never the only clue.
 - **Next days**: rain chance and each day's temperature range on one shared scale.

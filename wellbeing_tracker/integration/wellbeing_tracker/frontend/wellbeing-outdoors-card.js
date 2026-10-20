@@ -43,6 +43,46 @@ const CONDITIONS = {
   "windy-variant": ["Windy", "mdi:weather-windy-variant"],
 };
 
+// The sky in a few kinds, for marking big changes on today's chart. rank: how far from a clear day.
+// [rank, word by day, word at night, icon by day, icon at night]
+const SKY = {
+  clear: [0, "Sunny", "Clear", "mdi:weather-sunny", "mdi:weather-night"],
+  partly: [1, "Partly cloudy", "Partly cloudy", "mdi:weather-partly-cloudy", "mdi:weather-night-partly-cloudy"],
+  windy: [1, "Windy", "Windy", "mdi:weather-windy", "mdi:weather-windy"],
+  cloudy: [2, "Cloudy", "Cloudy", "mdi:weather-cloudy", "mdi:weather-cloudy"],
+  fog: [2, "Fog", "Fog", "mdi:weather-fog", "mdi:weather-fog"],
+  other: [2, "Changeable", "Changeable", "mdi:weather-cloudy-alert", "mdi:weather-cloudy-alert"],
+  rain: [3, "Showers", "Showers", "mdi:weather-rainy", "mdi:weather-rainy"],
+  heavy: [4, "Heavy rain", "Heavy rain", "mdi:weather-pouring", "mdi:weather-pouring"],
+  snow: [4, "Snow", "Snow", "mdi:weather-snowy", "mdi:weather-snowy"],
+  storm: [5, "Storms", "Storms", "mdi:weather-lightning-rainy", "mdi:weather-lightning-rainy"],
+  hail: [5, "Hail", "Hail", "mdi:weather-hail", "mdi:weather-hail"],
+};
+const WET = new Set(["rain", "heavy", "snow", "storm", "hail"]);
+const MAX_MARKS = 6; // sunrise, sunset and the biggest changes, no more
+const MARK_GAP = 10; // least room between marker icons, in percent of the chart's width, so labels don't overlap
+
+// Which kind of sky. Cloud cover, when the forecast has it, beats the condition word:
+// providers often say "partly cloudy" at 98% cover.
+function skyOf(cond, cloud) {
+  switch (cond) {
+    case "lightning": case "lightning-rainy": return "storm";
+    case "hail": return "hail";
+    case "pouring": return "heavy";
+    case "rainy": return "rain";
+    case "snowy": case "snowy-rainy": return "snow";
+    case "fog": return "fog";
+    default: break;
+  }
+  const c = num(cloud);
+  if (c != null) return c < 25 ? "clear" : c <= 75 ? "partly" : "cloudy";
+  if (cond === "sunny" || cond === "clear-night") return "clear";
+  if (cond === "partlycloudy") return "partly";
+  if (cond === "cloudy") return "cloudy";
+  if (cond === "windy" || cond === "windy-variant") return "windy";
+  return cond ? "other" : null;
+}
+
 // One ramp, low to high, used by every risk scale. Text never uses these colours.
 const UV_LEVELS = [
   { max: 2, word: "Low" }, { max: 5, word: "Moderate" }, { max: 7, word: "High" },
@@ -128,6 +168,15 @@ const STYLE = `
   .chart-key i.k-ahead { border-top-style: dashed; }
   .chart-key .k-note { margin-inline-start: auto; }
   .today { margin-top: 12px; }
+  .marks { position: relative; height: 42px; }
+  .marks .leads { position: absolute; left: 0; bottom: 0; width: 100%; height: 10px; overflow: visible; }
+  .marks .leads line { stroke: var(--divider-color); stroke-width: 1; stroke-dasharray: 1 3; vector-effect: non-scaling-stroke; }
+  .mk { position: absolute; top: 0; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center;
+    font-size: 10px; line-height: 1.15; color: var(--secondary-text-color); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .mk ha-icon { --mdc-icon-size: 18px; }
+  .mk.sun ha-icon { color: var(--warning-color, #ffa600); }
+  .mk.wet ha-icon { color: var(--info-color, #039be5); }
+  .daychart .mkline { stroke: var(--divider-color); stroke-width: 1; stroke-dasharray: 1 3; }
 
   /* rain next 12 hours */
   .bars { position: relative; margin-top: 22px; display: flex; align-items: flex-end; gap: 2px; height: 64px; border-bottom: 1px solid var(--divider-color); }
@@ -232,6 +281,7 @@ function detect(hass, cfg) {
   if (!c.fire_entity) c.fire_entity = find(/^sensor\..*fire_danger_0$/);
   if (!c.warnings_entity) c.warnings_entity = find(/^sensor\..*_warnings$/, (s) => Array.isArray(s.attributes.warnings));
   if (!c.pollen_entity) c.pollen_entity = find(/^sensor\..*pollen.*overall.*today$/) || find(/^sensor\..*pollen.*overall/);
+  if (!c.sun_entity && states["sun.sun"]) c.sun_entity = "sun.sun";
   for (const [key, a] of Object.entries(ALERTS)) if (c[key] == null && states[a.helper]) c[key] = a.helper;
   return c;
 }
@@ -276,6 +326,7 @@ class WellbeingOutdoorsCard extends HTMLElement {
           { name: "pollen_entity", selector: ent("sensor") },
           { name: "fire_entity", selector: ent("sensor") },
           { name: "warnings_entity", selector: ent("sensor") },
+          { name: "sun_entity", selector: ent("sun") },
         ] },
       ],
       computeLabel: (s) => ({
@@ -298,6 +349,7 @@ class WellbeingOutdoorsCard extends HTMLElement {
         pollen_entity: "Pollen today",
         fire_entity: "Fire danger today",
         warnings_entity: "Weather warnings",
+        sun_entity: "Sunrise and sunset",
       })[s.name],
       computeHelper: (s) => ({
         entity: "Leave empty to use the first weather in Home Assistant.",
@@ -742,6 +794,15 @@ class WellbeingOutdoorsCard extends HTMLElement {
       const gx = x(new Date(dayStart.getTime() + hr * 3600e3));
       svg.append(s("line", { x1: gx, x2: gx, y1: T - 6, y2: H - B, class: "guide" }));
     }
+    // sunrise, sunset and big changes in the sky: an icon above the chart, a faint line down to the axis
+    const marks = this._dayMarks(m, dayStart, dayEnd, (d) => (x(d) / W) * 100);
+    for (const mk of marks) svg.append(s("line", { x1: x(mk.date), x2: x(mk.date), y1: 0, y2: H - B, class: "mkline" }));
+    // short leads from each icon to its exact time, for icons nudged aside to make room
+    const leads = s("svg", { viewBox: "0 0 100 10", preserveAspectRatio: "none", class: "leads" },
+      ...marks.map((mk) => s("line", { x1: mk.pos.toFixed(2), y1: 0, x2: ((x(mk.date) / W) * 100).toFixed(2), y2: 10 })));
+    const strip = marks.length ? h("div", { class: "marks", "aria-hidden": "true" }, marks.map((mk) =>
+      h("div", { class: `mk ${mk.kind}`, style: `left:${mk.pos.toFixed(1)}%`, title: mk.title },
+        icon(mk.icon), h("span", {}, this._time(mk.date, true)))), leads) : null;
     svg.append(s("line", { x1: L, x2: W - R, y1: H - B, y2: H - B, class: "axis" }));
     if (seen.length > 1) svg.append(s("path", { d: path(seen), class: "seen", stroke: `url(#${gid})` }));
     if (ahead.length > 1) svg.append(s("path", { d: path(ahead), class: "ahead", stroke: `url(#${gid})` }));
@@ -771,7 +832,7 @@ class WellbeingOutdoorsCard extends HTMLElement {
     const cross = s("line", { y1: T - 6, y2: H - B, class: "cross", visibility: "hidden" });
     const ring = s("circle", { r: 4, class: "ring", visibility: "hidden" });
     svg.append(cross, ring);
-    const wrap = h("div", { class: "chartwrap" }, svg, tip);
+    const wrap = h("div", { class: "chartwrap" }, strip, svg, tip);
     const show = (ev) => {
       const box = svg.getBoundingClientRect();
       const px = ((ev.clientX - box.left) / box.width) * W;
@@ -787,12 +848,104 @@ class WellbeingOutdoorsCard extends HTMLElement {
     svg.addEventListener("pointerdown", show);
     svg.addEventListener("pointerleave", hide);
     const peakAhead = ahead.length > 1 && top.date > m.now ? `, warmest around ${this._time(top.date, true)}` : "";
-    const summary = `Today's temperature: low ${round(bottom.t)}, high ${round(top.t)} degrees${peakAhead}.${m.t != null ? ` Now ${round(m.t)}.` : ""}`;
+    const summary = `Today's temperature: low ${round(bottom.t)}, high ${round(top.t)} degrees${peakAhead}.${m.t != null ? ` Now ${round(m.t)}.` : ""}`
+      + (marks.length ? ` ${marks.map((mk) => mk.title).join(". ")}.` : "");
     const key = h("div", { class: "chart-key", "aria-hidden": "true" },
       seen.length > 1 ? h("span", {}, h("i", { class: "k-seen" }), "So far") : null,
       ahead.length > 1 ? h("span", {}, h("i", { class: "k-ahead" }), "Forecast") : null,
       peakAhead ? h("span", { class: "k-note" }, `Warmest around ${this._time(top.date, true)}`) : null);
     return h("div", { class: "today" }, h("p", { class: "label" }, "Today's temperature"), h("p", { class: "sr" }, summary), wrap, key);
+  }
+
+  // Markers above today's chart: sunrise, sunset and the biggest changes in the sky, at most MAX_MARKS.
+  // pct: where a time sits across the chart, 0 to 100.
+  _dayMarks(m, dayStart, dayEnd, pct) {
+    const c = this._config;
+    const HOUR = 3600e3;
+
+    // The sun entity only knows the next sunrise and sunset; one already past is a day earlier (a minute or two off).
+    const sun = [];
+    const st = c.sun_entity && this._hass.states[c.sun_entity];
+    if (st) {
+      for (const [attr, kind] of [["next_rising", "rise"], ["next_setting", "set"]]) {
+        let d = new Date(st.attributes[attr]);
+        if (isNaN(d)) continue;
+        while (d >= dayEnd) d = new Date(d.getTime() - 24 * HOUR);
+        if (d >= dayStart) sun.push({ date: d, kind });
+      }
+    }
+    const rise = (sun.find((x) => x.kind === "rise") || {}).date;
+    const set = (sun.find((x) => x.kind === "set") || {}).date;
+    const night = (d) => !!((rise && d < rise) || (set && d >= set));
+
+    // Hour by hour: the sky so far today from the weather's history, then the hourly forecast.
+    const nowHour = new Date(dayStart.getTime() + Math.floor((m.now - dayStart) / HOUR) * HOUR);
+    const series = [];
+    const hist = this._skyHist || [];
+    for (let t = dayStart.getTime(); t < nowHour.getTime(); t += HOUR) {
+      let state = null;
+      for (const p of hist) { if (p.date.getTime() <= t + HOUR / 2) state = p.state; else break; }
+      const sky = skyOf(state);
+      if (sky) series.push({ date: new Date(t), sky });
+    }
+    for (const f of this._fc.hourly || []) {
+      const d = new Date(f.datetime);
+      if (isNaN(d) || d < nowHour || d >= dayEnd) continue;
+      const sky = skyOf(f.condition, f.cloud_coverage);
+      if (sky) series.push({ date: d, sky });
+    }
+
+    // Runs of the same sky. A dry one-hour blip folds into the run before it, so a single sunny hour
+    // between cloudy ones isn't a change; a single wet hour is kept, because a shower is worth knowing.
+    const runs = [];
+    for (const p of series) {
+      const prev = runs[runs.length - 1];
+      if (prev && prev.sky === p.sky) prev.n += 1;
+      else runs.push({ sky: p.sky, date: p.date, n: 1 });
+    }
+    const calm = [];
+    runs.forEach((r) => {
+      const prev = calm[calm.length - 1];
+      const blip = r.n === 1 && !WET.has(r.sky);
+      if (prev && (prev.sky === r.sky || blip)) prev.n += r.n;
+      else calm.push({ ...r });
+    });
+
+    // How big each change is: steps between kinds of sky, plus extra for rain starting or stopping.
+    const changes = [];
+    for (let i = 1; i < calm.length; i++) {
+      const a = calm[i - 1];
+      const b = calm[i];
+      const score = Math.abs(SKY[b.sky][0] - SKY[a.sky][0]) + (WET.has(a.sky) !== WET.has(b.sky) ? 2 : 0);
+      if (score > 0) changes.push({ date: b.date, sky: b.sky, from: a.sky, score });
+    }
+
+    // Sunrise and sunset always; then the biggest changes, the rest of today before what's already happened.
+    const marks = sun.map((x) => ({ date: x.date, kind: "sun",
+      icon: x.kind === "rise" ? "mdi:weather-sunset-up" : "mdi:weather-sunset-down",
+      title: `${x.kind === "rise" ? "Sunrise" : "Sunset"} ${this._time(x.date)}` }));
+    const past = (d) => (d < nowHour ? 1 : 0);
+    changes.sort((a, b) => b.score - a.score || past(a.date) - past(b.date) || a.date - b.date);
+    for (const ch of changes.slice(0, Math.max(0, MAX_MARKS - marks.length))) {
+      const n = night(ch.date) ? 1 : 0;
+      const k = SKY[ch.sky];
+      const clears = WET.has(ch.from) && !WET.has(ch.sky);
+      const eases = WET.has(ch.from) && WET.has(ch.sky) && k[0] < SKY[ch.from][0];
+      const word = clears ? "Rain clears by" : eases ? `Easing to ${k[1 + n].toLowerCase()} from` : `${k[1 + n]} from`;
+      marks.push({ date: ch.date, kind: WET.has(ch.sky) ? "wet" : "sky", icon: k[3 + n],
+        title: `${word} ${this._time(ch.date, true)}` });
+    }
+    marks.sort((a, b) => a.date - b.date);
+
+    // Lay the icons out left to right: each sits over its time, nudged just enough not to overlap its
+    // neighbour (the label always says the exact time; a faint line marks the true spot on the chart).
+    const lo = 5;
+    const hi = 95;
+    marks.forEach((mk, i) => { mk.pos = Math.max(clamp(pct(mk.date), lo, hi), i ? marks[i - 1].pos + MARK_GAP : lo); });
+    for (let i = marks.length - 1; i >= 0; i--) {
+      marks[i].pos = Math.min(marks[i].pos, i < marks.length - 1 ? marks[i + 1].pos - MARK_GAP : hi);
+    }
+    return marks;
   }
 
   _startOfDay(d) {
@@ -816,8 +969,13 @@ class WellbeingOutdoorsCard extends HTMLElement {
     this._histAt = now;
     try {
       const useAttr = !c.temperature_entity;
+      // the weather's own state is its condition, so today's sky so far comes along with the temperature
+      const ids = [id, c.entity].filter((e, i, a) => e && hass.states[e] && a.indexOf(e) === i);
       const res = await hass.callWS({ type: "history/history_during_period", start_time: this._startOfDay(now).toISOString(),
-        end_time: now.toISOString(), entity_ids: [id], minimal_response: !useAttr, no_attributes: !useAttr, significant_changes_only: false });
+        end_time: now.toISOString(), entity_ids: ids, minimal_response: !useAttr, no_attributes: !useAttr, significant_changes_only: false });
+      this._skyHist = ((res && res[c.entity]) || [])
+        .map((r) => ({ date: new Date((r.lu || r.lc || 0) * 1000), state: r.s }))
+        .filter((p) => p.state && !isNaN(p.date) && !["unknown", "unavailable"].includes(p.state));
       const rows = (res && res[id]) || [];
       const pts = rows.map((r) => ({ date: new Date((r.lu || r.lc || 0) * 1000), t: useAttr ? num(r.a && r.a.temperature) : num(r.s) }))
         .filter((p) => p.t != null && !isNaN(p.date));
@@ -832,6 +990,7 @@ class WellbeingOutdoorsCard extends HTMLElement {
       this._render();
     } catch (err) {
       this._hist = [];
+      this._skyHist = [];
     }
   }
 

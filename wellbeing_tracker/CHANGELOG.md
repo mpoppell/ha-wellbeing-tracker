@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.24.0
+
+- Outdoors card: today's temperature graph now has icons along the top for sunrise, sunset and the biggest changes in the sky, at most six. Rain starting or clearing and storms count most, then turning cloudy or clearing up; one-hour flickers in the forecast are ignored. Each icon has its time, a faint line shows where it falls on the graph, and screen readers hear the list.
+- New optional setting, **Sunrise and sunset**, under Where the information comes from (found automatically as `sun.sun`).
+
 ## 0.23.1
 
 - Outdoors card: in the evening the Bureau stops giving today's low (it's already happened), so Today's bar shrank to a sliver at the high and the "now" dot floated off on its own. Today's range now includes what your thermometer measured today, so it shows the real low to high with now on the bar.
