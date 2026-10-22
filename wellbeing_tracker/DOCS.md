@@ -200,6 +200,8 @@ Tap a night on Check-in to see it in full: when you fell asleep and woke, a grap
 
 The app installs a companion integration into Home Assistant for you. After installing or updating the app, restart Home Assistant, then go to **Settings → Devices & services → Add integration → Wellbeing Tracker** and confirm. There's nothing to type: the app has already given it its address and a private key.
 
+Both cards are added to your dashboard resources (**Settings → Dashboards → ⋮ → Resources**) automatically and kept up to date, so they load in the phone apps as well as the browser. Don't remove those two entries; if you do, restarting Home Assistant adds them back.
+
 **Dashboard card**: edit a dashboard, add a card and choose **Wellbeing** (or use `type: custom:wellbeing-card`). It shows:
 
 - reminders waiting, with the same buttons as your phone

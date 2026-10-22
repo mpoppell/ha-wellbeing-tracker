@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.24.1
+
+- The Wellbeing and Outdoors cards could show "Configuration error" in the Home Assistant phone app while working in a browser. The integration now adds both cards to **Settings → Dashboards → Resources** (the same way HACS cards are loaded), which the phone apps load reliably. It keeps one entry per card and updates it with each version, so there's nothing to add or tidy by hand. If your dashboard resources are managed in YAML, the cards are loaded the old way.
+
 ## 0.24.0
 
 - Outdoors card: today's temperature graph now has icons along the top for sunrise, sunset and the biggest changes in the sky, at most six. Rain starting or clearing and storms count most, then turning cloudy or clearing up; one-hour flickers in the forecast are ignored. Each icon has its time, a faint line shows where it falls on the graph, and screen readers hear the list.

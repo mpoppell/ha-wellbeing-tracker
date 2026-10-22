@@ -7,6 +7,7 @@ reminders and log doses from automations, scripts and voice.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import voluptuous as vol
@@ -26,6 +27,12 @@ from .api import WellbeingApi, WellbeingError, read_connection
 from .const import CARD_URL, DOMAIN, OUTDOORS_CARD_URL, REMINDER_EVENT
 from .coordinator import WellbeingCoordinator
 
+try:
+    from homeassistant.components.lovelace.const import LOVELACE_DATA
+except ImportError:  # older Home Assistant
+    LOVELACE_DATA = "lovelace"
+
+_LOGGER = logging.getLogger(__name__)
 PLATFORMS = [Platform.BUTTON, Platform.SELECT, Platform.SENSOR]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 HERE = Path(__file__).parent
@@ -57,8 +64,10 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         StaticPathConfig(OUTDOORS_CARD_URL, str(HERE / "frontend" / "wellbeing-outdoors-card.js"), False),
     ])
     # Loaded on every dashboard, so the cards work without adding a resource by hand.
-    add_extra_js_url(hass, f"{CARD_URL}?v={integration.version}")
-    add_extra_js_url(hass, f"{OUTDOORS_CARD_URL}?v={integration.version}")
+    cards = [CARD_URL, OUTDOORS_CARD_URL]
+    if not await _add_dashboard_resources(hass, cards, integration.version):
+        for url in cards:
+            add_extra_js_url(hass, f"{url}?v={integration.version}")
 
     def coordinator() -> WellbeingCoordinator:
         entries = hass.config_entries.async_loaded_entries(DOMAIN)
@@ -127,6 +136,40 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     hass.services.async_register(DOMAIN, "answer_reminder", answer_reminder, schema=ANSWER_SCHEMA)
     hass.services.async_register(DOMAIN, "log", log, schema=LOG_SCHEMA)
     hass.services.async_register(DOMAIN, "log_dose", log_dose, schema=LOG_DOSE_SCHEMA)
+    return True
+
+
+async def _add_dashboard_resources(hass: HomeAssistant, cards: list[str], version: str) -> bool:
+    """Add the cards as dashboard resources, the way HACS cards are added.
+
+    The phone apps don't always load scripts added with add_extra_js_url, which left the
+    cards as "Configuration error" there; dashboard resources load everywhere. Keeps one
+    entry per card on the current version. False when resources are managed in YAML, so the
+    caller falls back to add_extra_js_url.
+    """
+    lovelace = hass.data.get(LOVELACE_DATA)
+    resources = lovelace.get("resources") if isinstance(lovelace, dict) else getattr(lovelace, "resources", None)
+    if resources is None or not hasattr(resources, "async_create_item"):
+        return False
+    try:
+        if not resources.loaded:
+            await resources.async_load()
+            resources.loaded = True
+        items = list(resources.async_items())
+        for base in cards:
+            wanted = f"{base}?v={version}"
+            ours = [item for item in items if str(item.get("url", "")).split("?")[0] == base]
+            if not ours:
+                await resources.async_create_item({"res_type": "module", "url": wanted})
+                continue
+            if ours[0].get("url") != wanted or ours[0].get("type") != "module":
+                await resources.async_update_item(ours[0]["id"], {"res_type": "module", "url": wanted})
+            for extra in ours[1:]:
+                await resources.async_delete_item(extra["id"])
+    except Exception:  # noqa: BLE001 - never let this stop the integration loading
+        _LOGGER.warning("Couldn't add the Wellbeing cards as dashboard resources; loading them another way",
+                        exc_info=True)
+        return False
     return True
 
 

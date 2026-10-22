@@ -6,6 +6,7 @@ import pytest
 from homeassistant import config_entries
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import ServiceValidationError, Unauthorized
+from homeassistant.loader import async_get_integration
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -109,19 +110,50 @@ async def test_people_only_answer_their_own(hass: HomeAssistant, aioclient_mock,
         await hass.services.async_call(DOMAIN, "log_dose", {"medication": "Clonidine"}, blocking=True)
 
 
-async def test_card_is_served_and_loaded_everywhere(hass: HomeAssistant, aioclient_mock, hass_client):
+def resource_urls(hass):
+    from homeassistant.components.lovelace.const import LOVELACE_DATA
+    return sorted(item["url"] for item in hass.data[LOVELACE_DATA].resources.async_items())
+
+
+def extra_module_urls(hass):
+    from homeassistant.components.frontend import DATA_EXTRA_MODULE_URL
+    return hass.data[DATA_EXTRA_MODULE_URL].urls
+
+
+async def test_cards_are_served_and_added_as_dashboard_resources(hass: HomeAssistant, aioclient_mock, hass_client):
     await setup(hass, aioclient_mock)
-    assert await async_setup_component(hass, "frontend", {})
     client = await hass_client()
-    resp = await client.get(CARD_URL)
-    assert resp.status == 200
-    assert "customElements.define(\"wellbeing-card\"" in await resp.text()
-    from homeassistant.components.frontend import DATA_EXTRA_JS_URL_ES5, DATA_EXTRA_MODULE_URL  # noqa: F401
-    urls = hass.data[DATA_EXTRA_MODULE_URL].urls
+    for url, tag in ((CARD_URL, "wellbeing-card"), (OUTDOORS_CARD_URL, "wellbeing-outdoors-card")):
+        resp = await client.get(url)
+        assert resp.status == 200
+        assert f"customElements.define(\"{tag}\"" in await resp.text()
+    version = (await async_get_integration(hass, DOMAIN)).version
+    assert resource_urls(hass) == sorted([f"{CARD_URL}?v={version}", f"{OUTDOORS_CARD_URL}?v={version}"])
+    # loaded once, as resources, not twice
+    assert not any(u.startswith((CARD_URL, OUTDOORS_CARD_URL)) for u in extra_module_urls(hass))
+
+
+async def test_resources_are_kept_to_one_per_card_on_the_current_version(hass: HomeAssistant, aioclient_mock):
+    from homeassistant.components.lovelace.const import LOVELACE_DATA
+    assert await async_setup_component(hass, "lovelace", {})
+    resources = hass.data[LOVELACE_DATA].resources
+    await resources.async_load()
+    resources.loaded = True
+    await resources.async_create_item({"res_type": "module", "url": f"{CARD_URL}?v=0.1.0"})
+    await resources.async_create_item({"res_type": "js", "url": f"{CARD_URL}?v=0.1.0-res"})
+    await resources.async_create_item({"res_type": "module", "url": "/hacsfiles/other/other.js"})
+    await setup(hass, aioclient_mock)
+    version = (await async_get_integration(hass, DOMAIN)).version
+    assert resource_urls(hass) == sorted([f"{CARD_URL}?v={version}", f"{OUTDOORS_CARD_URL}?v={version}",
+                                          "/hacsfiles/other/other.js"])
+    assert all(item["type"] == "module" for item in resources.async_items())
+
+
+async def test_yaml_resources_fall_back_to_loading_everywhere(hass: HomeAssistant, aioclient_mock):
+    assert await async_setup_component(hass, "lovelace", {"lovelace": {"resource_mode": "yaml"}})
+    await setup(hass, aioclient_mock)
+    urls = extra_module_urls(hass)
     assert any(u.startswith(CARD_URL) for u in urls)
-    resp = await client.get(OUTDOORS_CARD_URL)
-    assert resp.status == 200
-    assert "customElements.define(\"wellbeing-outdoors-card\"" in await resp.text()
     assert any(u.startswith(OUTDOORS_CARD_URL) for u in urls)
 
 
