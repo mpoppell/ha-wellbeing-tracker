@@ -68,6 +68,24 @@
           "description": "Who it's for. Leave empty for whoever runs the action."
         }
       }
+    },
+    "im_up": {
+      "name": "I'm up",
+      "description": "Tells Wellbeing someone has got up, so medications due \"when I wake up\" are due now. Only the first one each day counts.",
+      "fields": {
+        "person": {
+          "name": "Person",
+          "description": "Who's up. Leave empty for whoever runs the action (or the only person)."
+        },
+        "at": {
+          "name": "When",
+          "description": "When they got up, if earlier than now. Must be today."
+        },
+        "source": {
+          "name": "How you know",
+          "description": "A few words, such as \"phone off charger\". Optional."
+        }
+      }
     }
   }
 }

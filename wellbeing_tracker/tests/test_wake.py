@@ -1,5 +1,6 @@
 """Medications due when you wake up, and only on days when a sensor is high enough."""
 
+import logging
 from datetime import date, datetime
 
 import pytest
@@ -208,3 +209,42 @@ def test_set_times_with_a_condition(wenv):
     ha.set_pollen(3)
     tick_at(engine, clock, "2026-10-14T07:01")
     assert [d["local_time"] for d in dose_rows(db, f["id"])] == ["08:00"]
+
+
+# ----- finding the charger, and Home Assistant saying you're up -----
+
+def test_the_phones_charger_is_found_when_none_is_set(wenv, caplog):
+    db, ha, clock, engine, med = wenv
+    engine.save_person("u1", {"devices": ["mobile_app_s26u"], "wake": {"entity": None}})
+    ha.states.append({"entity_id": "binary_sensor.old_phone_is_charging", "state": "off", "attributes": {}})
+    v = med("Vyvanse")
+    schedule(engine, v["id"], mode="wake")
+    ha.set_charger("off", "2026-10-14T05:47")
+    tick_at(engine, clock, "2026-10-14T05:48")
+    [d] = dose_rows(db, v["id"])
+    assert d["local_time"] == "05:47"
+    assert engine.wake_status("u1")["entity"] == CHARGER
+
+
+def test_no_charger_at_all_is_said_once_a_day(wenv, caplog):
+    db, ha, clock, engine, med = wenv
+    engine.save_person("u1", {"devices": ["mobile_app_pixel"], "wake": {"entity": None}})
+    v = med("Vyvanse")
+    schedule(engine, v["id"], mode="wake")
+    caplog.clear()
+    tick_at(engine, clock, "2026-10-14T05:48")
+    tick_at(engine, clock, "2026-10-14T05:49")
+    assert [r.getMessage() for r in caplog.records].count(
+        "Can't tell when u1 gets up: no phone charging sensor is set (Settings, When I wake up) "
+        "and none was found for their phone") == 1
+
+
+def test_only_the_first_wake_up_counts(wenv, caplog):
+    db, ha, clock, engine, med = wenv
+    caplog.set_level(logging.INFO)
+    clock.set("2026-10-14T07:00")
+    engine.mark_awake("u1", datetime.fromisoformat(at("2026-10-14T05:47")), "home assistant")
+    engine.mark_awake("u1", clock(), "you")
+    status = engine.wake_status("u1")
+    assert status["woke_at"] == "05:47" and status["source"] == "home assistant"
+    assert sum("is up" in r.getMessage() for r in caplog.records) == 1

@@ -74,7 +74,9 @@ Reminders are off until you switch them on for a medication.
 
 Choose **When I wake up** instead of set times, for medications you take as soon as you're up.
 
-- The app counts you as up when your phone comes off the charger in the morning: after 4am, having charged for at least 3 hours, so a night-time unplug or a quick top-up doesn't count. Choose the phone's *Is charging* sensor from the Home Assistant app (Companion app → Manage sensors → Battery).
+- The app counts you as up when your phone comes off the charger in the morning: after 4am, having charged for at least 3 hours, so a night-time unplug or a quick top-up doesn't count. Choose the phone's *Is charging* sensor from the Home Assistant app (Companion app → Manage sensors → Battery). If you haven't chosen one, the app uses the charging sensor of the phone your reminders go to.
+- Home Assistant can tell it you're up too, with the **I'm up** action (see Actions below), for example from an automation that notices you unlock your computer or open the fridge. The first sign of the day counts.
+- The **Up today** sensor shows when you got up and how the app knew.
 - **Remind me anyway** at a set time (10am unless you change it) for mornings the phone wasn't on the charger.
 - The **Due** card shows what's waiting for you to get up, with an **I'm up** button.
 - These settings are shared by every "when I wake up" reminder. **Fine-tune** changes the earliest time and how long a charge counts as a night.
@@ -293,6 +295,14 @@ action: wellbeing_tracker.answer_reminder
 data:
   reminder_id: 12        # from the Reminders waiting sensor
   answer: taken          # taken, snooze or skip
+```
+
+```yaml
+action: wellbeing_tracker.im_up   # medications due "when I wake up" are due now
+data:
+  person: Matthew Poppell         # optional when run by that person
+  at: "{{ now() }}"               # optional: when, if earlier (today only)
+  source: computer unlocked       # optional: shown on the Up today sensor
 ```
 
 ## Times

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.25.0
+
+**Home Assistant can say you're up.**
+
+- New action **I'm up** (`wellbeing_tracker.im_up`): medications due "when I wake up" are due now. Use it in an automation that notices you're up, such as unlocking your computer, opening the dishwasher, or the phone coming off charge. Give it `at` to backdate it to earlier today. The first sign of the day counts; later ones change nothing.
+- New sensor **Up today**: when you got up today, how the app knew, the charging sensor it's watching and what's waiting for you to get up.
+- If no charging sensor is chosen under When I wake up, the app now uses the charging sensor of the phone your reminders go to. Before, it silently never noticed you getting up and only reminded you at the fallback time.
+- The app's log now says why a morning wasn't counted (no charging sensor, or a charge too short or too early), and says "is up" only once a day.
+
 ## 0.24.1
 
 - The Wellbeing and Outdoors cards could show "Configuration error" in the Home Assistant phone app while working in a browser. The integration now adds both cards to **Settings → Dashboards → Resources** (the same way HACS cards are loaded), which the phone apps load reliably. It keeps one entry per card and updates it with each version, so there's nothing to add or tidy by hand. If your dashboard resources are managed in YAML, the cards are loaded the old way.

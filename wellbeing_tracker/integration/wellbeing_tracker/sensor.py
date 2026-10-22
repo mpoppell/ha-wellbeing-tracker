@@ -28,7 +28,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: WellbeingConfigEntry,
     def add_new() -> None:
         new: list[SensorEntity] = []
         for uid, person in (coordinator.data or {}).get("people", {}).items():
-            for cls in (RemindersSensor, NextDoseSensor, MoodSensor, DoctorSensor):
+            for cls in (RemindersSensor, NextDoseSensor, MoodSensor, DoctorSensor, WokeUpSensor):
                 key = f"{uid}_{cls.key}"
                 if key not in known:
                     known.add(key)
@@ -106,6 +106,27 @@ class NextDoseSensor(PersonEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         nxt = self.person.get("next_dose") or {}
         return {"medication": nxt.get("name"), "amount": nxt.get("amount"), "due": nxt.get("status") == "due"}
+
+
+class WokeUpSensor(PersonEntity):
+    """When the person got up today (empty until then), for medications due "when I wake up"."""
+
+    key = "woke_up"
+    _attr_name = "Up today"
+    _attr_icon = "mdi:weather-sunset-up"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    @property
+    def native_value(self) -> datetime | None:
+        at = (self.person.get("wake") or {}).get("at")
+        return datetime.fromisoformat(at) if at else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        wake = self.person.get("wake") or {}
+        return {"source": wake.get("source"), "charging_sensor": wake.get("entity"),
+                "fallback": wake.get("fallback"),
+                "waiting_for_it": [w["name"] for w in wake.get("waiting") or []]}
 
 
 class MoodSensor(PersonEntity):

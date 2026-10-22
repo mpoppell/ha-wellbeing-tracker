@@ -198,6 +198,30 @@ def create_app(settings: Settings, background: bool = False) -> FastAPI:
         await engine.medication_logged(user["id"], result["saved"])
         return engine.person_overview(user)
 
+    @app.post("/api/integration/wake")
+    async def integration_wake(payload: dict = Body(...)) -> dict:
+        """'I'm up' from Home Assistant, e.g. an automation that saw you get up. `at` (optional,
+        ISO time) is when; it has to be today and not in the future. The first wake-up of the
+        day counts; later ones change nothing."""
+        user = _person(str(payload.get("user_id") or ""))
+        now = engine.clock()
+        at = now
+        if payload.get("at"):
+            try:
+                at = datetime.fromisoformat(str(payload["at"]))
+            except ValueError:
+                raise ValidationError("at must be a date and time") from None
+            if at.tzinfo is None:
+                at = at.replace(tzinfo=engine.tz)
+            if at > now:
+                at = now
+            if at.astimezone(engine.tz).date() != now.astimezone(engine.tz).date():
+                raise ValidationError("at must be today")
+        source = str(payload.get("source") or "home assistant").strip()[:40] or "home assistant"
+        engine.mark_awake(user["id"], at, source)
+        await engine.tick()
+        return engine.person_overview(user)
+
     index_html = (STATIC_DIR / "index.html").read_text().replace("{{v}}", __version__)
 
     @app.get("/", include_in_schema=False)

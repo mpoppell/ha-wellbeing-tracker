@@ -62,3 +62,18 @@ log:
       example: Matthew Poppell
       selector:
         text:
+
+im_up:
+  fields:
+    person:
+      example: Matthew Poppell
+      selector:
+        text:
+    at:
+      example: "2026-10-23 05:47:00"
+      selector:
+        datetime:
+    source:
+      example: phone off charger
+      selector:
+        text:

@@ -22,6 +22,7 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
+from homeassistant.util import dt as dt_util
 
 from .api import WellbeingApi, WellbeingError, read_connection
 from .const import CARD_URL, DOMAIN, OUTDOORS_CARD_URL, REMINDER_EVENT
@@ -48,6 +49,11 @@ LOG_SCHEMA = vol.Schema({
     vol.Required("item"): cv.string,
     vol.Required("value"): vol.Coerce(float),
     vol.Optional("person"): cv.string,
+})
+IM_UP_SCHEMA = vol.Schema({
+    vol.Optional("person"): cv.string,
+    vol.Optional("at"): cv.datetime,
+    vol.Optional("source"): cv.string,
 })
 LOG_DOSE_SCHEMA = vol.Schema({
     vol.Required("medication"): cv.string,
@@ -133,7 +139,23 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             raise HomeAssistantError(str(err)) from err
         coord.update_person(fresh)
 
+    async def im_up(call: ServiceCall) -> None:
+        """Someone's up: medications due "when I wake up" are due now (or from `at`)."""
+        coord = coordinator()
+        person = find_person(coord, call, call.data.get("person"))
+        await check_allowed(call, person["user_id"])
+        at = call.data.get("at")
+        if at is not None:
+            at = dt_util.as_local(at) if at.tzinfo else at.replace(tzinfo=dt_util.get_default_time_zone())
+        try:
+            fresh = await coord.api.wake(person["user_id"], at.isoformat() if at else None,
+                                         call.data.get("source"))
+        except WellbeingError as err:
+            raise HomeAssistantError(str(err)) from err
+        coord.update_person(fresh)
+
     hass.services.async_register(DOMAIN, "answer_reminder", answer_reminder, schema=ANSWER_SCHEMA)
+    hass.services.async_register(DOMAIN, "im_up", im_up, schema=IM_UP_SCHEMA)
     hass.services.async_register(DOMAIN, "log", log, schema=LOG_SCHEMA)
     hass.services.async_register(DOMAIN, "log_dose", log_dose, schema=LOG_DOSE_SCHEMA)
     return True

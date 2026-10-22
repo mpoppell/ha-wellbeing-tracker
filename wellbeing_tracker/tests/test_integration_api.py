@@ -86,3 +86,31 @@ def test_people_who_never_used_the_app_are_left_out(tmp_path):
     t = db.list_trackers("real")[0]
     db.save_checkin("real", "2026-10-17T09:00:00+11:00", [{"tracker_id": t["id"], "value_num": 5}])
     assert [u["id"] for u in db.active_users()] == ["real"]
+
+
+def test_home_assistant_says_im_up(tmp_path):
+    app, token, ingress, core = setup(tmp_path)
+    auth = {"Authorization": f"Bearer {token}"}
+    me = user_headers("u1")
+    ingress.get("/api/me", headers=me)
+    ingress.post("/api/trackers", headers=me, json={"kind": "medication", "name": "Vyvanse", "config": {}})
+    [person] = core.get("/api/integration/overview", headers=auth).json()["people"]
+    assert person["wake"]["woke_at"] is None
+    after = core.post("/api/integration/wake", headers=auth, json={"user_id": "u1"}).json()
+    assert after["wake"]["woke_at"] is not None and after["wake"]["source"] == "home assistant"
+    # the first one counts
+    again = core.post("/api/integration/wake", headers=auth, json={"user_id": "u1", "source": "later"}).json()
+    assert again["wake"] == after["wake"]
+    assert core.post("/api/integration/wake", headers=auth, json={"user_id": "u1", "at": "yesterday"}).status_code == 422
+    assert core.post("/api/integration/wake", headers=auth, json={"user_id": "nobody"}).status_code == 404
+
+
+def test_im_up_from_home_assistant_has_to_be_today(tmp_path):
+    _, token, ingress, core = setup(tmp_path)
+    auth = {"Authorization": f"Bearer {token}"}
+    ingress.get("/api/me", headers=user_headers("u1"))
+    assert core.post("/api/integration/wake", headers=auth,
+                     json={"user_id": "u1", "at": "2001-01-01T05:47:00+11:00"}).status_code == 422
+    # a time in the future is taken as now
+    ok = core.post("/api/integration/wake", headers=auth, json={"user_id": "u1", "at": "2999-01-01T05:47:00+11:00"})
+    assert ok.status_code == 200 and ok.json()["wake"]["source"] == "home assistant"

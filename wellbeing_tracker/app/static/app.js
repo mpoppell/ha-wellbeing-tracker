@@ -1337,8 +1337,8 @@ function dueCard(view) {
     el("div", { class: "brow-text" },
       el("span", { class: "brow-name" }, `When you're up: ${joinNames(upFor.map((x) => x.name))}`),
       el("span", { class: "row-sub" }, state.wake.fallback
-        ? `Due when your phone comes off the charger, or at ${niceTime(state.wake.fallback)}.`
-        : "Due when your phone comes off the charger.")),
+        ? `Due when you're up (off the charger, or seen by Home Assistant), or at ${niceTime(state.wake.fallback)}.`
+        : "Due when you're up (off the charger, or seen by Home Assistant).")),
     el("button", { type: "button", class: "primary small", onclick: async (ev) => {
       ev.currentTarget.disabled = true;
       try {

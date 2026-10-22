@@ -36,6 +36,9 @@ def person(uid="u1", name="Matthew Poppell", inbox=None):
         "mood": {"value": 8, "max": 10, "label": "Good", "at": "2026-10-15T09:00:00+11:00"},
         "mood_scale": {"tracker_id": 1, "min": 1, "max": 10, "labels": ["Awful", "Very bad", "Bad", "Poor", "Meh",
                                                                        "Okay", "Fine", "Good", "Very good", "Great"]},
+        "wake": {"woke_at": None, "at": None, "source": None, "fallback": "10:00",
+                 "entity": "binary_sensor.my_phone_s26u_is_charging",
+                 "waiting": [{"tracker_id": 20, "name": "Vyvanse", "conditional": False}]},
     }
 
 
@@ -176,3 +179,29 @@ async def test_bubble_friendly_entities(hass: HomeAssistant, aioclient_mock):
 
     await hass.services.async_call(DOMAIN, "log", {"item": "Energy", "value": 7}, blocking=True)
     assert aioclient_mock.mock_calls[-1][2] == {"user_id": "u1", "item": "Energy", "value": 7.0}
+
+
+async def test_im_up(hass: HomeAssistant, aioclient_mock):
+    await setup(hass, aioclient_mock)
+    up = hass.states.get("sensor.wellbeing_matthew_poppell_up_today")
+    assert up.state == "unknown" and up.attributes["waiting_for_it"] == ["Vyvanse"]
+    assert up.attributes["charging_sensor"] == "binary_sensor.my_phone_s26u_is_charging"
+    woke = person()
+    woke["wake"] = {**woke["wake"], "woke_at": "05:47", "at": "2026-10-22T18:47:00+00:00",
+                    "source": "phone off charger", "waiting": []}
+    aioclient_mock.post(f"{URL}/api/integration/wake", json=woke)
+    await hass.services.async_call(DOMAIN, "im_up", {"at": "2026-10-23 05:47:00", "source": "phone off charger"},
+                                   blocking=True)
+    sent = aioclient_mock.mock_calls[-1][2]
+    assert sent["user_id"] == "u1" and sent["source"] == "phone off charger"
+    assert sent["at"].startswith("2026-10-23T05:47:00")
+    await hass.async_block_till_done()
+    up = hass.states.get("sensor.wellbeing_matthew_poppell_up_today")
+    assert up.state == "2026-10-22T18:47:00+00:00" and up.attributes["source"] == "phone off charger"
+
+
+async def test_only_your_own_im_up(hass: HomeAssistant, aioclient_mock, hass_read_only_user):
+    await setup(hass, aioclient_mock, person(), person("u2", "Kayla", inbox=[]))
+    with pytest.raises(Unauthorized):
+        await hass.services.async_call(DOMAIN, "im_up", {"person": "Matthew Poppell"}, blocking=True,
+                                       context=Context(user_id=hass_read_only_user.id))
