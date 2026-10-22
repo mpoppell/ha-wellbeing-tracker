@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.25.1
+
+- When I wake up: the charging sensor list now starts with your phone's **Is charging** sensor. Before, it started with whichever charging sensor came first alphabetically, so it could suggest something like a doorbell's battery, and mornings went unnoticed. If **Up today** shows a charging sensor that isn't your phone, open a "when I wake up" medication, choose your phone's Is charging sensor and save.
+
 ## 0.25.0
 
 **Home Assistant can say you're up.**

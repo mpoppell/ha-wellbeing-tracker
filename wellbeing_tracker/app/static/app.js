@@ -3402,7 +3402,12 @@ async function openScheduleSheet(t, view, opts = {}) {
   const w = person.wake || {};
   const wakeAfter = selectOf([[0, "As soon as I'm up"], [15, "15 minutes after"], [30, "30 minutes after"], [60, "1 hour after"],
     [120, "2 hours after"]], s.wake_after || 0);
+  // The phone reminders go to first (notify.mobile_app_s26u has binary_sensor.<...>s26u_is_charging),
+  // then any phone's "Is charging", then other charging sensors (a doorbell's battery isn't you).
+  const slugs = (person.devices || []).map((d) => d.replace(/^notify\./, "").replace(/^mobile_app_/, "")).filter(Boolean);
+  const chargerRank = (id) => slugs.some((sl) => id.endsWith(`${sl}_is_charging`)) ? 0 : id.endsWith("_is_charging") ? 1 : 2;
   const chargers = (ha.binary_sensors || []).filter((x) => /charg/.test(x.entity_id))
+    .sort((a, b) => chargerRank(a.entity_id) - chargerRank(b.entity_id))
     .map((x) => ({ id: x.entity_id, name: x.name, sub: x.entity_id, icon: ICONS.phone }));
   const otherBinary = (ha.binary_sensors || []).filter((x) => !/charg/.test(x.entity_id))
     .map((x) => ({ id: x.entity_id, name: x.name, sub: x.entity_id, icon: ICONS.phone }));
