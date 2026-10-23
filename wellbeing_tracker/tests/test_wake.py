@@ -248,3 +248,21 @@ def test_only_the_first_wake_up_counts(wenv, caplog):
     status = engine.wake_status("u1")
     assert status["woke_at"] == "05:47" and status["source"] == "home assistant"
     assert sum("is up" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_home_assistant_decides_when_its_awake_switch_is_set(wenv):
+    db, ha, clock, engine, med = wenv
+    v = med("Vyvanse")
+    schedule(engine, v["id"], mode="wake")
+    engine.set_wake_source("u1", "switch.wellbeing_pops_awake")
+    assert engine.wake_status("u1")["managed_by"] == "switch.wellbeing_pops_awake"
+    ha.set_charger("off", "2026-10-14T05:47")
+    tick_at(engine, clock, "2026-10-14T05:48")
+    assert dose_rows(db, v["id"]) == []  # the charger alone no longer decides
+    clock.set("2026-10-14T05:50")
+    engine.mark_awake("u1", datetime.fromisoformat(at("2026-10-14T05:40")), "phone in use")
+    tick_at(engine, clock, "2026-10-14T05:50")
+    [d] = dose_rows(db, v["id"])
+    assert d["local_time"] == "05:40"
+    engine.set_wake_source("u1", None)
+    assert engine.wake_status("u1")["managed_by"] is None

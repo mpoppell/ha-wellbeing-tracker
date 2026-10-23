@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.26.0
+
+**An Awake switch for everyone: on while you're up, off while you're asleep.**
+
+- New **Awake** switch on each person's Wellbeing device. Set it up in Settings → Devices & services → Wellbeing Tracker → **Configure**, with your phone, Sleep as Android and bedroom light suggested. It turns off when sleep tracking starts (or, on nights you don't track, when you're home with the phone on charge, the lights off and everything quiet) and on at the first sign you're up: the phone off a night's charge, using your phone for a few minutes, walking, leaving home, or signs you choose such as unlocking your computer or opening the dishwasher. Flip it by hand any time.
+- Use it in automations for "when I wake up" and "when I fall asleep".
+- Waking up counts for medications due "when I wake up". While the switch is set up, the app leaves it to Home Assistant, and the wake-up settings say so with a **Change in Home Assistant** button.
+- Only a fresh unlock counts as using the phone: phones can report "unlocked" all night.
+
 ## 0.25.1
 
 - When I wake up: the charging sensor list now starts with your phone's **Is charging** sensor. Before, it started with whichever charging sensor came first alphabetically, so it could suggest something like a doorbell's battery, and mornings went unnoticed. If **Up today** shows a charging sensor that isn't your phone, open a "when I wake up" medication, choose your phone's Is charging sensor and save.

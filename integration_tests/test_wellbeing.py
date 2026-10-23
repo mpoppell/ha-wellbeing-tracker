@@ -46,9 +46,10 @@ def overview(*people):
     return {"version": "0.13.0", "panel_path": "/882b0587_wellbeing_tracker", "people": list(people) or [person()]}
 
 
-async def setup(hass, aioclient_mock, *people):
+async def setup(hass, aioclient_mock, *people, options=None):
     aioclient_mock.get(f"{URL}/api/integration/overview", json=overview(*people))
-    entry = MockConfigEntry(domain=DOMAIN, data=CONNECTION, unique_id=DOMAIN)
+    aioclient_mock.post(f"{URL}/api/integration/wake_source", json=(people or (person(),))[0])
+    entry = MockConfigEntry(domain=DOMAIN, data=CONNECTION, unique_id=DOMAIN, options=options or {})
     entry.add_to_hass(hass)
     with patch("custom_components.wellbeing_tracker.read_connection", return_value=None):
         assert await hass.config_entries.async_setup(entry.entry_id)

@@ -246,6 +246,15 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (user_id, day)
     );
     """,
+    # 14: a Home Assistant switch that decides when someone is up (the integration's Awake
+    # switch). While set, the app doesn't watch the charger itself.
+    """
+    CREATE TABLE wake_sources (
+        user_id    TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        entity_id  TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    """,
 ]
 
 

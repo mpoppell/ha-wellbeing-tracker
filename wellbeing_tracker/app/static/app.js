@@ -1336,9 +1336,8 @@ function dueCard(view) {
     el("span", { class: "card-icon" }, svgIcon(ICONS.sun)),
     el("div", { class: "brow-text" },
       el("span", { class: "brow-name" }, `When you're up: ${joinNames(upFor.map((x) => x.name))}`),
-      el("span", { class: "row-sub" }, state.wake.fallback
-        ? `Due when you're up (off the charger, or seen by Home Assistant), or at ${niceTime(state.wake.fallback)}.`
-        : "Due when you're up (off the charger, or seen by Home Assistant).")),
+      el("span", { class: "row-sub" }, (state.wake.managed_by ? "Due when Home Assistant sees you're up"
+        : "Due when your phone comes off the charger") + (state.wake.fallback ? `, or at ${niceTime(state.wake.fallback)}.` : "."))),
     el("button", { type: "button", class: "primary small", onclick: async (ev) => {
       ev.currentTarget.disabled = true;
       try {
@@ -3356,10 +3355,11 @@ function noPhoneNotice(person, view) {
 
 async function openScheduleSheet(t, view, opts = {}) {
   const sheet = document.getElementById("sheet");
-  let sched, person, ha;
+  let sched, person, ha, wakeNow;
   try {
-    [sched, person, ha] = await Promise.all([
-      api("GET", `api/trackers/${t.id}/schedule`), api("GET", "api/reminders/settings"), haOptions()]);
+    [sched, person, ha, wakeNow] = await Promise.all([
+      api("GET", `api/trackers/${t.id}/schedule`), api("GET", "api/reminders/settings"), haOptions(),
+      api("GET", "api/wake").catch(() => null)]);
   } catch (err) { toast(err.message); return; }
   const s = sched.settings;
 
@@ -3422,14 +3422,27 @@ async function openScheduleSheet(t, view, opts = {}) {
   drawFallback();
   const earliest = el("time-field", { value: w.earliest || "04:00", "aria-label": "Not before" });
   const minHours = selectOf([[1, "1 hour"], [2, "2 hours"], [3, "3 hours"], [4, "4 hours"], [5, "5 hours"]], w.min_hours || 3);
+  // When the integration's Awake switch decides, say so and link to its settings instead.
+  const managedBy = wakeNow && wakeNow.managed_by;
+  const howBlock = managedBy
+    ? el("div", { class: "field" },
+        el("span", {}, "How the app knows you're up"),
+        el("p", { class: "row-sub" }, "Home Assistant decides, with your Awake switch (", el("code", {}, managedBy),
+          "). It watches your phone, sleep tracking and the signs you chose, and you can flip it by hand."),
+        el("a", { class: "secondary small", href: "/config/integrations/integration/wellbeing_tracker", target: "_top" },
+          "Change in Home Assistant"),
+        el("span", { class: "hint" }, "Settings \u2192 Devices & services \u2192 Wellbeing Tracker \u2192 Configure."))
+    : el("div", {},
+        field("How the app knows you're up", charger.node,
+          "Your phone's charging sensor from the Home Assistant app. Coming off the charger in the morning counts as getting up. "
+          + "For more ways (sleep tracking, unlocking the phone, leaving home), use Configure on the Wellbeing Tracker integration in Home Assistant."),
+        el("details", { class: "more" }, el("summary", {}, "Fine-tune"),
+          field("Not before", earliest, "Unplugging earlier than this (say, in the night) doesn't count."),
+          field("After charging for at least", minHours, "So a quick top-up isn't mistaken for a night's charge.")));
   const wakeBlock = el("div", {},
     field("Remind me", wakeAfter),
-    field("How the app knows you're up", charger.node,
-      "Your phone's charging sensor from the Home Assistant app. Coming off the charger in the morning counts as getting up."),
+    howBlock,
     fallbackOn.node, fallbackPanel,
-    el("details", { class: "more" }, el("summary", {}, "Fine-tune"),
-      field("Not before", earliest, "Unplugging earlier than this (say, in the night) doesn't count."),
-      field("After charging for at least", minHours, "So a quick top-up isn't mistaken for a night's charge.")),
     el("p", { class: "row-sub" }, "These wake-up settings are shared by all your \"when I wake up\" reminders. In the app you can also tap I'm up."));
 
   // ----- only on some days -----

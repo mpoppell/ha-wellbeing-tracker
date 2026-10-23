@@ -34,7 +34,7 @@ except ImportError:  # older Home Assistant
     LOVELACE_DATA = "lovelace"
 
 _LOGGER = logging.getLogger(__name__)
-PLATFORMS = [Platform.BUTTON, Platform.SELECT, Platform.SENSOR]
+PLATFORMS = [Platform.BUTTON, Platform.SELECT, Platform.SENSOR, Platform.SWITCH]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 HERE = Path(__file__).parent
 
@@ -210,7 +210,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: WellbeingConfigEntry) ->
 
     entry.async_on_unload(hass.bus.async_listen(REMINDER_EVENT, on_reminder))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    entry.async_on_unload(entry.add_update_listener(_options_changed))
     return True
+
+
+async def _options_changed(hass: HomeAssistant, entry: WellbeingConfigEntry) -> None:
+    """New awake and asleep signals: start the switches again with them."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: WellbeingConfigEntry) -> bool:

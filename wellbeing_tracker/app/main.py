@@ -198,6 +198,17 @@ def create_app(settings: Settings, background: bool = False) -> FastAPI:
         await engine.medication_logged(user["id"], result["saved"])
         return engine.person_overview(user)
 
+    @app.post("/api/integration/wake_source")
+    async def integration_wake_source(payload: dict = Body(...)) -> dict:
+        """The integration's Awake switch decides when this person is up (or, with no entity_id,
+        no longer does and the app goes back to watching the charger)."""
+        user = _person(str(payload.get("user_id") or ""))
+        entity_id = payload.get("entity_id")
+        if entity_id is not None and not (isinstance(entity_id, str) and entity_id.startswith("switch.")):
+            raise ValidationError("entity_id must be a switch")
+        engine.set_wake_source(user["id"], entity_id)
+        return engine.person_overview(user)
+
     @app.post("/api/integration/wake")
     async def integration_wake(payload: dict = Body(...)) -> dict:
         """'I'm up' from Home Assistant, e.g. an automation that saw you get up. `at` (optional,

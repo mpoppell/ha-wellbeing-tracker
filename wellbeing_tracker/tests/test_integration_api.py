@@ -114,3 +114,19 @@ def test_im_up_from_home_assistant_has_to_be_today(tmp_path):
     # a time in the future is taken as now
     ok = core.post("/api/integration/wake", headers=auth, json={"user_id": "u1", "at": "2999-01-01T05:47:00+11:00"})
     assert ok.status_code == 200 and ok.json()["wake"]["source"] == "home assistant"
+
+
+def test_the_integration_says_its_switch_decides(tmp_path):
+    _, token, ingress, core = setup(tmp_path)
+    auth = {"Authorization": f"Bearer {token}"}
+    me = user_headers("u1")
+    ingress.get("/api/me", headers=me)
+    ingress.post("/api/trackers", headers=me, json={"kind": "medication", "name": "Vyvanse", "config": {}})
+    out = core.post("/api/integration/wake_source", headers=auth,
+                    json={"user_id": "u1", "entity_id": "switch.wellbeing_pops_awake"}).json()
+    assert out["wake"]["managed_by"] == "switch.wellbeing_pops_awake"
+    assert ingress.get("/api/wake", headers=me).json()["managed_by"] == "switch.wellbeing_pops_awake"
+    assert core.post("/api/integration/wake_source", headers=auth,
+                     json={"user_id": "u1", "entity_id": "light.nope"}).status_code == 422
+    out = core.post("/api/integration/wake_source", headers=auth, json={"user_id": "u1", "entity_id": None}).json()
+    assert out["wake"]["managed_by"] is None

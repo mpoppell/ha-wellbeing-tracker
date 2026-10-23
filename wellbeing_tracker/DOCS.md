@@ -75,7 +75,8 @@ Reminders are off until you switch them on for a medication.
 Choose **When I wake up** instead of set times, for medications you take as soon as you're up.
 
 - The app counts you as up when your phone comes off the charger in the morning: after 4am, having charged for at least 3 hours, so a night-time unplug or a quick top-up doesn't count. Choose the phone's *Is charging* sensor from the Home Assistant app (Companion app → Manage sensors → Battery). If you haven't chosen one, the app uses the charging sensor of the phone your reminders go to.
-- Home Assistant can tell it you're up too, with the **I'm up** action (see Actions below), for example from an automation that notices you unlock your computer or open the fridge. The first sign of the day counts.
+- For more ways to tell, use Home Assistant's **Awake** switch (below). Once it's set up, it decides when you're up, and this screen links to its settings.
+- Home Assistant can also tell it you're up with the **I'm up** action (see Actions below). The first sign of the day counts.
 - The **Up today** sensor shows when you got up and how the app knew.
 - **Remind me anyway** at a set time (10am unless you change it) for mornings the phone wasn't on the charger.
 - The **Due** card shows what's waiting for you to get up, with an **I'm up** button.
@@ -272,6 +273,13 @@ card_type: select
 entity: select.wellbeing_matthew_poppell_mood
 name: Mood today
 ```
+
+**Awake switch**: each person's device has an **Awake** switch: on while you're up, off while you're most likely asleep. Set it up in **Settings → Devices & services → Wellbeing Tracker → Configure** (suggestions are filled in from your phone and Sleep as Android):
+
+- **Asleep** when sleep tracking starts. If you don't track a night: after **Bedtime from**, home, phone on charge and the bedroom lights off, with nothing else happening for a while (and nothing in **Not asleep while on**, such as your computer). It's dated to when things went quiet.
+- **Awake**, after the **Earliest wake-up** and once sleep tracking has stopped, at the first of: the phone coming off a night's charge, a fresh unlock that stays unlocked for a few minutes, the phone noticing walking, any of your **Signs you're up** (a computer unlocking, the dishwasher opening, a kettle's power), or leaving home. Leaving home and the charger count even if sleep tracking was left running. A daytime nap ends at the first sign of life.
+- You can always flip it by hand. Its **since** and **how** attributes say when and why it last changed.
+- Waking up counts for medications due when you're up. Use the switch in your own automations: "when Awake turns on" for when you wake up, "when it turns off" for when you fall asleep.
 
 **Actions** for automations and scripts:
 

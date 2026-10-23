@@ -87,5 +87,53 @@
         }
       }
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Awake and asleep",
+        "description": "Whose Awake switch do you want to set up?",
+        "data": {
+          "person": "Person"
+        }
+      },
+      "person": {
+        "title": "Awake and asleep: {name}",
+        "description": "The **Awake** switch on {name}'s Wellbeing device turns off when they're most likely asleep and on when they're up. Use it in automations for \"when I wake up\" and \"when I fall asleep\"; waking up also counts for medications due when you're up. It can always be flipped by hand. Leave anything you don't have empty.",
+        "data": {
+          "sleep_tracking": "Sleep tracking",
+          "charging": "Phone charging",
+          "phone_locked": "Phone locked",
+          "activity": "Phone activity",
+          "person": "Person",
+          "lights": "Bedroom lights",
+          "signs": "Signs you're up",
+          "keep_awake": "Not asleep while on",
+          "earliest": "Earliest wake-up",
+          "bedtime_after": "Bedtime from",
+          "night_charge_hours": "A night's charge",
+          "in_use_minutes": "Phone in use for",
+          "quiet_minutes": "Quiet for"
+        },
+        "data_description": {
+          "sleep_tracking": "Sleep as Android's Sleep tracking event. Starting it means asleep; until it stops, only leaving home or the charger can mean awake.",
+          "charging": "Coming off charge after a night's charge means awake. On charge at bedtime helps tell you're asleep when you don't track.",
+          "phone_locked": "Unlocking the phone and using it for a while means awake. Only a fresh unlock counts, so a phone left unlocked overnight doesn't.",
+          "activity": "The phone noticing walking or running means awake.",
+          "person": "Leaving home means awake. Away from home is never asleep by the bedtime rule.",
+          "lights": "With no sleep tracking: home, phone on charge and these off, quiet for a while, means asleep.",
+          "signs": "Things that only happen once you're up: a computer unlocking, the dishwasher or fridge opening, the kettle drawing power. Each counts when it turns on, opens or unlocks, or a power sensor goes over 20 W.",
+          "keep_awake": "Never asleep by the bedtime rule while any of these is on, such as your computer or the TV.",
+          "earliest": "Nothing counts as waking up before this (except leaving home and the switch itself).",
+          "bedtime_after": "The bedtime rule (no sleep tracking) only applies from this time until the earliest wake-up.",
+          "night_charge_hours": "Charging at least this long counts as a night on charge, not a top-up.",
+          "in_use_minutes": "Unlocked this long counts as being up.",
+          "quiet_minutes": "With no sleep tracking: how long everything has to be quiet before it counts as asleep."
+        }
+      }
+    },
+    "abort": {
+      "no_people": "Nobody uses Wellbeing yet. Open the app once, then come back."
+    }
   }
 }

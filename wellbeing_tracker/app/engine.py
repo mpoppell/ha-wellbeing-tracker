@@ -376,6 +376,8 @@ class Engine:
         earliest = datetime.combine(today, time(h, m), self.tz)
         if now < earliest:
             return
+        if self.wake_source(user_id):
+            return  # Home Assistant's Awake switch says when (see /api/integration/wake)
         if not w["entity"]:
             if (user_id, today.isoformat()) not in self._wake_warned:
                 self._wake_warned.add((user_id, today.isoformat()))
@@ -407,6 +409,20 @@ class Engine:
         elif st.get("state") == "off":
             log.info("%s came off charge but it doesn't count as getting up (before %s, or charged "
                      "under %s hours)", w["entity"], w["earliest"], w["min_hours"])
+
+    def wake_source(self, user_id: str) -> str | None:
+        with self.db.connect() as conn:
+            row = conn.execute("SELECT entity_id FROM wake_sources WHERE user_id = ?", (user_id,)).fetchone()
+        return row["entity_id"] if row else None
+
+    def set_wake_source(self, user_id: str, entity_id: str | None) -> None:
+        with self.db.connect() as conn:
+            if entity_id:
+                conn.execute("INSERT INTO wake_sources (user_id, entity_id, updated_at) VALUES (?, ?, ?) "
+                             "ON CONFLICT(user_id) DO UPDATE SET entity_id = excluded.entity_id, "
+                             "updated_at = excluded.updated_at", (user_id, entity_id, iso(self.clock())))
+            else:
+                conn.execute("DELETE FROM wake_sources WHERE user_id = ?", (user_id,))
 
     def mark_awake(self, user_id: str, at: datetime, source: str = "you") -> dict:
         """Record when someone got up today. The first one counts; later ones change nothing."""
@@ -497,6 +513,7 @@ class Engine:
             "waiting": [] if woke else waiting,
             "fallback": w["fallback"],
             "entity": w["entity"] or self._wake_guess.get(user_id),
+            "managed_by": self.wake_source(user_id),
         }
 
     def _generate_after(self, conn, row, s: dict, now: datetime) -> None:
