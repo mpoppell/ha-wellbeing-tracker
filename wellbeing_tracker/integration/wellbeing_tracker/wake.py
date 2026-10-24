@@ -38,7 +38,8 @@ DEFAULTS: dict[str, Any] = {
     "signs": [],                 # anything that only happens once you're up
     "keep_awake": [],            # not asleep while any of these is on (a computer, the TV)
     "earliest": "04:00",         # no waking up before this
-    "bedtime_after": "20:00",    # the no-tracking bedtime rule only applies from this time
+    "bedtime_after": "20:00",    # the no-tracking bedtime rule applies from this time...
+    "bedtime_until": "09:00",    # ...until this time (late nights happen)
     "night_charge_hours": 3,     # a charge this long counts as a night's charge
     "in_use_minutes": 10,        # unlocked this long counts as up
     "quiet_minutes": 30,         # no tracking: quiet this long counts as asleep
@@ -124,8 +125,14 @@ class Rules:
         return first if local < first else first + timedelta(days=1)
 
     def _is_night(self, at: datetime) -> bool:
+        """Between bedtime and the earliest wake-up: asleep then isn't a nap."""
         t = self._local(at).time().replace(tzinfo=None)
         return t >= _clock(self.s["bedtime_after"]) or t < _clock(self.s["earliest"])
+
+    def _is_bedtime(self, at: datetime) -> bool:
+        """When the no-tracking bedtime rule applies: from bedtime until late morning."""
+        t = self._local(at).time().replace(tzinfo=None)
+        return t >= _clock(self.s["bedtime_after"]) or t < _clock(self.s["bedtime_until"])
 
     def may_wake(self, now: datetime, strong: bool = False) -> bool:
         """Asleep, it's late enough, and (unless strong) sleep tracking isn't still running."""
@@ -228,7 +235,7 @@ class Rules:
     def _fallback_sleep(self, now: datetime) -> Change | None:
         """No sleep tracking tonight: home, on charge, lights off and quiet for a while."""
         s = self.s
-        if not self.awake or not self._is_night(now):
+        if not self.awake or not self._is_bedtime(now):
             return None
         if s["sleep_tracking"] and self.tracking == "started":
             return None  # tracking would have said so

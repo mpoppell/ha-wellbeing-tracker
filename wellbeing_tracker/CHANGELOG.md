@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.27.0
+
+**Your Awake switch fills in nights Sleep as Android didn't track.**
+
+- Sleep: each morning now uses, in order, your own times, Sleep as Android, your **Awake** switch in Home Assistant, the estimate from your bedroom and phone, then Android's sleep detection. So Sleep as Android always wins on nights you track, and the Awake switch covers the rest, with no setup in the app. **How this was worked out** shows why it went to sleep and woke.
+- A night from a less trusted source can no longer overwrite a better one that started at the same moment (the Awake switch goes to sleep the second Sleep as Android starts).
+- Awake switch: the no-tracking bedtime rule now runs until 9am (**Bedtime until** under Configure), not just until the earliest wake-up. Going to bed at 3:40am with no tracking used to leave the switch on all night.
+
 ## 0.26.0
 
 **An Awake switch for everyone: on while you're up, off while you're asleep.**

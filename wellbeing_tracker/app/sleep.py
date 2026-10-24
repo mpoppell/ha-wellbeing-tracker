@@ -6,6 +6,8 @@ Sources, best first:
   mark the night, and "Sleep phase" events (deep, light, REM, awake) fill it in.
 * Android's own sleep detection (Home Assistant Companion app): the "Sleep segment" sensor
   gives each night's start and end, without phases.
+* Home Assistant's Awake switch (the Wellbeing Tracker integration): off while you're asleep.
+  Used for nights Sleep as Android didn't track.
 * Your home: the bedroom light going off, your phone going on charge and being put down mark
   bedtime; the opposite marks getting up. Android's sleep detection (sleep segments, or the
   "Sleep confidence" sensor) then says when you were actually asleep in between. These nights
@@ -305,6 +307,54 @@ def nights_from_home(signals: dict, tz, now: datetime, days: int, segments: list
                 why.append({"at": local(t), "what": up_marks[key], "entity": names.get(key)})
         why.sort(key=lambda x: x["at"])
         nights.append({"start": bed, "end": up, "phases": phases, "source": "home", "why": why})
+    return nights
+
+
+# ---------------- the Awake switch ----------------
+
+SWITCH_GAP = timedelta(hours=1)  # awake for less than this in the night (switched back by hand) is one night
+
+
+def nights_from_awake_switch(rows: list[dict], tz, now: datetime) -> list[dict]:
+    """Nights from the integration's Awake switch: each stretch it was off (asleep) overnight.
+
+    The switch often decides a little after the fact ("asleep since the lights went off 30
+    minutes ago"), and says so in its `since` attribute; that time is used when it's given."""
+    steps: list[tuple[datetime, bool, str | None]] = []
+    for r in rows:
+        state = r.get("state")
+        at = _when(r.get("last_changed") or r.get("last_updated"))
+        if state not in ("on", "off") or at is None:
+            continue
+        attrs = r.get("attributes") or {}
+        since = _when(attrs.get("since"))
+        if since and timedelta(0) <= at - since <= timedelta(hours=3):
+            at = since
+        asleep = state == "off"
+        if steps and steps[-1][1] == asleep:
+            continue  # the same again (a restart)
+        steps.append((at, asleep, attrs.get("how")))
+    runs: list[list] = []
+    for i, (at, asleep, how) in enumerate(steps):
+        if not asleep:
+            continue
+        nxt = steps[i + 1] if i + 1 < len(steps) else None
+        if nxt is None:
+            continue  # still asleep
+        if runs and at - runs[-1][1] <= SWITCH_GAP:
+            runs[-1][1], runs[-1][3] = nxt[0], nxt[2]
+        else:
+            runs.append([at, nxt[0], how, nxt[2]])
+    nights = []
+    local = lambda d: d.astimezone(tz)  # noqa: E731
+    for start, end, fell, woke in runs:
+        hour = local(start).hour
+        if end - start < SHORTEST_NIGHT or not (hour >= 18 or hour < 8):
+            continue  # a nap, or not a night
+        why = [{"at": local(start).isoformat(timespec="minutes"), "what": f"Asleep: {fell}" if fell else "Asleep"},
+               {"at": local(end).isoformat(timespec="minutes"), "what": f"Awake: {woke}" if woke else "Awake"}]
+        nights.append({"start": start, "end": end, "phases": [(start, end, ASLEEP)], "source": "awake_switch",
+                       "why": why})
     return nights
 
 

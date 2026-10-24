@@ -83,3 +83,80 @@ def test_engine_saves_nights_and_fills_in_sleep(tmp_path):
     assert [n["night"] for n in view["nights"]] == ["2026-10-14"]
     [entry] = db.list_entries("u1", "2026-10-14", "2026-10-14")
     assert entry["value_json"]["hours"] == 3.97 and entry["source"] == "ha"
+
+
+# ----- Home Assistant's Awake switch -----
+
+def sw(state, recorded, since=None, how=None):
+    return {"state": state, "last_changed": recorded, "attributes": {"since": since, "how": how}}
+
+
+AWAKE_SWITCH = [
+    sw("on", "2026-10-13T08:00:00+00:00"),
+    # the night of 13-14 Oct, again: asleep when tracking started, awake when the phone came off charge
+    sw("off", "2026-10-13T14:51:05+00:00", "2026-10-13T14:51:03+00:00", "sleep tracking started"),
+    sw("on", "2026-10-13T19:20:00+00:00", "2026-10-13T19:20:00+00:00", "phone off charger"),
+    # 14-15 Oct, not tracked: decided half an hour after the lights went off, dated back to them
+    sw("off", "2026-10-14T13:30:00+00:00", "2026-10-14T13:00:00+00:00", "phone on charge and lights off"),
+    sw("off", "2026-10-14T16:00:00+00:00", "2026-10-14T13:00:00+00:00", "phone on charge and lights off"),  # restart
+    sw("on", "2026-10-14T16:20:00+00:00", "2026-10-14T16:20:00+00:00", "manual"),      # up at 3:20am for a bit
+    sw("off", "2026-10-14T16:50:00+00:00", "2026-10-14T16:45:00+00:00", "manual"),
+    sw("on", "2026-10-14T20:05:00+00:00", "2026-10-14T19:55:00+00:00", "phone in use"),
+    # an afternoon nap is not a night
+    sw("off", "2026-10-15T04:00:00+00:00", "2026-10-15T04:00:00+00:00", "sleep tracking started"),
+    sw("on", "2026-10-15T07:30:00+00:00", "2026-10-15T07:30:00+00:00", "walking"),
+    # still asleep: not a night yet
+    sw("off", "2026-10-15T12:00:00+00:00", "2026-10-15T12:00:00+00:00", "sleep tracking started"),
+]
+
+
+def test_nights_from_the_awake_switch():
+    nights = sleep.nights_from_awake_switch(AWAKE_SWITCH, SYD, datetime(2026, 10, 15, 14, 0, tzinfo=SYD))
+    info = [sleep.summary(n, SYD) for n in nights]
+    assert [(i["night"], i["start"], i["end"]) for i in info] == [
+        ("2026-10-14", "2026-10-14T01:51+11:00", "2026-10-14T06:20+11:00"),
+        ("2026-10-15", "2026-10-15T00:00+11:00", "2026-10-15T06:55+11:00"),  # the 3:20am wake-up doesn't split it
+    ]
+    assert all(i["source"] == "awake_switch" and not i["has_phases"] for i in info)
+    assert [w["what"] for w in info[1]["why"]] == ["Asleep: phone on charge and lights off", "Awake: phone in use"]
+
+
+def test_sleep_as_android_wins_over_the_awake_switch(tmp_path):
+    db = Database(tmp_path / "w.db")
+    db.migrate()
+    db.touch_user("u1", "matt", "Matthew")
+    ha = FakeHA()
+
+    async def get_history(entity_id, start, end, attributes=False):
+        if entity_id.startswith("switch."):
+            return AWAKE_SWITCH
+        return TRACKING if "tracking" in entity_id else PHASES
+    ha.get_history = get_history
+    clock = Clock("2026-10-15T14:00")
+    engine = Engine(db, ha, tz=SYD, clock=clock)
+    engine.set_wake_source("u1", "switch.wellbeing_pops_awake")
+    tracker = next(t for t in db.list_trackers("u1") if t["kind"] == "sleep")
+    db.update_tracker("u1", tracker["id"], {"config": {"nights": {
+        "tracking": "event.sleep_as_android_sleep_tracking_2", "phases": "event.sleep_as_android_sleep_phase_2"}}})
+    asyncio.run(engine.sync_nights(days=3))
+    nights = {n["night"]: n for n in engine.sleep_view("u1")["nights"]}
+    assert nights["2026-10-14"]["source"] == "sleep_as_android"  # tracked that night: its data, with phases
+    assert nights["2026-10-15"]["source"] == "awake_switch"      # not tracked: the switch
+    assert nights["2026-10-15"]["estimate"] is True
+
+
+def test_the_awake_switch_alone_is_enough(tmp_path):
+    db = Database(tmp_path / "w.db")
+    db.migrate()
+    db.touch_user("u1", "matt", "Matthew")
+    ha = FakeHA()
+
+    async def get_history(entity_id, start, end, attributes=False):
+        return AWAKE_SWITCH
+    ha.get_history = get_history
+    engine = Engine(db, ha, tz=SYD, clock=Clock("2026-10-15T14:00"))
+    engine.set_wake_source("u1", "switch.wellbeing_pops_awake")
+    asyncio.run(engine.sync_nights(days=3))
+    view = engine.sleep_view("u1")
+    assert view["configured"] and view["awake_switch"] == "switch.wellbeing_pops_awake"
+    assert [n["source"] for n in view["nights"]] == ["awake_switch", "awake_switch"]

@@ -218,3 +218,20 @@ async def test_flip_it_by_hand(hass: HomeAssistant, aioclient_mock):
     await hass.async_block_till_done()
     assert hass.states.get(sw).state == "on"
     assert any(str(c[1]).endswith("/wake") for c in aioclient_mock.mock_calls)
+
+
+def test_a_late_night_without_tracking():
+    """23-24 Oct: Sleep as Android's start was lost in a restart. PC off 3:32, phone on charge 3:33,
+    light off 3:41: asleep from 3:41. Up when the phone came off charge at 12:25."""
+    r = rules()
+    r.home = True
+    r.busy_changed(True, t("2026-10-23T20:00"))
+    r.busy_changed(False, t("2026-10-24T03:32"))
+    r.charging_changed(True, t("2026-10-24T03:33"), t("2026-10-24T03:33"))
+    r.lights_changed(True, t("2026-10-24T03:41"))
+    for m in range(0, 40, 5):
+        r.tick(t("2026-10-24T03:45") + timedelta(minutes=m))
+    assert changes(r) == [("asleep", "03:41", "phone on charge and lights off")]
+    r.tracking_event("stopped", t("2026-10-24T12:00"))
+    r.charging_changed(False, t("2026-10-24T12:25"), t("2026-10-24T12:25"))
+    assert changes(r) == [("awake", "12:25", "phone off charger")]

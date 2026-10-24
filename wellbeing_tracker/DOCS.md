@@ -178,12 +178,13 @@ Check-in can show each night's sleep, the way Sleep as Android does. On the **Sl
 You can use any of these together. Each morning shows the best one available:
 
 1. **Sleep as Android**: its **Sleep tracking** events mark the night, and **Sleep phase** events add deep, light, REM and awake. Only on nights you track.
-2. **Your bedroom and phone**: an estimate for every night, with nothing to start or stop.
+2. **Your Awake switch** in Home Assistant (see Awake switch below), if you've set it up: asleep while it's off. Used automatically for nights Sleep as Android didn't track, with nothing to choose here. Open a night and tap **How this was worked out** to see why it went to sleep and woke ("Asleep: phone on charge and lights off").
+3. **Your bedroom and phone**: an estimate for every night, with nothing to start or stop.
    - **Bedroom lights**: lights out means you've gone to bed; on again means you're up.
    - **Phone charging**: most people put their phone on charge at bedtime.
    - **Phone in use** (optional): the Companion app's **Interactive** sensor. It's off by default: turn it on in the Home Assistant app under **Settings → Companion app → Manage sensors**.
    - **Sleep confidence**, from the Companion app, tells when you actually fell asleep and woke, rather than when you went to bed.
-3. **Android's sleep detection**: the Companion app's **Sleep segment** sensor. Bedtimes and wake times, without stages. It also sharpens the estimate above.
+4. **Android's sleep detection**: the Companion app's **Sleep segment** sensor. Bedtimes and wake times, without stages. It also sharpens the estimate above.
 
 How the estimate works: bedtime is when everything you chose says you're in bed (lights off, phone on charge, phone not in use), and you're up when any of them changes. A trip to the bathroom or a quick look at your phone (under 15 minutes) doesn't end the night. If a light stays on all night, or the phone never goes on charge, that night goes by the others. If only the charger is chosen and it stays plugged in, you're counted as up within an hour of waking. Open a night and tap **How this was worked out** to see each step ("Lights out 11:40pm", "Phone on charge 11:42pm", "Asleep 11:58pm"...).
 
@@ -276,7 +277,7 @@ name: Mood today
 
 **Awake switch**: each person's device has an **Awake** switch: on while you're up, off while you're most likely asleep. Set it up in **Settings → Devices & services → Wellbeing Tracker → Configure** (suggestions are filled in from your phone and Sleep as Android):
 
-- **Asleep** when sleep tracking starts. If you don't track a night: after **Bedtime from**, home, phone on charge and the bedroom lights off, with nothing else happening for a while (and nothing in **Not asleep while on**, such as your computer). It's dated to when things went quiet.
+- **Asleep** when sleep tracking starts. If you don't track a night: between **Bedtime from** and **Bedtime until** (8pm to 9am to start with), home, phone on charge and the bedroom lights off, with nothing else happening for a while (and nothing in **Not asleep while on**, such as your computer). It's dated to when things went quiet.
 - **Awake**, after the **Earliest wake-up** and once sleep tracking has stopped, at the first of: the phone coming off a night's charge, a fresh unlock that stays unlocked for a few minutes, the phone noticing walking, any of your **Signs you're up** (a computer unlocking, the dishwasher opening, a kettle's power), or leaving home. Leaving home and the charger count even if sleep tracking was left running. A daytime nap ends at the first sign of life.
 - You can always flip it by hand. Its **since** and **how** attributes say when and why it last changed.
 - Waking up counts for medications due when you're up. Use the switch in your own automations: "when Awake turns on" for when you wake up, "when it turns off" for when you fall asleep.

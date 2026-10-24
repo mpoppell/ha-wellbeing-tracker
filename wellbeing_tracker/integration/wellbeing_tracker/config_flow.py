@@ -135,6 +135,7 @@ class WellbeingOptionsFlow(OptionsFlow):
             ent("keep_awake", multiple=True),
             clock("earliest"),
             clock("bedtime_after"),
+            clock("bedtime_until"),
             num("night_charge_hours", 0.5, 12, 0.5, "h"),
             num("in_use_minutes", 1, 60, 1, "min"),
             num("quiet_minutes", 5, 180, 5, "min"),

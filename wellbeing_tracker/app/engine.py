@@ -98,6 +98,12 @@ UNDO_WINDOW = timedelta(minutes=15)
 TOGGLE_ECHO = timedelta(seconds=30)
 
 
+ESTIMATES = ("awake_switch", "home", "android")  # nights worked out rather than tracked: replaced as data changes
+# SQL for Engine.SLEEP_PRIORITY, to compare two rows' sources ({} is the table alias)
+RANK_SQL = ("(CASE {0}.source WHEN 'sleep_as_android' THEN 1 WHEN 'awake_switch' THEN 2 "
+            "WHEN 'home' THEN 3 WHEN 'android' THEN 4 ELSE 9 END)")
+
+
 def guess_charger(devices: list[str], states: list[dict]) -> str | None:
     """The charging sensor of the phone reminders go to: notify.mobile_app_s26u has
     binary_sensor.<anything>s26u_is_charging."""
@@ -2060,18 +2066,23 @@ class Engine:
         with self.db.connect() as conn:
             rows = conn.execute("SELECT * FROM trackers WHERE kind = 'sleep'").fetchall()
         trackers = [{**dict(r), "config": json.loads(r["config"] or "{}")} for r in rows]
-        trackers = [t for t in trackers if t["config"].get("nights") and (user_id is None or t["user_id"] == user_id)]
+        trackers = [t for t in trackers if (t["config"].get("nights") or self.wake_source(t["user_id"]))
+                    and (user_id is None or t["user_id"] == user_id)]
         now = self.clock()
         start = iso(now - timedelta(days=days + 1))  # estimates need the evening before
         saved = 0
         for t in trackers:
-            src = t["config"]["nights"]
+            src = t["config"].get("nights") or {}
             hist = lambda entity, attrs=False: self.ha.get_history(entity, start, iso(now), attributes=attrs)  # noqa: E731
             nights = []
             if src.get("tracking"):
                 tracking = await hist(src["tracking"], True)
                 phases = await hist(src["phases"], True) if src.get("phases") else []
                 nights += sleepdata.nights_from_sleep_as_android(tracking, phases)
+            # Home Assistant's Awake switch, for nights Sleep as Android didn't track (see SLEEP_PRIORITY).
+            switch = self.wake_source(t["user_id"])
+            if switch:
+                nights += sleepdata.nights_from_awake_switch(await hist(switch, True), self.tz, now)
             segments = sleepdata.nights_from_segments(await hist(src["segments"], True)) if src.get("segments") else []
             nights += segments
             if src.get("lights") or src.get("charging") or src.get("in_use"):
@@ -2088,7 +2099,7 @@ class Engine:
                     info = sleepdata.summary(n, self.tz)
                     phases_json = json.dumps([[iso(s), iso(e), p] for s, e, p in n["phases"]])
                     why = json.dumps(n.get("why") or [])
-                    if n["source"] in ("home", "android"):
+                    if n["source"] in ESTIMATES:
                         # an estimate for a morning is replaced, not added to, when the data changes
                         conn.execute("DELETE FROM sleep_nights WHERE tracker_id = ? AND night = ? AND source = ? AND start_at != ?",
                                      (t["id"], info["night"], n["source"], iso(n["start"])))
@@ -2097,7 +2108,11 @@ class Engine:
                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(tracker_id, start_at) DO UPDATE SET "
                         "end_at = excluded.end_at, phases = excluded.phases, night = excluded.night, source = excluded.source, "
                         "updated_at = excluded.updated_at, why = excluded.why "
-                        "WHERE sleep_nights.source NOT IN ('you', 'removed') AND (sleep_nights.phases != excluded.phases "
+                        "WHERE sleep_nights.source NOT IN ('you', 'removed') "
+                        # the same start from a less trusted source (the Awake switch going to sleep
+                        # when Sleep as Android starts) doesn't replace a better one
+                        f"AND {RANK_SQL.format('excluded')} <= {RANK_SQL.format('sleep_nights')} "
+                        "AND (sleep_nights.phases != excluded.phases "
                         "OR sleep_nights.end_at != excluded.end_at OR IFNULL(sleep_nights.why, '') != excluded.why)",
                         (t["user_id"], t["id"], info["night"], iso(n["start"]), iso(n["end"]), phases_json, n["source"], iso(now), why))
                     saved += cur.rowcount
@@ -2106,8 +2121,9 @@ class Engine:
                     self._sleep_hours(conn, t, night)
         return saved
 
-    # Which night counts for a morning: yours, then Sleep as Android, then the estimate, then Android's.
-    SLEEP_PRIORITY = {"you": 0, "removed": 0, "sleep_as_android": 1, "home": 2, "android": 3}
+    # Which night counts for a morning: yours, then Sleep as Android, then Home Assistant's Awake
+    # switch, then the estimate from your home, then Android's.
+    SLEEP_PRIORITY = {"you": 0, "removed": 0, "sleep_as_android": 1, "awake_switch": 2, "home": 3, "android": 4}
 
     def _nights(self, conn, tracker_id: int, since: str | None = None, night: str | None = None) -> dict[str, dict]:
         """{morning: the night that counts}, removed mornings included (source "removed")."""
@@ -2125,7 +2141,7 @@ class Engine:
                  "why": json.loads(r["why"]) if r["why"] else []}
             info = sleepdata.summary(n, self.tz)
             info["night"] = r["night"]
-            info["estimate"] = r["source"] in ("home", "android")
+            info["estimate"] = r["source"] in ESTIMATES
             rank = (self.SLEEP_PRIORITY.get(r["source"], 9), -info["in_bed"])
             if r["night"] not in best or rank < best[r["night"]]["_rank"]:
                 best[r["night"]] = {**info, "_rank": rank}
@@ -2151,7 +2167,8 @@ class Engine:
         with self.db.connect() as conn:
             best = self._nights(conn, tracker["id"], since=since)
         nights = [{k: v for k, v in n.items() if k != "_rank"} for n in best.values() if n["source"] != "removed"]
-        return {"tracker_id": tracker["id"], "configured": bool(cfg.get("nights")), "source": cfg.get("nights"),
+        return {"tracker_id": tracker["id"], "configured": bool(cfg.get("nights") or self.wake_source(user_id)),
+                "source": cfg.get("nights"), "awake_switch": self.wake_source(user_id),
                 "goal": cfg.get("goal") or 8, "nights": sorted(nights, key=lambda n: n["night"], reverse=True)}
 
     def _sleep_tracker(self, user_id: str) -> dict:

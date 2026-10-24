@@ -2230,6 +2230,7 @@ function usualTime(isos) {
 const SLEEP_SOURCE = {
   sleep_as_android: "Sleep as Android",
   android: "Android's sleep detection",
+  awake_switch: "Your Awake switch in Home Assistant",
   home: "Estimated from your bedroom and phone",
   you: "Times you set",
 };
@@ -2442,7 +2443,7 @@ async function openSleepSetup(view) {
   const form = el("form", { method: "dialog" },
     el("h2", {}, "Where your nights come from"),
     el("p", { class: "row-sub", style: "margin:-8px 0 14px" },
-      "Use any of these. Each morning shows the best one: Sleep as Android, then an estimate from your bedroom and phone. Sleep hours on Check-in fill in by themselves; anything you enter yourself wins."),
+      "Use any of these. Each morning shows the best one: Sleep as Android, then your Awake switch in Home Assistant (if you've set it up), then an estimate from your bedroom and phone. Sleep hours on Check-in fill in by themselves; anything you enter yourself wins."),
     err,
     group("Sleep as Android", "Deep, light and REM sleep, on nights you track.", !!was.tracking || !hasHome,
       el("div", { class: "field" }, el("span", {}, "Sleep tracking"), tracking.node, el("span", { class: "hint" }, "Marks when each night starts and ends.")),
