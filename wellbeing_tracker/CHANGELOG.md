@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.28.0
+
+**Reminders live with the medication.**
+
+- A medication's reminders are now part of its editor, right under the dose, instead of a separate Reminders screen. Set the dose, the times and how many at each time, then one **Save** keeps everything. Adding a new medication works the same way, so it can be set up with reminders in one go.
+- The amount at each reminder time shows the strength as you type the dose (for example 2 tablets = 400mg).
+- Less-used options (reminding again, a latest time, getting louder, early doses, Home Assistant links, Send me a test) are folded under **More reminder options**.
+- Anywhere that used to open the Reminders screen (Today's reminders, the supply sheet) now opens the medication at its reminders.
+- The unit next to the amount at each time ("capsules") is no longer cut off on phones.
 ## 0.27.0
 
 **Your Awake switch fills in nights Sleep as Android didn't track.**

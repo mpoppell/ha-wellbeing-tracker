@@ -68,7 +68,7 @@ Tap **Log** to log a dose at any time: set how many (×1, ×1.5 and so on), chan
 Reminders are off until you switch them on for a medication.
 
 1. **Settings → Reminders → Devices and alerts → Change**: tick where your reminders should go, and tap **Send a test**. Phones signed in to the Home Assistant Companion app get **Taken**, **Snooze** and **Skip** buttons. Anything else Home Assistant can notify (a notify entity, Telegram, a TV, Home Assistant's own notification bell) gets the message with "Open Wellbeing to answer".
-2. **Settings → Meds/Supplements**: tap the bell next to a medication, turn on **Remind me**, and pick the times and days.
+2. **Settings → Meds/Supplements**: tap a medication (or add one). Its reminders are right there under its dose: turn on **Remind me to take it**, and pick the times, how many at each, and the days. One **Save** keeps both. Less-used options (repeats if you don't answer, a latest time, getting louder, linking to Home Assistant) are under **More reminder options**.
 
 ### When I wake up
 

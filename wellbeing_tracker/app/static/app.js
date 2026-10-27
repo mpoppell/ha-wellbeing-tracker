@@ -2939,7 +2939,7 @@ function emojiPicker(value, getKind) {
 
 /* ---------- add or edit something to track ---------- */
 
-function openTrackerSheet(t, view) {
+function openTrackerSheet(t, view, opts = {}) {
   const isNew = !t.id;
   const sheet = document.getElementById("sheet");
   const c = t.config || {};
@@ -2983,6 +2983,20 @@ function openTrackerSheet(t, view) {
 
   // kind-specific inputs, rebuilt when the kind changes
   const inputs = {};
+  // A medication's reminders sit in its editor, below the dose. Loaded once, kept across kind changes.
+  let reminders = null;
+  let remLoading = null;
+  const remSlot = el("div", { class: "med-reminders-slot" }, el("p", { class: "row-sub" }, "Loading reminders\u2026"));
+  const liveMed = { get name() { return name.value; }, get config() { return kind === "medication" ? readConfig() : {}; } };
+  const loadReminders = () => {
+    if (remLoading) return remLoading;
+    remLoading = reminderSection(t, liveMed, view, { turnOn: opts.turnOn }).then((sec) => {
+      reminders = sec;
+      remSlot.replaceChildren(sec.node);
+      return sec;
+    }).catch((e) => { remSlot.replaceChildren(notice(`Couldn't load reminders: ${e.message}`)); });
+    return remLoading;
+  };
   function drawExtra() {
     extra.replaceChildren();
     if (kind === "rating") {
@@ -3039,10 +3053,13 @@ function openTrackerSheet(t, view) {
         el("datalist", { id: "counted-as" }, ["dose", "tablet", "capsule", "application", "drop", "puff", "spray", "scoop"].map((u) => el("option", { value: u }))),
         el("p", { class: "hint", style: "margin:-6px 0 14px" }, "For example tablet, puff or drop. Shown as \"1 dose\" or \"2 tablets\". You can change the amount and strength each time you log it."),
         field("Instructions", inputs.notes, "Optional. Shown on the reminder."),
+        remSlot,
         t.id ? el("div", { class: "actions", style: "margin-top:0" },
-          el("button", { type: "button", class: "secondary", onclick: () => openScheduleSheet(t, view) }, "Reminders"),
           el("button", { type: "button", class: "secondary", onclick: () => openMedSheet(t) }, "Supply and refills")) : null,
       ].filter(Boolean));
+      // the amounts at each reminder time show the strength as you type the dose
+      for (const k of ["dose", "unit", "quantity", "counted"]) inputs[k].addEventListener("input", () => reminders && reminders.redraw());
+      loadReminders();
     }
   }
   // ----- fill in from Home Assistant (counts, amounts and sleep) -----
@@ -3155,6 +3172,13 @@ function openTrackerSheet(t, view) {
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     err.hidden = true;
+    const problem = kind === "medication" && reminders ? reminders.check() : null;
+    if (problem) {
+      err.textContent = problem;
+      err.hidden = false;
+      err.scrollIntoView({ block: "nearest" });
+      return;
+    }
     const payload = {
       name: name.value,
       emoji: icon.value,
@@ -3169,11 +3193,24 @@ function openTrackerSheet(t, view) {
       if (kind === "medication") payload.group_name = "Meds/Supplements";
     }
     try {
-      const saved = isNew
+      const creating = !t.id; // stays false after a first try that saved the medication but not its reminders
+      const saved = creating
         ? await api("POST", "api/trackers", { kind, ...payload })
         : await api("PATCH", `api/trackers/${t.id}`, payload);
+      t.id = saved.id;
+      if (kind === "medication" && reminders) {
+        try {
+          await reminders.save(saved.id);
+        } catch (e) {
+          err.textContent = `${payload.name.trim()} is saved, but its reminders aren't: ${e.message}`;
+          err.hidden = false;
+          err.scrollIntoView({ block: "nearest" });
+          return;
+        }
+      }
       sheet.close();
-      toast(isNew ? `${payload.name.trim()} added` : "Changes saved");
+      const remOn = kind === "medication" && reminders && reminders.enabledInput.checked;
+      toast(creating ? `${payload.name.trim()} added${remOn ? " with reminders" : ""}` : "Changes saved");
       const newSrc = payload.config.source;
       if (newSrc && (!src || src.entity_id !== newSrc.entity_id || src.value !== newSrc.value)) {
         try {
@@ -3182,7 +3219,6 @@ function openTrackerSheet(t, view) {
         } catch (e) { toast(e.message); }
       }
       await redraw();
-      if (isNew && kind === "medication") openScheduleSheet(saved, view, { turnOn: true });
     } catch (e) {
       err.textContent = e.message;
       err.hidden = false;
@@ -3191,7 +3227,15 @@ function openTrackerSheet(t, view) {
 
   sheet.replaceChildren(form);
   sheet.showModal();
-  name.focus();
+  if (opts.focus === "reminders" && kind === "medication") {
+    loadReminders().then((sec) => {
+      if (!sec) return;
+      sec.node.scrollIntoView({ block: "start", behavior: motionOK() ? "smooth" : "auto" });
+      sec.enabledInput.focus({ preventScroll: true });
+    });
+  } else {
+    name.focus();
+  }
 }
 
 /* ================= reminders ================= */
@@ -3230,16 +3274,17 @@ const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 // A list of clock times with add and remove.
 // A list of times. For a medication (opts.med), each time also has how many to take.
 function timesEditor(times, opts = {}) {
-  const t = opts.med;
-  const usual = t ? Number(t.config.quantity ?? 1) : 1;
+  const t = opts.med; // its config is read each time, so a dose typed in the same form shows straight away
+  const usual = () => (t ? Number(t.config.quantity ?? 1) || 1 : 1);
   const amounts = opts.amounts || {};
   const list = el("div", { class: "time-list" });
+  const drawers = [];
   const add = (value, qty) => {
     const input = el("time-field", { value, class: "time-at", "aria-label": "Time" });
     const parts = [input];
     if (t) {
       const amount = el("input", { type: "number", min: "0.25", max: "100", step: "0.25", inputmode: "decimal",
-        value: qty ?? usual, required: true, class: "time-qty", "aria-label": "How many to take" });
+        value: qty ?? usual(), required: true, class: "time-qty", "aria-label": "How many to take" });
       const word = el("span", { class: "time-word" });
       const total = el("span", { class: "time-strength" });
       const draw = () => {
@@ -3249,6 +3294,7 @@ function timesEditor(times, opts = {}) {
         total.textContent = strength ? `= ${strength}` : "";
       };
       amount.addEventListener("input", draw);
+      drawers.push(draw);
       draw();
       parts.push(amount, word);
       parts.extra = total;
@@ -3267,6 +3313,7 @@ function timesEditor(times, opts = {}) {
   const rows = () => [...list.querySelectorAll(".time-row")];
   return {
     node,
+    redraw: () => drawers.forEach((d) => d()),
     read: () => rows().map((r) => r.querySelector(".time-at").value).filter(Boolean),
     // {"19:00": 0.5, ...} for every time; the app drops ones that match the usual number
     readAmounts: () => Object.fromEntries(rows()
@@ -3354,32 +3401,45 @@ function noPhoneNotice(person, view) {
 
 /* ---------- medication reminders ---------- */
 
-async function openScheduleSheet(t, view, opts = {}) {
-  const sheet = document.getElementById("sheet");
+// Reminders used to have their own sheet; they now live in the medication's editor.
+function openScheduleSheet(t, view, opts = {}) {
+  return openTrackerSheet(t, view, { focus: "reminders", turnOn: opts.turnOn });
+}
+
+// What a medication starts with before its reminders are saved (matches the app's defaults).
+const SCHEDULE_DEFAULTS_JS = {
+  mode: "times", times: ["08:00"], amounts: {}, days: { mode: "daily", weekdays: [0, 1, 2, 3, 4, 5, 6], every: 2, start: null },
+  nag: "firmly", nag_every: 10, nag_repeats: 6, hard_to_miss: false, hard_after: 3, alarm_sound: true, announce: false,
+  latest_time: null, early_window: 180, linked_entity: null, linked_time_entity: null, after: [], max_per_day: 3,
+  wake_after: 0, only_when: null,
+};
+
+// The Reminders part of a medication's editor. `med` gives the name and the dose as currently typed,
+// so the amounts at each time show the right strength. Returns the node, a check, and a save.
+async function reminderSection(t, med, view, opts = {}) {
   let sched, person, ha, wakeNow;
-  try {
-    [sched, person, ha, wakeNow] = await Promise.all([
-      api("GET", `api/trackers/${t.id}/schedule`), api("GET", "api/reminders/settings"), haOptions(),
-      api("GET", "api/wake").catch(() => null)]);
-  } catch (err) { toast(err.message); return; }
+  [sched, person, ha, wakeNow] = await Promise.all([
+    t.id && t.kind === "medication" ? api("GET", `api/trackers/${t.id}/schedule`) : Promise.resolve({ enabled: false, settings: structuredClone(SCHEDULE_DEFAULTS_JS) }),
+    api("GET", "api/reminders/settings"), haOptions(),
+    api("GET", "api/wake").catch(() => null)]);
   const s = sched.settings;
+  const SELF = t.id || "self"; // "this one" before a new medication has an id
 
-  const enabled = switchField(`Remind me to take ${t.name}`, sched.enabled || opts.turnOn);
+  const enabled = switchField("Remind me to take it", sched.enabled || opts.turnOn,
+    "On your phone, with Taken, Snooze and Skip.");
   const body = el("div", { class: "sched-body" });
-  const err = el("p", { class: "form-error", role: "alert", hidden: true });
 
-  const times = timesEditor(s.times, { med: t, amounts: s.amounts || {} });
+  const times = timesEditor(s.times, { med, amounts: s.amounts || {} });
   const days = daysEditor(s.days);
 
   // ----- timed from another dose -----
-  const meds = state.trackers.filter((x) => x.kind === "medication");
-  if (!meds.some((x) => x.id === t.id)) meds.unshift(t);
-  const medOptions = meds.map((x) => [x.id, x.id === t.id ? `${x.name} (this one)` : x.name]);
+  const meds = state.trackers.filter((x) => x.kind === "medication" && x.id !== t.id);
+  const medOptions = [[SELF, "This one (to repeat it)"], ...meds.map((x) => [x.id, x.name])];
   const ruleList = el("div", { class: "rule-list" });
   const addRule = (rule) => {
     const hours = el("input", { type: "number", min: "0.25", max: "24", step: "0.25", inputmode: "decimal",
       value: rule.minutes / 60, "aria-label": "Hours", style: "width:5.5em" });
-    const which = selectOf(medOptions, rule.tracker_id);
+    const which = selectOf(medOptions, rule.tracker_id === t.id ? SELF : rule.tracker_id);
     which.setAttribute("aria-label", "Medication");
     const row = el("div", { class: "rule-row" },
       hours, el("span", {}, "hours after I take"), which,
@@ -3388,13 +3448,12 @@ async function openScheduleSheet(t, view, opts = {}) {
       } }, svgIcon(ICONS.close)));
     ruleList.append(row);
   };
-  const firstOther = meds.find((x) => x.id !== t.id);
-  (s.after.length ? s.after : [{ tracker_id: (firstOther || t).id, minutes: 180 }]).forEach(addRule);
+  (s.after.length ? s.after : [{ tracker_id: meds[0] ? meds[0].id : SELF, minutes: 180 }]).forEach(addRule);
   const maxPerDay = el("input", { type: "number", min: "1", max: "24", inputmode: "numeric", value: s.max_per_day ?? "", placeholder: "No limit", style: "width:6em", "aria-label": "Most reminders a day" });
   const afterBlock = el("div", {},
     field("Remind me", el("div", {}, ruleList,
-      el("button", { type: "button", class: "secondary small", onclick: () => addRule({ tracker_id: t.id, minutes: 180 }) }, "Add another")),
-      "Timed from when you actually take it: tapping Taken, logging it in the app, or a linked toggle. Choose this medication to repeat it, for example every 3 hours."),
+      el("button", { type: "button", class: "secondary small", onclick: () => addRule({ tracker_id: SELF, minutes: 180 }) }, "Add another")),
+      "Timed from when you actually take it: tapping Taken, logging it in the app, or a linked toggle. Choose this one to repeat it, for example every 3 hours."),
     field("Stop after", el("div", { class: "inline-field" }, maxPerDay, el("span", {}, "reminders a day")),
       "Leave blank for no limit."),
   );
@@ -3451,7 +3510,7 @@ async function openScheduleSheet(t, view, opts = {}) {
   const onlyOn = switchField("Only on some days", !!s.only_when,
     "Add it to the day only when a Home Assistant number is high enough, like an antihistamine when pollen is high.");
   const sensorItems = (ha.sensors || []).map((x) => ({ id: x.entity_id, name: x.name,
-    sub: `${x.entity_id}${x.state != null ? ` \u00b7 now ${x.state}${x.unit ? " " + x.unit : ""}` : ""}`, icon: ICONS.home }));
+    sub: `${x.entity_id}${x.state != null ? ` · now ${x.state}${x.unit ? " " + x.unit : ""}` : ""}`, icon: ICONS.home }));
   const onlyEntity = entityPicker({ items: sensorItems, selected: ow.entity_id ? [ow.entity_id] : [],
     addLabel: "Search sensors, e.g. pollen", single: true, empty: "No sensors with numbers were found." });
   const helpers = (ha.sensors || []).filter((x) => /^(input_number|number)\./.test(x.entity_id));
@@ -3473,7 +3532,7 @@ async function openScheduleSheet(t, view, opts = {}) {
 
   let schedMode = s.mode;
   const timesBlock = el("div", {}, field("Times and amounts", times.node,
-    `Set how many to take at each time, for example half at 7pm and one at 10pm. Usually ${usualText(t)}.`));
+    "Set how many to take at each time, for example half at 7pm and one at 10pm."));
   const daysBlock = field("Days", days.node);
   const onlyBlock = el("div", {}, onlyOn.node, onlyPanel);
   const whenSeg = el("div", { class: "seg", role: "group", "aria-label": "How to time it" });
@@ -3489,9 +3548,8 @@ async function openScheduleSheet(t, view, opts = {}) {
     whenSeg.append(el("button", { type: "button", "data-mode": m, onclick: () => { schedMode = m; drawWhen(); markSheetChanged(); } }, label)));
   drawWhen();
 
+  // ----- the rarer options, folded away -----
   const nag = nagEditor(s);
-
-  // ----- latest time -----
   const latestOn = switchField("Set a latest time", !!s.latest_time,
     "No reminders after this. If it still isn't taken, you get one last question: skip today, or take it anyway?");
   const latestInput = el("time-field", { value: s.latest_time || "11:00", "aria-label": "Latest time" });
@@ -3499,8 +3557,6 @@ async function openScheduleSheet(t, view, opts = {}) {
   const drawLatest = () => { latestPanel.hidden = !latestOn.input.checked; };
   latestOn.input.addEventListener("change", drawLatest);
   drawLatest();
-
-  // ----- getting louder -----
   const hard = switchField("Get louder if I don't answer", s.hard_to_miss, "Steps it up after a few unanswered reminders.");
   const hardAfter = selectOf([[2, "The 2nd reminder"], [3, "The 3rd reminder"], [4, "The 4th reminder"], [5, "The 5th reminder"], [6, "The 6th reminder"]], s.hard_after);
   const alarm = switchField("Ring like an alarm", s.alarm_sound, "Plays even on Do Not Disturb, but not during your quiet hours.");
@@ -3512,79 +3568,73 @@ async function openScheduleSheet(t, view, opts = {}) {
   const drawHard = () => { hardPanel.hidden = !hard.input.checked; };
   hard.input.addEventListener("change", drawHard);
   drawHard();
-
-  // ----- early doses and Home Assistant -----
   const early = selectOf([[0, "Don't count early doses"], [30, "Up to 30 minutes before"], [60, "Up to 1 hour before"],
     [120, "Up to 2 hours before"], [180, "Up to 3 hours before"], [360, "Up to 6 hours before"]], s.early_window);
   const linked = selectOf([["", "None"], ...ha.toggles.map((x) => [x.entity_id, x.name])], s.linked_entity);
   const linkedTime = selectOf([["", "None"], ...ha.datetimes.map((x) => [x.entity_id, x.name])], s.linked_time_entity);
-  const linkDetails = el("details", { class: "more", open: !!(s.linked_entity || s.linked_time_entity) },
-    el("summary", {}, "Link to Home Assistant"),
-    field("Toggle to keep in sync", linked, "Switching it on counts as taken, and taking it here switches it on."),
-    field("Date and time to update", linkedTime, "Set to the time you take it."));
-
-  body.append(
-    field("When", whenSeg),
-    timesBlock,
-    wakeBlock,
-    afterBlock,
-    daysBlock,
-    onlyBlock,
+  const moreDetails = el("details", { class: "more" },
+    el("summary", {}, "More reminder options"),
     field("If I don't answer", nag.node),
     latestOn.node, latestPanel,
     hard.node, hardPanel,
     field("Already taken it before the reminder?", early, "A dose you log this early counts, so you won't be reminded."),
-    linkDetails,
-  );
-  const drawEnabled = () => { body.classList.toggle("dimmed", !enabled.input.checked); };
+    field("Toggle to keep in sync", linked, "A Home Assistant toggle. Switching it on counts as taken, and taking it here switches it on."),
+    field("Date and time to update", linkedTime, "A Home Assistant date and time, set to when you take it."),
+    sched.enabled && t.id ? el("button", { type: "button", class: "secondary small", title: "Uses your saved settings", onclick: async () => {
+      try {
+        const r = await api("POST", `api/trackers/${t.id}/schedule/preview`);
+        toast(`Test sent to ${r.sent_to === 1 ? "1 device" : r.sent_to + " devices"}`);
+      } catch (e) { toast(e.message); }
+    } }, "Send me a test") : null);
+
+  body.append(field("When", whenSeg), timesBlock, wakeBlock, afterBlock, daysBlock, onlyBlock, moreDetails);
+  const drawEnabled = () => { body.hidden = !enabled.input.checked; };
   enabled.input.addEventListener("change", drawEnabled);
   drawEnabled();
 
-  const form = el("form", { method: "dialog" },
-    el("h2", {}, `Reminders for ${t.name}`),
-    err, noPhoneNotice(person, view), enabled.node, body,
-    el("div", { class: "actions" },
-      el("button", { type: "submit", class: "primary" }, "Save reminders"),
-      sched.enabled ? el("button", { type: "button", class: "secondary", title: "Uses your saved settings", onclick: async () => {
-        try {
-          const r = await api("POST", `api/trackers/${t.id}/schedule/preview`);
-          toast(`Test sent to ${r.sent_to === 1 ? "1 device" : r.sent_to + " devices"}`);
-        } catch (e) { toast(e.message); }
-      } }, "Send me a test") : null,
-      el("button", { type: "button", class: "link", onclick: () => sheet.close() }, "Cancel")));
+  const headingId = `rem-${Math.random().toString(36).slice(2, 8)}`;
+  const node = el("section", { class: "med-reminders", "aria-labelledby": headingId },
+    el("h3", { id: headingId, class: "sheet-section-title" }, "Reminders"),
+    noPhoneNotice(person, view), enabled.node, body);
 
-  form.addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    err.hidden = true;
-    const settings = {
-      mode: schedMode,
-      after: [...ruleList.querySelectorAll(".rule-row")].map((r) => ({
-        tracker_id: Number(r.querySelector("select").value),
-        minutes: Math.round(Number(r.querySelector("input").value) * 60),
-      })),
-      max_per_day: maxPerDay.value === "" ? null : Number(maxPerDay.value),
-      times: times.read(),
-      amounts: times.readAmounts(),
-      days: days.read(),
-      ...nag.read(),
-      latest_time: latestOn.input.checked ? latestInput.value : null,
-      hard_to_miss: hard.input.checked,
-      hard_after: Number(hardAfter.value),
-      alarm_sound: alarm.input.checked,
-      announce: announce.input.checked,
-      linked_entity: linked.value || null,
-      linked_time_entity: linkedTime.value || null,
-      early_window: Number(early.value),
-      wake_after: Number(wakeAfter.value),
-      only_when: onlyOn.input.checked && schedMode !== "after"
-        ? { entity_id: onlyEntity.value()[0] || "", at_least: limitHelper.value || limitNum.value } : null,
-    };
-    if (settings.only_when && !settings.only_when.entity_id) {
-      err.textContent = "Choose what to check for \"Only on some days\", or turn it off.";
-      err.hidden = false; err.scrollIntoView({ block: "nearest" }); return;
-    }
-    try {
-      if (schedMode === "wake") {
+  const read = (trackerId) => ({
+    mode: schedMode,
+    after: [...ruleList.querySelectorAll(".rule-row")].map((r) => {
+      const v = r.querySelector("select").value;
+      return { tracker_id: v === "self" ? trackerId : Number(v), minutes: Math.round(Number(r.querySelector("input").value) * 60) };
+    }),
+    max_per_day: maxPerDay.value === "" ? null : Number(maxPerDay.value),
+    times: times.read(),
+    amounts: times.readAmounts(),
+    days: days.read(),
+    ...nag.read(),
+    latest_time: latestOn.input.checked ? latestInput.value : null,
+    hard_to_miss: hard.input.checked,
+    hard_after: Number(hardAfter.value),
+    alarm_sound: alarm.input.checked,
+    announce: announce.input.checked,
+    linked_entity: linked.value || null,
+    linked_time_entity: linkedTime.value || null,
+    early_window: Number(early.value),
+    wake_after: Number(wakeAfter.value),
+    only_when: onlyOn.input.checked && schedMode !== "after"
+      ? { entity_id: onlyEntity.value()[0] || "", at_least: limitHelper.value || limitNum.value } : null,
+  });
+  return {
+    node,
+    enabledInput: enabled.input,
+    redraw: () => times.redraw(),
+    // a problem to show before anything is saved, or null
+    check() {
+      if (!enabled.input.checked) return null;
+      if (schedMode === "times" && !times.read().length) return "Add at least one reminder time, or turn reminders off.";
+      if (onlyOn.input.checked && schedMode !== "after" && !onlyEntity.value()[0]) return "Choose what to check for \"Only on some days\", or turn it off.";
+      return null;
+    },
+    // Nothing to save for a new medication that never had reminders switched on.
+    async save(trackerId) {
+      if (!t.id && !enabled.input.checked) return false;
+      if (enabled.input.checked && schedMode === "wake") {
         await api("PUT", "api/reminders/settings", { wake: {
           entity: charger.value()[0] || null,
           fallback: fallbackOn.input.checked ? fallbackAt.value : null,
@@ -3592,20 +3642,10 @@ async function openScheduleSheet(t, view, opts = {}) {
           min_hours: Number(minHours.value),
         } });
       }
-      await api("PUT", `api/trackers/${t.id}/schedule`, { enabled: enabled.input.checked, settings });
-      sheet.close();
-      toast(enabled.input.checked ? `Reminders for ${t.name} saved` : `Reminders for ${t.name} turned off`);
-      if (currentTab() === "settings") await renderSettings(view);
-      else await refreshCheckin();
-    } catch (e) {
-      err.textContent = e.message;
-      err.hidden = false;
-      err.scrollIntoView({ block: "nearest" });
-    }
-  });
-
-  sheet.replaceChildren(form);
-  if (!sheet.open) sheet.showModal();
+      await api("PUT", `api/trackers/${trackerId}/schedule`, { enabled: enabled.input.checked, settings: read(trackerId) });
+      return enabled.input.checked !== sched.enabled;
+    },
+  };
 }
 
 /* ---------- check-in reminders ---------- */

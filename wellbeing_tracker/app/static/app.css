@@ -1640,3 +1640,13 @@ h2.card-title { margin: 0; font-size: 1.05rem; }
 .wake-row .brow-text { flex: 1; min-width: 0; }
 .wake-row .card-icon svg { stroke: var(--accent); }
 .due-card.soon-only .wake-row { border-bottom: 1px solid var(--line); }
+
+/* ---------- reminders inside the medication editor (0.24) ---------- */
+.med-reminders { margin: 22px 0 14px; padding-top: 16px; border-top: 1px solid var(--line); }
+.sheet-section-title { margin: 0 0 10px; font-size: 1.1rem; font-weight: 700; }
+.med-reminders .sched-body { margin-top: 12px; }
+.med-reminders-slot:empty { display: none; }
+/* the unit after the amount ("capsules") gets room rather than being cut off */
+.time-row.with-qty { grid-template-columns: minmax(7.2em, 8em) 3.4em minmax(4em, 1fr) auto; }
+.time-row.with-qty .time-field-btn { padding: 0 10px; gap: 6px; }
+.time-row.with-qty .time-word { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
