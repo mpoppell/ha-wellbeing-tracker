@@ -160,3 +160,79 @@ def test_the_awake_switch_alone_is_enough(tmp_path):
     view = engine.sleep_view("u1")
     assert view["configured"] and view["awake_switch"] == "switch.wellbeing_pops_awake"
     assert [n["source"] for n in view["nights"]] == ["awake_switch", "awake_switch"]
+
+
+# ----- what Home Assistant actually recorded, 22-29 Oct 2026 (times UTC) -----
+
+def test_a_second_start_mid_night_keeps_the_first():
+    # 28-29 Oct: tracking started at 11:25pm; Sleep as Android sent "started" again at 12:54am
+    # while still tracking (phases kept coming), then stopped at 5:50am.
+    tracking = [ev("2026-10-28T12:25:48.178+00:00", "started"), ev("2026-10-28T13:54:30.019+00:00", "started"),
+                ev("2026-10-28T18:50:34.304+00:00", "stopped"),
+                ev("2026-10-28T18:50:34.304+00:00", "stopped", "2026-10-28T19:55:09+00:00")]
+    phases = [ev("2026-10-28T12:30:57.645+00:00", "deep_sleep"), ev("2026-10-28T13:26:18.520+00:00", "deep_sleep"),
+              ev("2026-10-28T13:59:39.970+00:00", "deep_sleep"), ev("2026-10-28T18:49:11.784+00:00", "light_sleep")]
+    [night] = sleep.nights_from_sleep_as_android(tracking, phases, SYD)
+    info = sleep.summary(night, SYD)
+    assert (info["start"], info["end"]) == ("2026-10-28T23:25+11:00", "2026-10-29T05:50+11:00")
+    assert info["in_bed"] == 385
+
+
+def test_a_restart_straight_away_counts_from_the_restart():
+    # started, then started again before any sleep was recorded: the first was a false start
+    tracking = [ev("2026-10-28T12:00:00+00:00", "started"), ev("2026-10-28T12:10:00+00:00", "started"),
+                ev("2026-10-28T19:00:00+00:00", "stopped")]
+    phases = [ev("2026-10-28T12:20:00+00:00", "light_sleep")]
+    [night] = sleep.nights_from_sleep_as_android(tracking, phases, SYD)
+    assert sleep.summary(night, SYD)["start"] == "2026-10-28T23:10+11:00"
+
+
+def test_a_missed_start_begins_at_the_first_phase():
+    # 23-24 Oct: Home Assistant was restarting when tracking began, so it only saw the stop
+    tracking = [ev("2026-10-22T13:19:10.109+00:00", "started"), ev("2026-10-22T18:30:41.703+00:00", "stopped"),
+                ev("2026-10-22T18:30:41.703+00:00", "stopped", "2026-10-23T16:40:49+00:00"),  # re-recorded on restart
+                ev("2026-10-24T01:00:32.781+00:00", "stopped")]
+    phases = [ev("2026-10-22T13:30:00+00:00", "deep_sleep"), ev("2026-10-22T18:00:00+00:00", "light_sleep"),
+              ev("2026-10-23T16:44:50.593+00:00", "light_sleep"), ev("2026-10-23T17:29:31.566+00:00", "deep_sleep"),
+              ev("2026-10-24T00:45:54.347+00:00", "awake")]
+    first, second = sleep.nights_from_sleep_as_android(tracking, phases, SYD)
+    assert sleep.summary(first, SYD)["start"] == "2026-10-23T00:19+11:00"
+    info = sleep.summary(second, SYD)
+    assert (info["night"], info["start"], info["end"]) == ("2026-10-24", "2026-10-24T03:44+11:00", "2026-10-24T12:00+11:00")
+    assert info["why"][0]["at"] == "2026-10-24T03:44+11:00"
+
+
+def test_a_night_cut_off_by_the_start_of_the_history_is_not_guessed():
+    # the first thing in view is a stop: its start is before the history began, so leave it
+    tracking = [ev("2026-10-24T01:00:32.781+00:00", "stopped")]
+    phases = [ev("2026-10-23T22:00:00+00:00", "light_sleep"), ev("2026-10-24T00:45:54+00:00", "awake")]
+    assert sleep.nights_from_sleep_as_android(tracking, phases, SYD) == []
+
+
+def test_a_corrected_night_replaces_the_old_one(tmp_path):
+    db = Database(tmp_path / "w.db")
+    db.migrate()
+    db.touch_user("u1", "matt", "Matthew")
+    ha = FakeHA()
+    tracking = [ev("2026-10-28T12:25:48+00:00", "started"), ev("2026-10-28T13:54:30+00:00", "started"),
+                ev("2026-10-28T18:50:34+00:00", "stopped")]
+    phases = [ev("2026-10-28T12:30:57+00:00", "deep_sleep"), ev("2026-10-28T13:59:39+00:00", "deep_sleep")]
+
+    async def get_history(entity_id, start, end, attributes=False):
+        return tracking if "tracking" in entity_id else phases
+    ha.get_history = get_history
+    engine = Engine(db, ha, tz=SYD, clock=Clock("2026-10-29T08:00"))
+    tracker = next(t for t in db.list_trackers("u1") if t["kind"] == "sleep")
+    db.update_tracker("u1", tracker["id"], {"config": {"nights": {
+        "tracking": "event.sleep_as_android_sleep_tracking_2", "phases": "event.sleep_as_android_sleep_phase_2"}}})
+    # what an earlier version saved: the night from the second start
+    with db.connect() as conn:
+        conn.execute("INSERT INTO sleep_nights (user_id, tracker_id, night, start_at, end_at, phases, source, updated_at) "
+                     "VALUES ('u1', ?, '2026-10-29', '2026-10-28T13:54:30+00:00', '2026-10-28T18:50:34+00:00', '[]', "
+                     "'sleep_as_android', '2026-10-29T06:00:00+00:00')", (tracker["id"],))
+    asyncio.run(engine.sync_nights())
+    with db.connect() as conn:
+        rows = conn.execute("SELECT start_at FROM sleep_nights WHERE source = 'sleep_as_android'").fetchall()
+    assert [r[0] for r in rows] == ["2026-10-28T12:25:48+00:00"]
+    [night] = engine.sleep_view("u1")["nights"]
+    assert night["start"].startswith("2026-10-28T23:25")

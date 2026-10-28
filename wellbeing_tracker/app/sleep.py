@@ -43,19 +43,43 @@ def events(rows: list[dict]) -> list[tuple[datetime, str]]:
     return sorted(seen.items())
 
 
-def nights_from_sleep_as_android(tracking: list[dict], phases: list[dict]) -> list[dict]:
-    """Each finished night: {start, end, phases: [(start, end, phase)]}."""
+def nights_from_sleep_as_android(tracking: list[dict], phases: list[dict], tz=None) -> list[dict]:
+    """Each finished night: {start, end, phases: [(start, end, phase)]}.
+
+    Two things Home Assistant's record doesn't always get right, handled here:
+    * A second "started" while a night is already running (Sleep as Android restarting its own
+      tracking) isn't a new night: if phases were still coming in, the night started at the first.
+    * A "stopped" with no "started" (Home Assistant was restarting when tracking began): the night
+      starts at the first sleep phase after the last one ended, if there are phases to go on.
+    """
     marks = events(tracking)
+    phase_times = [t for t, k in events(phases) if k in PHASE_EVENTS]
     steps = [(t, PHASE_EVENTS[k]) for t, k in events(phases) if k in PHASE_EVENTS]
     nights = []
     start = None
+    start_guessed = False
+    last_end = None
     for t, kind in marks:
         if kind == "started":
-            start = t
-        elif kind == "stopped" and start:
-            if t - start >= timedelta(minutes=30):
-                nights.append(_fill(start, t, steps))
-            start = None
+            if start and any(start <= p < t for p in phase_times):
+                continue  # already tracking: keep the first start
+            start, start_guessed = t, False
+        elif kind == "stopped":
+            if start is None and last_end is not None:
+                # no start seen: begin at the first phase since the previous night ended. Only when
+                # that end is in view, so a night cut off by the start of the history isn't guessed.
+                first = next((p for p in phase_times if last_end < p < t and t - p <= timedelta(hours=16)), None)
+                if first:
+                    start, start_guessed = first, True
+            if start and t - start >= timedelta(minutes=30):
+                night = _fill(start, t, steps)
+                if start_guessed:
+                    at = start.astimezone(tz) if tz else start
+                    night["why"] = [{"at": at.isoformat(timespec="minutes"),
+                                     "what": "First sleep phase. Home Assistant missed the start of tracking, so the night begins here"}]
+                nights.append(night)
+            last_end = t
+            start, start_guessed = None, False
     return nights
 
 

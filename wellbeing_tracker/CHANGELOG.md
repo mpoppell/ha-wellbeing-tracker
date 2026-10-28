@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.28.1
+
+**Sleep as Android nights match what Sleep as Android recorded.**
+
+- When Sleep as Android sends "tracking started" a second time in the middle of a night (it did at 12:54am on 29 Oct, while still tracking), the night now starts at the first one. Before, the night was cut short to the second start: 5 hours instead of 6 hours 25.
+- When Home Assistant misses the start of tracking (it was restarting at 3:40am on 24 Oct, just as tracking began), the night is no longer lost: it begins at the first sleep phase, and the night's details say why.
+- A corrected night replaces the old version instead of sitting beside it.
+- After an update or restart the app re-reads the last 10 days of nights from Home Assistant, so recent nights are fixed straight away.
+
 ## 0.28.0
 
 **Reminders live with the medication.**

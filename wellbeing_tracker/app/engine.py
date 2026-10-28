@@ -285,10 +285,13 @@ class Engine:
             await self._flush(out)
             await self._send_due(now)
         if self._next_source_sync is None or now >= self._next_source_sync:
+            first = self._next_source_sync is None
             self._next_source_sync = now + SOURCE_SYNC_EVERY
             try:
                 await self.sync_sources()
-                await self.sync_nights()
+                # After a start (or an update), look back as far as Home Assistant keeps history,
+                # so a fix in how nights are read reaches recent nights too. Then just the last few.
+                await self.sync_nights(days=10 if first else 3)
             except Exception:
                 log.exception("Filling in from Home Assistant failed")
 
@@ -2078,7 +2081,7 @@ class Engine:
             if src.get("tracking"):
                 tracking = await hist(src["tracking"], True)
                 phases = await hist(src["phases"], True) if src.get("phases") else []
-                nights += sleepdata.nights_from_sleep_as_android(tracking, phases)
+                nights += sleepdata.nights_from_sleep_as_android(tracking, phases, self.tz)
             # Home Assistant's Awake switch, for nights Sleep as Android didn't track (see SLEEP_PRIORITY).
             switch = self.wake_source(t["user_id"])
             if switch:
@@ -2103,6 +2106,12 @@ class Engine:
                         # an estimate for a morning is replaced, not added to, when the data changes
                         conn.execute("DELETE FROM sleep_nights WHERE tracker_id = ? AND night = ? AND source = ? AND start_at != ?",
                                      (t["id"], info["night"], n["source"], iso(n["start"])))
+                    elif n["source"] == "sleep_as_android":
+                        # a corrected Sleep as Android night (an earlier start found) replaces the old
+                        # version of the same night rather than sitting beside it
+                        conn.execute("DELETE FROM sleep_nights WHERE tracker_id = ? AND source = 'sleep_as_android' "
+                                     "AND start_at != ? AND start_at < ? AND end_at > ?",
+                                     (t["id"], iso(n["start"]), iso(n["end"]), iso(n["start"])))
                     cur = conn.execute(
                         "INSERT INTO sleep_nights (user_id, tracker_id, night, start_at, end_at, phases, source, updated_at, why) "
                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(tracker_id, start_at) DO UPDATE SET "
