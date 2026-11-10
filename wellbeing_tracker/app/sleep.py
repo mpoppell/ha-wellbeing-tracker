@@ -256,6 +256,51 @@ def nights_from_segments(rows: list[dict]) -> list[dict]:
     return [{"start": s, "end": e, "phases": [(s, e, ASLEEP)], "source": "android"} for s, e in sorted(seen.items())]
 
 
+EDIT_PHASES = ("awake", "light", "deep", "rem", ASLEEP)
+
+
+def edit_phases(phases: list, start: datetime, end: datetime) -> list[tuple[datetime, datetime, str]]:
+    """Your stages for start to end, checked: one after another with no gaps or overlaps, covering
+    exactly start to end. Neighbours in the same stage are joined. Raises ValueError."""
+    out: list[list] = []
+    at = start
+    for item in phases:
+        s, e, phase = item if isinstance(item, (list, tuple)) else (item.get("start"), item.get("end"), item.get("phase"))
+        s, e = _when(s) if not isinstance(s, datetime) else s, _when(e) if not isinstance(e, datetime) else e
+        if phase not in EDIT_PHASES or not s or not e:
+            raise ValueError("Each stage needs a start, an end and one of awake, light, deep, REM or asleep")
+        if abs((s - at).total_seconds()) > 1:
+            raise ValueError("Stages have to follow one another, with no gaps or overlaps")
+        if e <= s:
+            continue  # squeezed to nothing: gone
+        if out and out[-1][2] == phase:
+            out[-1][1] = e
+        else:
+            out.append([at, e, phase])
+        at = e
+    if not out or abs((at - end).total_seconds()) > 1:
+        raise ValueError("The stages have to cover the whole night")
+    out[-1][1] = end
+    return [tuple(b) for b in out]
+
+
+def overlay(night: dict, start: datetime, end: datetime, phases: list) -> dict:
+    """The night with your stages from start to end, and its own outside that (if Home Assistant
+    has since added to it, say a part after going back to sleep). Neighbours in the same stage join."""
+    sliver = timedelta(minutes=1)  # your times are to the minute: seconds either side aren't a stage
+    before = [(a, min(b, start), p) for a, b, p in night["phases"] if a < start and min(b, start) - a >= sliver]
+    after = [(max(a, end), b, p) for a, b, p in night["phases"] if b > end and b - max(a, end) >= sliver]
+    inside = [(max(a, night["start"]), min(b, night["end"]), p) for a, b, p in phases
+              if min(b, night["end"]) > max(a, night["start"])]
+    joined: list[list] = []
+    for a, b, p in before + inside + after:
+        if joined and joined[-1][2] == p and joined[-1][1] == a:
+            joined[-1][1] = b
+        else:
+            joined.append([a, b, p])
+    return {**night, "phases": [tuple(b) for b in joined]}
+
+
 def trim(night: dict, start: datetime, end: datetime) -> dict:
     """The night between start and end only: what's outside isn't counted, and the phases inside
     stay exactly as they were (cut at the new ends)."""

@@ -1314,6 +1314,14 @@ details.more[open] > summary { margin-bottom: 8px; }
 .hypno .ph { cursor: pointer; outline: none; }
 .hypno .ph.on, .hypno .ph:focus-visible { stroke: var(--ink); stroke-width: 2; }
 .hypno-caption { min-height: 1.4em; margin: 6px 0 0; }
+.hypno.editing { touch-action: none; user-select: none; -webkit-user-select: none; }
+.hypno.editing .ph { cursor: default; }
+.stage-edge { cursor: ew-resize; outline: none; }
+.stage-edge-hit { fill: transparent; }
+.stage-edge-line { stroke: var(--ink); stroke-width: 2; }
+.stage-edge-grip { fill: var(--surface, #fff); stroke: var(--ink); stroke-width: 2; }
+.stage-edge:hover .stage-edge-grip, .stage-edge.dragging .stage-edge-grip, .stage-edge:focus-visible .stage-edge-grip { fill: var(--accent); stroke: var(--accent); }
+.stage-edge:focus-visible .stage-edge-line { stroke: var(--accent); stroke-width: 3; }
 
 .night-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 10px 0 4px; font-weight: 700; }
 .sleep-hero .supply-big { margin: 8px 0 2px; }

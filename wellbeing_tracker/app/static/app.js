@@ -2172,6 +2172,124 @@ function hypnogram(n, opts = {}) {
   return svg;
 }
 
+// Edit a night's stages by dragging the edges between them. Only the two stages either side of an
+// edge change; an edge stops at the next one, and a stage squeezed to nothing goes (its neighbours
+// join if they're the same stage). So there's always exactly one stage at a time, and every stage
+// you don't touch keeps its times. onChange(blocks) gets [{s, e, phase}] in ms after each change.
+function stageEditor(n, onChange) {
+  const W = 340, labelW = 46, rowH = 26, gap = 4, MIN = 60000;
+  const rows = n.has_phases ? PHASE_ORDER : ["awake", "asleep"];
+  const laneH = rows.length * (rowH + gap) - gap;
+  const H = laneH + 22;
+  const t0 = msOf(n.start), t1 = msOf(n.end), span = Math.max(1, t1 - t0);
+  let blocks = n.phases.map((b) => ({ s: msOf(b.start), e: msOf(b.end), phase: b.phase }));
+  const x = (t) => labelW + ((t - t0) / span) * (W - labelW);
+  const y = (p) => rows.indexOf(phaseOf(n, p)) * (rowH + gap);
+  const clock = (t) => clockOf(localISO(new Date(t)));
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: "hypno editing", role: "group",
+    "aria-label": "Stages. Drag the edges between them, or use the arrow keys on an edge." });
+  rows.forEach((p) => {
+    svg.append(svgEl("rect", { x: labelW, y: y(p), width: W - labelW, height: rowH, rx: 4, class: "hypno-lane" }));
+    svg.append(svgEl("text", { x: 0, y: y(p) + rowH / 2 + 4, class: "hypno-label" }, PHASE_LABEL[p]));
+  });
+  const first = new Date(t0); first.setMinutes(0, 0, 0); first.setHours(first.getHours() + 1);
+  const every = span / 3600000 > 8 ? 2 : 1;
+  for (let t = first.getTime(); t < t1; t += 3600000) {
+    const d = new Date(t);
+    if (d.getHours() % every) continue;
+    svg.append(svgEl("line", { x1: x(t), x2: x(t), y1: 0, y2: laneH, class: "hypno-hour" }));
+    svg.append(svgEl("text", { x: x(t), y: H - 4, class: "hypno-tick", "text-anchor": "middle" }, niceTime(`${pad(d.getHours())}:00`)));
+  }
+  const layer = svgEl("g", {});
+  svg.append(layer);
+  const status = el("p", { class: "row-sub hypno-caption", "aria-live": "polite" },
+    "Drag a line between two stages to move it. Squeeze a stage to nothing to remove it.");
+  const say = (i) => {
+    const a = blocks[i], b = blocks[i + 1];
+    if (a && b) status.textContent = `${PHASE_LABEL[phaseOf(n, a.phase)]} until ${clock(a.e)}, then ${PHASE_LABEL[phaseOf(n, b.phase)]} · ${PHASE_LABEL[phaseOf(n, a.phase)]} ${hm((a.e - a.s) / 60000)}, ${PHASE_LABEL[phaseOf(n, b.phase)]} ${hm((b.e - b.s) / 60000)}`;
+  };
+  // squeezed stages go, and neighbours in the same stage join
+  const tidy = () => {
+    const out = [];
+    for (const b of blocks) {
+      if (b.e - b.s <= 0) continue;
+      const last = out[out.length - 1];
+      if (last && phaseOf(n, last.phase) === phaseOf(n, b.phase)) last.e = b.e; else out.push({ ...b });
+    }
+    blocks = out;
+  };
+  let active = null;
+  const draw = (focusI) => {
+    layer.replaceChildren();
+    blocks.forEach((b) => layer.append(svgEl("rect", { x: x(b.s), y: y(b.phase), width: Math.max(0, x(b.e) - x(b.s)),
+      height: rowH, rx: 3, class: `ph ph-${phaseOf(n, b.phase)}` })));
+    blocks.slice(0, -1).forEach((b, i) => {
+      const nx = blocks[i + 1];
+      const top = Math.min(y(b.phase), y(nx.phase)), bottom = Math.max(y(b.phase), y(nx.phase)) + rowH;
+      const g = svgEl("g", { class: `stage-edge${active === i ? " dragging" : ""}`, tabindex: 0, role: "slider", "data-i": i,
+        "aria-label": `Edge between ${PHASE_LABEL[phaseOf(n, b.phase)]} and ${PHASE_LABEL[phaseOf(n, nx.phase)]}`,
+        "aria-valuemin": b.s, "aria-valuemax": nx.e, "aria-valuenow": b.e, "aria-valuetext": clock(b.e) },
+        svgEl("rect", { x: x(b.e) - 12, y: 0, width: 24, height: laneH, class: "stage-edge-hit" }), // a finger-sized target
+        svgEl("line", { x1: x(b.e), x2: x(b.e), y1: top, y2: bottom, class: "stage-edge-line" }),
+        svgEl("circle", { cx: x(b.e), cy: (top + bottom) / 2, r: 5, class: "stage-edge-grip" }));
+      g.addEventListener("pointerdown", (ev) => {
+        ev.preventDefault();
+        active = i;
+        svg.setPointerCapture(ev.pointerId);
+        say(i);
+        draw();
+      });
+      g.addEventListener("keydown", (ev) => {
+        const step = (ev.shiftKey ? 5 : 1) * MIN;
+        const by = { ArrowLeft: -step, ArrowDown: -step, ArrowRight: step, ArrowUp: step }[ev.key];
+        if (by == null) return;
+        ev.preventDefault();
+        move(i, blocks[i].e + by);
+        const t = blocks[i].e;
+        tidy();
+        onChange(blocks);
+        // keep focus on the same edge, wherever it is now
+        let at = blocks.findIndex((x2, j) => j < blocks.length - 1 && x2.e === t);
+        if (at < 0) at = Math.max(0, Math.min(i, blocks.length - 2));
+        draw(at);
+        say(at);
+      });
+      g.addEventListener("focus", () => say(i));
+      layer.append(g);
+    });
+    if (focusI != null) { const h = layer.querySelector(`[data-i="${focusI}"]`); if (h) h.focus(); }
+  };
+  // move edge i (the end of block i) to t: clamped between the edges either side, to the minute
+  const move = (i, t) => {
+    const a = blocks[i], b = blocks[i + 1];
+    t = Math.round(t / MIN) * MIN;
+    t = Math.max(a.s, Math.min(b.e, t));
+    a.e = t; b.s = t;
+  };
+  const timeAt = (ev) => {
+    const r = svg.getBoundingClientRect();
+    const px = ((ev.clientX - r.left) / r.width) * W;
+    return t0 + ((px - labelW) / (W - labelW)) * span;
+  };
+  svg.addEventListener("pointermove", (ev) => {
+    if (active == null) return;
+    move(active, timeAt(ev));
+    say(active);
+    draw();
+  });
+  const end = () => {
+    if (active == null) return;
+    active = null;
+    tidy();
+    onChange(blocks);
+    draw();
+  };
+  svg.addEventListener("pointerup", end);
+  svg.addEventListener("pointercancel", end);
+  draw();
+  return el("div", { class: "stage-editor" }, svg, status);
+}
+
 // Last 14 nights: deep, light and REM stacked, with the goal as a dashed line.
 function sleepTrend(nights, goalH, selected, onPick) {
   const days = [];
@@ -2244,7 +2362,8 @@ async function openSleepSheet(pickNight) {
   let nights = view.nights;
   // A morning with no night (yet) can still be opened, to add one yourself.
   let current = pickNight || (nights[0] || {}).night || isoDay(new Date());
-  const reload = async (fresh) => { view = fresh; nights = view.nights; state.sleep = view; draw(); await redraw(); };
+  let editing = null; // while editing stages: the blocks being edited
+  const reload = async (fresh) => { view = fresh; nights = view.nights; state.sleep = view; editing = null; draw(); await redraw(); };
   const draw = () => {
     const i = nights.findIndex((n) => n.night === current);
     const n = nights[i];
@@ -2266,7 +2385,54 @@ async function openSleepSheet(pickNight) {
       el("ul", { class: "why-list" }, n.why.map((w) => el("li", {}, el("span", { class: "why-time" }, clockOf(w.at)), w.what))),
       el("p", { class: "hint" }, "Bedtime is when everything you chose says you're in bed. Short interruptions, like a trip to the bathroom, don't count.")) : null;
     const nightLabel = (day) => `${dayToDate(addDays(day, -1)).toLocaleDateString(undefined, { weekday: "short" })} to ${dayToDate(day).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}`;
+    const canEdit = n && n.source !== "you" && n.phases.length;
+    const editTotals = () => {
+      const t = { awake: 0, asleep: 0 };
+      (editing || []).forEach((b) => { const m = (b.e - b.s) / 60000; if (b.phase === "awake") t.awake += m; else t.asleep += m; });
+      return t;
+    };
+    const editSummary = el("p", { class: "sleep-sum", "aria-live": "polite" });
+    const showEditSummary = () => {
+      const t = editTotals();
+      editSummary.replaceChildren(el("strong", {}, `${hm(t.asleep)} asleep`), ` · was ${hm(n.asleep)}`);
+    };
+    if (editing) {
+      showEditSummary();
+      const editor = stageEditor({ ...n, phases: editing.map((b) => ({ start: localISO(new Date(b.s)), end: localISO(new Date(b.e)), phase: b.phase })) },
+        (blocks) => { editing = blocks.map((b) => ({ ...b })); markSheetChanged(); showEditSummary(); });
+      sheet.replaceChildren(el("div", { class: "sheet-body sleep-sheet" },
+        el("div", { class: "med-sheet-head" }, el("h2", {}, "Edit stages"),
+          el("button", { type: "button", class: "iconbtn plain", "aria-label": "Close", onclick: () => { editing = null; draw(); } }, svgIcon(ICONS.close))),
+        el("p", { class: "row-sub" }, `${nightLabel(current)} · ${clockOf(n.start)} to ${clockOf(n.end)}. Moving an edge changes only the two stages either side of it; everything else keeps its times. The night's start and end stay (use Trim for those).`),
+        editor, editSummary,
+        el("div", { class: "actions" },
+          el("button", { type: "button", class: "primary", onclick: async () => {
+            try {
+              await reload(await api("PUT", `api/sleep/nights/${current}/stages`, { phases: editing.map((b) => ({
+                start: localISO(new Date(b.s)), end: localISO(new Date(b.e)), phase: b.phase })) }));
+              await refreshCheckin();
+              toast("Stages saved");
+            } catch (e) { toast(e.message); }
+          } }, "Save"),
+          el("button", { type: "button", class: "link", onclick: () => { editing = n.phases.map((b) => ({ s: msOf(b.start), e: msOf(b.end), phase: b.phase })); draw(); } }, "Start again"),
+          el("button", { type: "button", class: "link", onclick: () => { editing = null; draw(); } }, "Cancel"))));
+      if (!sheet.open) sheet.showModal();
+      return;
+    }
     const actions = el("div", { class: "night-actions" },
+      canEdit
+        ? el("button", { type: "button", class: "secondary small", onclick: () => {
+            editing = n.phases.map((b) => ({ s: msOf(b.start), e: msOf(b.end), phase: b.phase }));
+            draw();
+          } }, "Edit stages")
+        : null,
+      n && n.edited
+        ? el("button", { type: "button", class: "link", onclick: async () => {
+            await reload(await api("DELETE", `api/sleep/nights/${current}/stages`));
+            await refreshCheckin();
+            toast("Back to the stages as recorded");
+          } }, "Use recorded stages")
+        : null,
       n && n.source === "you"
         ? el("button", { type: "button", class: "link", onclick: async () => reload(await api("POST", `api/sleep/nights/${current}/reset`)) }, "Use Home Assistant's times")
         : null,
@@ -2307,6 +2473,7 @@ async function openSleepSheet(pickNight) {
           el("p", { class: "row-sub" }, `${clockOf(n.start)} to ${clockOf(n.end)} · in bed ${hm(n.in_bed)}`
             + (n.fell_asleep_after ? ` · asleep after ${hm(n.fell_asleep_after)}` : "")),
           n.trimmed ? el("p", { class: "row-sub" }, `Trimmed by you. Tracked ${clockOf(n.trimmed.tracked_start)} to ${clockOf(n.trimmed.tracked_end)}.`) : null,
+          n.edited ? el("p", { class: "row-sub" }, "Stages edited by you.") : null,
           el("p", { class: `sleep-badge${n.estimate ? " estimate" : ""}` }, SLEEP_SOURCE[n.source] || "")),
         hypnogram(n, { caption }), caption, tiles, why,
       ] : el("p", { class: "row-sub" }, "Nothing recorded for this night."),

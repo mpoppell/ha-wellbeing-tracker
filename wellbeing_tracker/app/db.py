@@ -280,6 +280,19 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (tracker_id, night)
     );
     """,
+    # 17: stages you edited on a night (dragging the edges between them). They cover start to end
+    # and lie over the night's own, so Home Assistant can still update the rest of it.
+    """
+    CREATE TABLE sleep_edits (
+        tracker_id  INTEGER NOT NULL REFERENCES trackers(id) ON DELETE CASCADE,
+        night       TEXT NOT NULL,
+        start_at    TEXT NOT NULL,
+        end_at      TEXT NOT NULL,
+        phases      TEXT NOT NULL,
+        updated_at  TEXT NOT NULL,
+        PRIMARY KEY (tracker_id, night)
+    );
+    """,
 ]
 
 

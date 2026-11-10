@@ -2208,23 +2208,37 @@ class Engine:
             if r["night"] not in best or rank < best[r["night"]]["_rank"]:
                 best[r["night"]] = {**info, "_rank": rank}
                 raw[r["night"]] = n
-        # Your trims: only the time you chose counts, with the night's phases kept as they are.
+        # Your changes to a tracked night: stages you edited, then a trim (only the time you chose
+        # counts). Both lie over the night, so Home Assistant can still update the rest of it.
+        edits = {r["night"]: r for r in conn.execute("SELECT * FROM sleep_edits WHERE tracker_id = ?", (tracker_id,))}
         trims = {r["night"]: r for r in conn.execute("SELECT * FROM sleep_trims WHERE tracker_id = ?", (tracker_id,))}
         local = lambda d: d.astimezone(self.tz).isoformat(timespec="minutes")  # noqa: E731
-        for day, t in trims.items():
+        hhmm = lambda d: d.astimezone(self.tz).strftime("%H:%M")  # noqa: E731
+        for day in set(edits) | set(trims):
             n = raw.get(day)
             if not n or n["source"] in ("you", "removed"):
                 continue
-            cut = sleepdata.trim(n, parse(t["start_at"]), parse(t["end_at"]))
-            if cut["end"] <= cut["start"]:
-                continue
-            cut["why"] = list(n["why"]) + [{"at": local(cut["start"]), "what": f"Trimmed by you: counted from "
-                                            f"{cut['start'].astimezone(self.tz).strftime('%H:%M')} to {cut['end'].astimezone(self.tz).strftime('%H:%M')}"}]
-            info = sleepdata.summary(cut, self.tz)
+            why = list(n["why"])
+            ed, t = edits.get(day), trims.get(day)
+            if ed:
+                n = sleepdata.overlay(n, parse(ed["start_at"]), parse(ed["end_at"]),
+                                      [(parse(a), parse(b), ph) for a, b, ph in json.loads(ed["phases"])])
+                why.append({"at": local(parse(ed["start_at"])), "what": "Stages edited by you"})
+            cut = n
+            if t:
+                cut = sleepdata.trim(n, parse(t["start_at"]), parse(t["end_at"]))
+                if cut["end"] <= cut["start"]:
+                    cut = n
+                else:
+                    why.append({"at": local(cut["start"]), "what": f"Trimmed by you: counted from {hhmm(cut['start'])} to {hhmm(cut['end'])}"})
+            info = sleepdata.summary({**cut, "why": sorted(why, key=lambda w: w["at"])}, self.tz)
             info["night"] = day
             info["estimate"] = best[day]["estimate"]
-            info["trimmed"] = {"tracked_start": local(n["start"]), "tracked_end": local(n["end"]),
-                               "tracked_phases": sleepdata.summary(n, self.tz)["phases"]}
+            if ed:
+                info["edited"] = True
+            if t and cut is not n:
+                info["trimmed"] = {"tracked_start": local(n["start"]), "tracked_end": local(n["end"]),
+                                   "tracked_phases": sleepdata.summary(n, self.tz)["phases"]}
             best[day] = {**info, "_rank": best[day]["_rank"]}
         return best
 
@@ -2333,6 +2347,49 @@ class Engine:
             conn.execute("DELETE FROM sleep_nights WHERE tracker_id = ? AND night = ? AND source IN ('you', 'removed')",
                          (tracker["id"], night))
             conn.execute("DELETE FROM sleep_trims WHERE tracker_id = ? AND night = ?", (tracker["id"], night))
+            conn.execute("DELETE FROM sleep_edits WHERE tracker_id = ? AND night = ?", (tracker["id"], night))
+            self._sleep_hours(conn, tracker, night)
+        return self.sleep_view(user_id, 30)
+
+    def edit_stages(self, user_id: str, night: str, phases: list) -> dict:
+        """Your stages for the part of a night shown (the trimmed part, if trimmed): from dragging
+        the edges between them. Only the stages change; the night's start and end stay."""
+        tracker = self._sleep_tracker(user_id)
+        try:
+            date.fromisoformat(night)
+        except (TypeError, ValueError):
+            raise ValidationError("That isn't a night") from None
+        with self.db.connect() as conn:
+            n = self._nights(conn, tracker["id"], night=night).get(night)
+            if not n or n["source"] in ("you", "removed"):
+                raise ValidationError("There's no tracked night to edit. Use Change times instead")
+            start, end = parse(n["start"]), parse(n["end"])
+            if not isinstance(phases, list):
+                raise ValidationError("Send the night's stages")
+            try:
+                mine = sleepdata.edit_phases(phases, start, end)
+            except ValueError as err:
+                raise ValidationError(str(err)) from None
+            old = conn.execute("SELECT * FROM sleep_edits WHERE tracker_id = ? AND night = ?", (tracker["id"], night)).fetchone()
+            if old and parse(old["start_at"]) <= end and start <= parse(old["end_at"]):
+                # keep earlier edits outside what's shown now (a trimmed night shows only part)
+                earlier = [(parse(a), parse(b), ph) for a, b, ph in json.loads(old["phases"])]
+                base = {"start": min(parse(old["start_at"]), start), "end": max(parse(old["end_at"]), end), "phases": earlier}
+                merged = sleepdata.overlay(base, start, end, mine)
+                start, end, mine = base["start"], base["end"], merged["phases"]
+            conn.execute(
+                "INSERT INTO sleep_edits (tracker_id, night, start_at, end_at, phases, updated_at) VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(tracker_id, night) DO UPDATE SET start_at = excluded.start_at, end_at = excluded.end_at, "
+                "phases = excluded.phases, updated_at = excluded.updated_at",
+                (tracker["id"], night, iso(start), iso(end), json.dumps([[iso(a), iso(b), ph] for a, b, ph in mine]), iso(self.clock())))
+            self._sleep_hours(conn, tracker, night)
+        return self.sleep_view(user_id, 30)
+
+    def unedit_stages(self, user_id: str, night: str) -> dict:
+        """Back to the stages as recorded."""
+        tracker = self._sleep_tracker(user_id)
+        with self.db.connect() as conn:
+            conn.execute("DELETE FROM sleep_edits WHERE tracker_id = ? AND night = ?", (tracker["id"], night))
             self._sleep_hours(conn, tracker, night)
         return self.sleep_view(user_id, 30)
 
