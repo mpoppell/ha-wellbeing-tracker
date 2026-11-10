@@ -65,6 +65,9 @@ def _guess(hass: HomeAssistant, person: dict, user_id: str) -> dict:
         hass.states.get(i).attributes.get("friendly_name", "")).lower())]
     return {
         "sleep_tracking": next((i for i in ids if i.startswith("event.") and "sleep_tracking" in i), None),
+        "alarm": next((i for i in ids if i.startswith("event.") and "sleep_as_android_alarm_clock" in i), None),
+        "start_tracking": next((i for i in ids if i.startswith("script.") and "start_sleep_track" in i), None),
+        "stop_tracking": next((i for i in ids if i.startswith("script.") and "stop_sleep_track" in i), None),
         "charging": phone("binary_sensor", "is_charging"),
         "phone_locked": phone("binary_sensor", "device_locked"),
         "activity": phone("sensor", "detected_activity"),
@@ -139,6 +142,12 @@ class WellbeingOptionsFlow(OptionsFlow):
             num("night_charge_hours", 0.5, 12, 0.5, "h"),
             num("in_use_minutes", 1, 60, 1, "min"),
             num("quiet_minutes", 5, 180, 5, "min"),
+            ent("alarm", "event"),
+            ent("start_tracking", "script"),
+            ent("stop_tracking", "script"),
+            num("restart_quiet_minutes", 5, 60, 1, "min"),
+            num("snooze_restart_minutes", 1, 60, 1, "min"),
+            num("back_to_sleep_minutes", 15, 240, 15, "min"),
         ]
         name = self._people().get(uid, {}).get("name") or "you"
         return self.async_show_form(step_id="person", data_schema=vol.Schema(dict(fields)),

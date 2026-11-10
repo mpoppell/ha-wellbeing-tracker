@@ -62,6 +62,9 @@ class WellbeingApi:
     async def wake(self, user_id: str, at: str | None = None, source: str | None = None) -> dict:
         return await self._request("POST", "wake", {"user_id": user_id, "at": at, "source": source})
 
+    async def asleep(self, user_id: str, at: str | None = None) -> dict:
+        return await self._request("POST", "asleep", {"user_id": user_id, "at": at})
+
     async def log_dose(self, user_id: str, medication: str, quantity: float | None = None) -> dict:
         return await self._request("POST", "log_dose", {"user_id": user_id, "medication": medication,
                                                          "quantity": quantity})

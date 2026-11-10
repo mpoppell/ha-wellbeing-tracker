@@ -180,12 +180,14 @@ def normalise_source(src) -> dict:
 
 
 def normalise_nights(src) -> dict:
-    """Where nights of sleep come from: Sleep as Android's event entities, Android's sleep
-    segments and sleep confidence, and things in your home that show when you go to bed."""
+    """Where nights of sleep come from: Sleep as Android's event entities (and its own record of
+    each night, from Life Dashboard), Android's sleep segments and sleep confidence, and things in
+    your home that show when you go to bed."""
     if not isinstance(src, dict):
         raise ValidationError("Choose where your nights come from")
     out = {}
-    for key, domains in (("tracking", "event"), ("phases", "event"), ("segments", "sensor"), ("confidence", "sensor"),
+    for key, domains in (("tracking", "event"), ("phases", "event"), ("record", "sensor"), ("segments", "sensor"),
+                         ("confidence", "sensor"),
                          ("charging", "binary_sensor"), ("in_use", "binary_sensor")):
         value = src.get(key)
         if value in (None, ""):

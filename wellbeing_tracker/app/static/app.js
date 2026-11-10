@@ -2430,6 +2430,7 @@ async function openSleepSetup(view) {
   const pick = (items, id, label) => entityPicker({ items, selected: id ? [id] : [], addLabel: label, single: true, empty: "Nothing like this in Home Assistant." });
   const tracking = pick(events, was.tracking, "Search events");
   const phases = pick(events, was.phases, "Search events");
+  const record = pick(opt(ha.sensors, ICONS.phone, (i) => /sleep/.test(i)), was.record, "Search sensors");
   const lights = entityPicker({ items: opt(ha.lights, ICONS.home), selected: was.lights || [], addLabel: "Search lights", empty: "No lights in Home Assistant." });
   const charging = pick(opt(ha.binary_sensors, ICONS.phone, (i) => /charg/.test(i)), was.charging, "Search sensors");
   const inUse = pick(opt(ha.binary_sensors, ICONS.phone, (i) => /interactive|screen|in_use/.test(i)), was.in_use, "Search sensors");
@@ -2447,7 +2448,9 @@ async function openSleepSetup(view) {
     err,
     group("Sleep as Android", "Deep, light and REM sleep, on nights you track.", !!was.tracking || !hasHome,
       el("div", { class: "field" }, el("span", {}, "Sleep tracking"), tracking.node, el("span", { class: "hint" }, "Marks when each night starts and ends.")),
-      el("div", { class: "field" }, el("span", {}, "Sleep phase"), phases.node, el("span", { class: "hint" }, "Deep, light, REM and awake through the night."))),
+      el("div", { class: "field" }, el("span", {}, "Sleep phase"), phases.node, el("span", { class: "hint" }, "Deep, light, REM and awake through the night.")),
+      el("div", { class: "field" }, el("span", {}, "Sleep as Android's own record"), record.node,
+        el("span", { class: "hint" }, "Life Dashboard's Last sleep asleep sensor. The phases Sleep as Android works out once tracking ends; until it arrives, the night is estimated from the live phases."))),
     group("Your bedroom and phone", "An estimate for every night, without tracking anything.", hasHome || !was.tracking,
       el("div", { class: "field" }, el("span", {}, "Bedroom lights"), lights.node, el("span", { class: "hint" }, "Lights out means you've gone to bed; on again means you're up.")),
       el("div", { class: "field" }, el("span", {}, "Phone charging"), charging.node, el("span", { class: "hint" }, "Most people put their phone on charge at bedtime.")),
@@ -2468,7 +2471,7 @@ async function openSleepSetup(view) {
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const one = (p) => p.value()[0] || null;
-    const nights = { tracking: one(tracking), phases: one(phases), segments: one(segments), confidence: one(confidence),
+    const nights = { tracking: one(tracking), phases: one(phases), record: one(record), segments: one(segments), confidence: one(confidence),
       lights: lights.value(), charging: one(charging), in_use: one(inUse) };
     try {
       await api("PATCH", `api/trackers/${view.tracker_id}`, { config: { ...(tracker ? tracker.config : {}), nights, goal: Number(goal.value) || 8 } });

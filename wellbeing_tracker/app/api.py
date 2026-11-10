@@ -363,6 +363,7 @@ def suggest_sleep_sources(states: list[dict]) -> dict:
     return {
         "tracking": pick(lambda i: i.startswith("event.") and "sleep_tracking" in i),
         "phases": pick(lambda i: i.startswith("event.") and "sleep_phase" in i),
+        "record": pick(lambda i: i.startswith("sensor.") and i.endswith("_last_sleep_asleep")),
         "segments": segments,
         "confidence": pick(lambda i: i.startswith("sensor.") and i.endswith("sleep_confidence"), "sensor." + phone),
         "charging": pick(lambda i: i.startswith("binary_sensor.") and i.endswith("_is_charging"), "binary_sensor." + phone),

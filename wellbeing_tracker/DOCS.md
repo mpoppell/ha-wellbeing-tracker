@@ -178,6 +178,8 @@ Check-in can show each night's sleep, the way Sleep as Android does. On the **Sl
 You can use any of these together. Each morning shows the best one available:
 
 1. **Sleep as Android**: its **Sleep tracking** events mark the night, and **Sleep phase** events add deep, light, REM and awake. Only on nights you track.
+   - **Sleep as Android's own record**: once tracking stops, Sleep as Android works out the night's phases from the whole night, and they differ from the live phase events. With [Life Dashboard](https://github.com/owen282000/life-dashboard-ha) (1.1.0 or later) bringing in Health Connect, choose its **Last sleep asleep** sensor (it's found by itself if you leave it empty). Its phases then replace the live ones. Until it arrives, the night is estimated from the live phases, smoothed (a phase under 5 minutes is folded into the one around it), and **How this was worked out** says so. In Sleep as Android, turn on **Settings → Services → Health Connect**.
+   - **One night in several goes**: tracking stopped and started again less than 2 hours apart is one night, with the time in between awake. A session under 30 minutes counts only as part of a night, so false starts while falling asleep are left out, but going back to sleep after the alarm is kept.
 2. **Your Awake switch** in Home Assistant (see Awake switch below), if you've set it up: asleep while it's off. Used automatically for nights Sleep as Android didn't track, with nothing to choose here. Open a night and tap **How this was worked out** to see why it went to sleep and woke ("Asleep: phone on charge and lights off").
 3. **Your bedroom and phone**: an estimate for every night, with nothing to start or stop.
    - **Bedroom lights**: lights out means you've gone to bed; on again means you're up.
@@ -279,6 +281,11 @@ name: Mood today
 
 - **Asleep** when sleep tracking starts. If you don't track a night: between **Bedtime from** and **Bedtime until** (8pm to 9am to start with), home, phone on charge and the bedroom lights off, with nothing else happening for a while (and nothing in **Not asleep while on**, such as your computer). It's dated to when things went quiet.
 - **Awake**, after the **Earliest wake-up** and once sleep tracking has stopped, at the first of: the phone coming off a night's charge, a fresh unlock that stays unlocked for a few minutes, the phone noticing walking, any of your **Signs you're up** (a computer unlocking, the dishwasher opening, a kettle's power), or leaving home. Leaving home and the charger count even if sleep tracking was left running. A daytime nap ends at the first sign of life.
+- **Back to sleep after the alarm**: with **Alarm clock** (Sleep as Android's alarm event) and scripts to **Start sleep tracking** and **Stop sleep tracking** (Sleep as Android's *Trigger app actions* blueprint, with `START_SLEEP_TRACK` and `STOP_SLEEP_TRACK`), tracking starts again when:
+  - the alarm has been snoozed for **Snoozed for** (10 minutes to start with) and tracking has stopped: straight away;
+  - after the alarm is dismissed (or tracking stops) in the morning, the phone is locked, on charge and still, with nothing else happening, for **Back asleep after** (15 minutes). The bedroom lights don't count here, as a wake-up routine often turns them on.
+
+  You get a notification with a **Stop tracking** button. The switch goes back to asleep, counted from when things went quiet, and today's wake-up no longer counts: medications due "when I wake up" that haven't been sent yet wait for the real one. Tracking started this way stops by itself at the first sign you're up (the phone in use, off the charger, walking, a sign, the computer on). This is looked for for **Watch for going back to sleep for** (2 hours) after the alarm, and at most twice a morning. The night joins up with the one before in the app's Sleep screen.
 - You can always flip it by hand. Its **since** and **how** attributes say when and why it last changed.
 - Waking up counts for medications due when you're up. Use the switch in your own automations: "when Awake turns on" for when you wake up, "when it turns off" for when you fall asleep.
 

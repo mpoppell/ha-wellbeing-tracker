@@ -255,6 +255,19 @@ MIGRATIONS: list[str] = [
         updated_at TEXT NOT NULL
     );
     """,
+    # 15: Sleep as Android's own record of each night (its phases, from Life Dashboard). Home
+    # Assistant only ever has the latest one, and doesn't keep its phases in history, so each
+    # is kept here as it's seen.
+    """
+    CREATE TABLE sleep_records (
+        tracker_id  INTEGER NOT NULL REFERENCES trackers(id) ON DELETE CASCADE,
+        start_at    TEXT NOT NULL,
+        end_at      TEXT NOT NULL,
+        phases      TEXT NOT NULL,
+        updated_at  TEXT NOT NULL,
+        PRIMARY KEY (tracker_id, start_at)
+    );
+    """,
 ]
 
 
