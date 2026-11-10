@@ -2081,7 +2081,10 @@ class Engine:
             if src.get("tracking"):
                 tracking = await hist(src["tracking"], True)
                 phases = await hist(src["phases"], True) if src.get("phases") else []
-                nights += sleepdata.nights_from_sleep_as_android(tracking, phases, self.tz)
+                # Sleep as Android's own record of each night (its stages, as the app worked them
+                # out), from Life Dashboard: replaces the estimate from live phases once it arrives.
+                records = await self._sleep_records(t, src, now - timedelta(days=days + 1))
+                nights += sleepdata.nights_from_sleep_as_android(tracking, phases, self.tz, records=records)
             # Home Assistant's Awake switch, for nights Sleep as Android didn't track (see SLEEP_PRIORITY).
             switch = self.wake_source(t["user_id"])
             if switch:
@@ -2130,6 +2133,50 @@ class Engine:
                     self._sleep_hours(conn, t, night)
         return saved
 
+    async def _sleep_records(self, t: dict, src: dict, since: datetime) -> list[dict]:
+        """Sleep as Android's own records of recent nights: the one Life Dashboard's Last sleep
+        asleep sensor shows now (chosen, or found when nothing is), kept with those seen before.
+        Its phases are only in the current state, never in history, so each is saved as it's seen."""
+        states = await self.ha.get_states() if hasattr(self.ha, "get_states") else []
+        entity = src.get("record") or next(
+            (i for i in sorted(x.get("entity_id", "") for x in states or [])
+             if i.startswith("sensor.") and i.endswith("_last_sleep_asleep")), None)
+        current = next((x for x in states or [] if x.get("entity_id") == entity), None) if entity else None
+        stamp = iso(self.clock())
+        with self.db.connect() as conn:
+            for rec in sleepdata.records_from_life_dashboard([current] if current else []):
+                conn.execute(
+                    "INSERT INTO sleep_records (tracker_id, start_at, end_at, phases, updated_at) VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT(tracker_id, start_at) DO UPDATE SET end_at = excluded.end_at, phases = excluded.phases, "
+                    "updated_at = excluded.updated_at WHERE sleep_records.phases != excluded.phases "
+                    "OR sleep_records.end_at != excluded.end_at",
+                    (t["id"], iso(rec["start"]), iso(rec["end"]),
+                     json.dumps([[iso(a), iso(b), ph] for a, b, ph in rec["phases"]]), stamp))
+            rows = conn.execute("SELECT * FROM sleep_records WHERE tracker_id = ? AND end_at > ? ORDER BY start_at",
+                                (t["id"], iso(since))).fetchall()
+        return [{"start": parse(r["start_at"]), "end": parse(r["end_at"]), "record": True,
+                 "phases": [(parse(a), parse(b), ph) for a, b, ph in json.loads(r["phases"])]} for r in rows]
+
+    def back_to_sleep(self, user_id: str, at: datetime) -> dict:
+        """Back to sleep after getting up this morning (Home Assistant restarted sleep tracking).
+        The wake-up doesn't count after all: the next one does. Medications due "when I wake up"
+        that haven't been sent yet wait for it; any already sent stay as they are."""
+        day = at.astimezone(self.tz).date().isoformat()
+        with self.db.connect() as conn:
+            row = conn.execute("SELECT woke_at FROM wake_days WHERE user_id = ? AND day = ?", (user_id, day)).fetchone()
+            if row and parse(row["woke_at"]) <= at:
+                conn.execute("DELETE FROM wake_days WHERE user_id = ? AND day = ?", (user_id, day))
+                wake_meds = [r["tracker_id"] for r in conn.execute(
+                    "SELECT tracker_id, settings FROM schedules WHERE user_id = ?", (user_id,)).fetchall()
+                    if schedule_settings(json.loads(r["settings"]))["mode"] == "wake"]
+                if wake_meds:
+                    marks = ",".join("?" * len(wake_meds))
+                    conn.execute(f"DELETE FROM doses WHERE local_day = ? AND status = 'scheduled' AND tracker_id IN ({marks})",
+                                 (day, *wake_meds))
+                log.info("%s went back to sleep (%s): waiting for the next wake-up",
+                         user_id, at.astimezone(self.tz).strftime("%H:%M"))
+        return self.wake_status(user_id)
+
     # Which night counts for a morning: yours, then Sleep as Android, then Home Assistant's Awake
     # switch, then the estimate from your home, then Android's.
     SLEEP_PRIORITY = {"you": 0, "removed": 0, "sleep_as_android": 1, "awake_switch": 2, "home": 3, "android": 4}
@@ -2144,6 +2191,7 @@ class Engine:
             sql += " AND night = ?"
             args.append(night)
         best: dict[str, dict] = {}
+        raw: dict[str, dict] = {}
         for r in conn.execute(sql, args).fetchall():
             n = {"start": parse(r["start_at"]), "end": parse(r["end_at"]), "source": r["source"],
                  "phases": [(parse(s), parse(e), p) for s, e, p in json.loads(r["phases"])],
@@ -2154,6 +2202,25 @@ class Engine:
             rank = (self.SLEEP_PRIORITY.get(r["source"], 9), -info["in_bed"])
             if r["night"] not in best or rank < best[r["night"]]["_rank"]:
                 best[r["night"]] = {**info, "_rank": rank}
+                raw[r["night"]] = n
+        # Your trims: only the time you chose counts, with the night's phases kept as they are.
+        trims = {r["night"]: r for r in conn.execute("SELECT * FROM sleep_trims WHERE tracker_id = ?", (tracker_id,))}
+        local = lambda d: d.astimezone(self.tz).isoformat(timespec="minutes")  # noqa: E731
+        for day, t in trims.items():
+            n = raw.get(day)
+            if not n or n["source"] in ("you", "removed"):
+                continue
+            cut = sleepdata.trim(n, parse(t["start_at"]), parse(t["end_at"]))
+            if cut["end"] <= cut["start"]:
+                continue
+            cut["why"] = list(n["why"]) + [{"at": local(cut["start"]), "what": f"Trimmed by you: counted from "
+                                            f"{cut['start'].astimezone(self.tz).strftime('%H:%M')} to {cut['end'].astimezone(self.tz).strftime('%H:%M')}"}]
+            info = sleepdata.summary(cut, self.tz)
+            info["night"] = day
+            info["estimate"] = best[day]["estimate"]
+            info["trimmed"] = {"tracked_start": local(n["start"]), "tracked_end": local(n["end"]),
+                               "tracked_phases": sleepdata.summary(n, self.tz)["phases"]}
+            best[day] = {**info, "_rank": best[day]["_rank"]}
         return best
 
     def _sleep_hours(self, conn, t: dict, night: str) -> None:
@@ -2260,6 +2327,45 @@ class Engine:
         with self.db.connect() as conn:
             conn.execute("DELETE FROM sleep_nights WHERE tracker_id = ? AND night = ? AND source IN ('you', 'removed')",
                          (tracker["id"], night))
+            conn.execute("DELETE FROM sleep_trims WHERE tracker_id = ? AND night = ?", (tracker["id"], night))
+            self._sleep_hours(conn, tracker, night)
+        return self.sleep_view(user_id, 30)
+
+    def trim_night(self, user_id: str, night: str, start: str, end: str) -> dict:
+        """Count only part of a tracked night, from start to end: the bit before you fell asleep, or
+        after you got up, left out. The night's phases stay as they were recorded."""
+        tracker = self._sleep_tracker(user_id)
+        try:
+            date.fromisoformat(night)
+            s, e = parse(start), parse(end)
+        except (TypeError, ValueError):
+            raise ValidationError("Choose when counting starts and stops") from None
+        with self.db.connect() as conn:
+            conn.execute("DELETE FROM sleep_trims WHERE tracker_id = ? AND night = ?", (tracker["id"], night))
+            n = self._nights(conn, tracker["id"], night=night).get(night)
+            if not n or n["source"] in ("you", "removed"):
+                raise ValidationError("There's no tracked night to trim. Use Change times instead")
+            first, last = parse(n["start"]), parse(n["end"])
+            if s >= e:
+                raise ValidationError("Counting has to start before it stops")
+            slack = timedelta(minutes=1)  # the times shown are rounded to the minute
+            if s < first - slack or e > last + slack:
+                raise ValidationError(f"Trimming can only shorten the night: choose times between "
+                                      f"{first.astimezone(self.tz).strftime('%H:%M')} and {last.astimezone(self.tz).strftime('%H:%M')}")
+            s, e = max(s, first), min(e, last)
+            if e - s < timedelta(minutes=30):
+                raise ValidationError("Leave at least 30 minutes")
+            if s > first or e < last:
+                conn.execute("INSERT INTO sleep_trims (tracker_id, night, start_at, end_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                             (tracker["id"], night, iso(s), iso(e), iso(self.clock())))
+            self._sleep_hours(conn, tracker, night)
+        return self.sleep_view(user_id, 30)
+
+    def untrim_night(self, user_id: str, night: str) -> dict:
+        """Count the whole tracked night again."""
+        tracker = self._sleep_tracker(user_id)
+        with self.db.connect() as conn:
+            conn.execute("DELETE FROM sleep_trims WHERE tracker_id = ? AND night = ?", (tracker["id"], night))
             self._sleep_hours(conn, tracker, night)
         return self.sleep_view(user_id, 30)
 

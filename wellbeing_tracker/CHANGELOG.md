@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.29.0
+
+**Back to sleep after the alarm is tracked, and nights use Sleep as Android's own phases.**
+
+- **Sleep tracking starts again when you go back to sleep.** Set up under **Configure** on the Wellbeing Tracker integration with Sleep as Android's alarm event and two scripts (start and stop tracking). If the alarm's been snoozed 10 minutes with tracking stopped, tracking starts again straight away. If after the alarm the phone is locked, on charge and still for 15 minutes, it starts again, counted from when things went quiet. A notification has a **Stop tracking** button, and tracking started this way stops by itself once you're up. On 9 Nov this would have tracked 8:50 to 9:58 instead of losing it, and counted the wake-up at 9:48, not 8:19.
+- **Going back to sleep moves today's wake-up.** The Awake switch goes back to asleep, and the app waits for the real wake-up: medications due "when I wake up" that hadn't been sent yet are due from then.
+- **Sleep as Android's own record.** With Life Dashboard 1.1.0 or later, the phases Sleep as Android works out once tracking ends (from Health Connect) replace the live phase events, which don't match its graph. Until the record arrives the night is estimated from the live phases, smoothed, and says so. Choose Life Dashboard's **Last sleep asleep** sensor under **Where your nights come from**, or leave it empty and it's found by itself.
+- **Trim a tracked night.** On a Sleep as Android night, **Trim start or end** sets when counting starts and stops, with a live preview of the graph and time asleep. The phases stay as Sleep as Android recorded them, only the ends are cut, and the trim survives later updates from Home Assistant. **Count the whole night** undoes it.
+- **One night in several goes.** Tracking started again less than 2 hours after it stopped is the same night, with the time between awake. Short false starts while falling asleep (under 30 minutes, with no night before them) are still left out.
+
 ## 0.28.1
 
 **Sleep as Android nights match what Sleep as Android recorded.**

@@ -255,6 +255,31 @@ MIGRATIONS: list[str] = [
         updated_at TEXT NOT NULL
     );
     """,
+    # 15: Sleep as Android's own record of each night (its phases, from Life Dashboard). Home
+    # Assistant only ever has the latest one, and doesn't keep its phases in history, so each
+    # is kept here as it's seen.
+    """
+    CREATE TABLE sleep_records (
+        tracker_id  INTEGER NOT NULL REFERENCES trackers(id) ON DELETE CASCADE,
+        start_at    TEXT NOT NULL,
+        end_at      TEXT NOT NULL,
+        phases      TEXT NOT NULL,
+        updated_at  TEXT NOT NULL,
+        PRIMARY KEY (tracker_id, start_at)
+    );
+    """,
+    # 16: your trim of a night: only the time between start and end counts. Kept apart from the
+    # night itself, so the night can still be updated from Home Assistant (and its phases kept).
+    """
+    CREATE TABLE sleep_trims (
+        tracker_id  INTEGER NOT NULL REFERENCES trackers(id) ON DELETE CASCADE,
+        night       TEXT NOT NULL,
+        start_at    TEXT NOT NULL,
+        end_at      TEXT NOT NULL,
+        updated_at  TEXT NOT NULL,
+        PRIMARY KEY (tracker_id, night)
+    );
+    """,
 ]
 
 

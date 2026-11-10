@@ -3,6 +3,10 @@
 It follows the signals chosen under Configure (see wake.py for the rules) and can always be
 flipped by hand. Use it in automations for "when I wake up" and "when I fall asleep". Waking up
 also tells the Wellbeing app, for medications due when you're up.
+
+With scripts to start and stop Sleep as Android's tracking, it also starts tracking again when
+you go back to sleep after the alarm (and stops it once you're up), with a notification that
+has a Stop button.
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ from typing import Any
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval
 from homeassistant.helpers.restore_state import ExtraStoredData, RestoredExtraData, RestoreEntity
@@ -24,13 +29,15 @@ from . import WellbeingConfigEntry
 from .api import WellbeingError
 from .coordinator import WellbeingCoordinator
 from .entity import person_device
-from .wake import Change, Rules, counts_as_sign, is_configured, settings, watched
+from .wake import Action, Change, Rules, counts_as_sign, is_configured, settings, watched
 
 _LOGGER = logging.getLogger(__name__)
 
 GONE = (STATE_UNAVAILABLE, STATE_UNKNOWN, None)
 IDLE = {"off", "standby", "idle", "closed", "locked", "not_home", "unavailable", "unknown"}
 SETTLE = timedelta(minutes=2)  # after a restart, entities replay their states: don't read those as news
+NOTIFICATION_ACTION = "mobile_app_notification_action"
+STOP_ACTION = "WELLBEING_STOP_SLEEP_TRACKING"  # + "_" + the person's user id
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: WellbeingConfigEntry,
@@ -106,6 +113,8 @@ class AwakeSwitch(CoordinatorEntity[WellbeingCoordinator], SwitchEntity, Restore
         if ids:
             self.async_on_remove(async_track_state_change_event(self.hass, ids, self._changed))
             self.async_on_remove(async_track_time_interval(self.hass, self._tick, timedelta(minutes=1)))
+        if self.s["start_tracking"]:
+            self.async_on_remove(self.hass.bus.async_listen(NOTIFICATION_ACTION, self._notification_action))
         await self._tell_app_who_decides()
 
     @callback
@@ -122,6 +131,11 @@ class AwakeSwitch(CoordinatorEntity[WellbeingCoordinator], SwitchEntity, Restore
             st = self.hass.states.get(s["sleep_tracking"])
             event_type = st.attributes.get("event_type") if st else None
             r.tracking = "started" if event_type in ("started", "resumed") else "stopped" if event_type else None
+        if s["phone_locked"]:
+            st = self.hass.states.get(s["phone_locked"])
+            if st is not None and st.state in ("on", "off"):
+                r.locked = st.state == "on"
+                r.locked_since = st.last_changed if r.locked else None
         if s["person"]:
             st = self.hass.states.get(s["person"])
             r.home = None if st is None or st.state in GONE else st.state == "home"
@@ -146,6 +160,9 @@ class AwakeSwitch(CoordinatorEntity[WellbeingCoordinator], SwitchEntity, Restore
             # An event entity's state is the time of its last event: a new time is a new event.
             if old is not None and old.state not in GONE and new.state not in GONE and new.state != old.state:
                 r.tracking_event(new.attributes.get("event_type"), at)
+        elif eid == s["alarm"]:
+            if old is not None and old.state not in GONE and new.state not in GONE and new.state != old.state:
+                r.alarm_event(new.attributes.get("event_type"), at)
         elif eid == s["charging"]:
             if new.state in ("on", "off") and (old is None or old.state != new.state) and not (
                     settling and old is not None and old.state in GONE):
@@ -201,17 +218,86 @@ class AwakeSwitch(CoordinatorEntity[WellbeingCoordinator], SwitchEntity, Restore
     @callback
     def _apply(self) -> None:
         changes, self.rules.pending = self.rules.pending, []
+        actions, self.rules.actions = self.rules.actions, []
         self.async_write_ha_state()  # also saves what the rules remember
         for change in changes:
             _LOGGER.info("%s is %s (%s, %s)", self.user_id, "awake" if change.awake else "asleep",
                          dt_util.as_local(change.at).strftime("%H:%M"), change.source)
             if change.awake:
                 self.hass.async_create_task(self._tell_app_awake(change))
+        for action in actions:
+            _LOGGER.info("%s: %s (%s)", self.user_id, action.kind.replace("_", " "), action.reason)
+            self.hass.async_create_task(self._act(action))
+
+    # ----- going back to sleep -----
+
+    async def _act(self, action: Action) -> None:
+        if action.kind == "back_asleep":
+            await self._tell_app_asleep(action.since or action.at)
+            return
+        script = self.s["start_tracking"] if action.kind == "start_tracking" else self.s["stop_tracking"]
+        if not script:
+            return
+        try:
+            await self.hass.services.async_call("script", "turn_on", {"entity_id": script}, blocking=True)
+        except HomeAssistantError as err:
+            _LOGGER.warning("Couldn't run %s to %s: %s", script, action.kind.replace("_", " "), err)
+            return
+        if action.kind == "start_tracking":
+            await self._notify_restart(action)
+        else:
+            await self._clear_notification()
+
+    def _phones(self) -> list[str]:
+        person = ((self.coordinator.data or {}).get("people") or {}).get(self.user_id) or {}
+        devices = (person.get("delivery") or {}).get("devices") or []
+        return [d.removeprefix("notify.") for d in devices if d]
+
+    async def _notify_restart(self, action: Action) -> None:
+        since = dt_util.as_local(action.since or action.at).strftime("%H:%M")
+        message = (f"Sleep tracking started again: {action.reason}. Counted as asleep from {since}. "
+                   "It stops by itself once you're up.")
+        for phone in self._phones():
+            try:
+                await self.hass.services.async_call("notify", phone, {
+                    "title": "Back to sleep?", "message": message,
+                    "data": {"tag": f"wellbeing_sleep_{self.user_id}",
+                             "actions": [{"action": f"{STOP_ACTION}_{self.user_id}", "title": "Stop tracking"}]},
+                }, blocking=True)
+            except HomeAssistantError as err:
+                _LOGGER.warning("Couldn't tell %s that sleep tracking started again: %s", phone, err)
+
+    async def _clear_notification(self) -> None:
+        for phone in self._phones():
+            try:
+                await self.hass.services.async_call("notify", phone, {
+                    "message": "clear_notification", "data": {"tag": f"wellbeing_sleep_{self.user_id}"}}, blocking=True)
+            except HomeAssistantError:
+                pass
+
+    @callback
+    def _notification_action(self, event: Event) -> None:
+        if event.data.get("action") != f"{STOP_ACTION}_{self.user_id}":
+            return
+        self.rules.stop_from_notification(dt_util.utcnow())
+        self._apply()
+
+    async def _tell_app_asleep(self, at: datetime) -> None:
+        """Back to sleep after getting up: today's wake-up no longer counts in the app."""
+        try:
+            person = await self.coordinator.api.asleep(self.user_id, at.isoformat())
+        except WellbeingError as err:
+            _LOGGER.warning("Couldn't tell Wellbeing that %s went back to sleep: %s", self.user_id, err)
+            return
+        self.coordinator.update_person(person)
 
     # ----- by hand -----
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        self.rules.manual(True, dt_util.utcnow())
+        if self.rules.restarted and self.rules.tracking == "started":
+            self.rules.stop_from_notification(dt_util.utcnow())  # up: stop tracking we started
+        else:
+            self.rules.manual(True, dt_util.utcnow())
         self._apply()
 
     async def async_turn_off(self, **kwargs: Any) -> None:

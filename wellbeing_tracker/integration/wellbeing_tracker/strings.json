@@ -114,7 +114,13 @@
           "night_charge_hours": "A night's charge",
           "in_use_minutes": "Phone in use for",
           "quiet_minutes": "Quiet for",
-          "bedtime_until": "Bedtime until"
+          "bedtime_until": "Bedtime until",
+          "alarm": "Alarm clock",
+          "start_tracking": "Start sleep tracking",
+          "stop_tracking": "Stop sleep tracking",
+          "restart_quiet_minutes": "Back asleep after",
+          "snooze_restart_minutes": "Snoozed for",
+          "back_to_sleep_minutes": "Watch for going back to sleep for"
         },
         "data_description": {
           "sleep_tracking": "Sleep as Android's Sleep tracking event. Starting it means asleep; until it stops, only leaving home or the charger can mean awake.",
@@ -130,7 +136,13 @@
           "night_charge_hours": "Charging at least this long counts as a night on charge, not a top-up.",
           "in_use_minutes": "Unlocked this long counts as being up.",
           "quiet_minutes": "With no sleep tracking: how long everything has to be quiet before it counts as asleep.",
-          "bedtime_until": "...until this time, for late nights. Waking up still can't happen before the earliest wake-up."
+          "bedtime_until": "...until this time, for late nights. Waking up still can't happen before the earliest wake-up.",
+          "alarm": "Sleep as Android's Alarm clock event. Dismissing the alarm starts the watch for going back to sleep; snoozing it for a while starts tracking again straight away.",
+          "start_tracking": "A script that starts Sleep as Android's sleep tracking (the Sleep as Android \"Trigger app actions\" blueprint, with START_SLEEP_TRACK). With this, going back to sleep after the alarm starts tracking again and sends a notification with a Stop button. Leave empty to turn this off.",
+          "stop_tracking": "A script that stops sleep tracking (the same blueprint, with STOP_SLEEP_TRACK). Tracking started again stops by itself as soon as you're up.",
+          "restart_quiet_minutes": "After the alarm: the phone locked, on charge and still, with nothing else happening, for this long, means back asleep. Bedroom lights don't count, as a wake-up routine may turn them on.",
+          "snooze_restart_minutes": "The alarm snoozed this long with tracking stopped starts tracking again at once.",
+          "back_to_sleep_minutes": "How long after the alarm (or tracking stopping) going back to sleep is looked for. At most two restarts a morning."
         }
       }
     },

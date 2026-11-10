@@ -233,6 +233,25 @@ def create_app(settings: Settings, background: bool = False) -> FastAPI:
         await engine.tick()
         return engine.person_overview(user)
 
+    @app.post("/api/integration/asleep")
+    async def integration_asleep(payload: dict = Body(...)) -> dict:
+        """Back to sleep after getting up this morning: Home Assistant restarted sleep tracking.
+        Today's wake-up no longer counts; the next one does. `at` (optional, ISO time) is when."""
+        user = _person(str(payload.get("user_id") or ""))
+        now = engine.clock()
+        at = now
+        if payload.get("at"):
+            try:
+                at = datetime.fromisoformat(str(payload["at"]))
+            except ValueError:
+                raise ValidationError("at must be a date and time") from None
+            if at.tzinfo is None:
+                at = at.replace(tzinfo=engine.tz)
+            at = min(at, now)
+        engine.back_to_sleep(user["id"], at)
+        await engine.tick()
+        return engine.person_overview(user)
+
     index_html = (STATIC_DIR / "index.html").read_text().replace("{{v}}", __version__)
 
     @app.get("/", include_in_schema=False)

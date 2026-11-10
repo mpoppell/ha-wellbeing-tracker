@@ -14,6 +14,13 @@ Awake (only after the earliest wake-up time, and only once sleep tracking has st
   - The phone is unlocked, freshly, and stays unlocked for a few minutes.
   - The phone notices walking, or any of the "signs you're up" happens.
   - Leaving home. This and the charger count even if sleep tracking was left running.
+
+Back to sleep (with scripts to start and stop Sleep as Android's tracking)
+  - The alarm has been snoozed for a while and tracking has stopped: start it again at once.
+  - After the alarm (or tracking stopping) in the morning, the phone is locked, on charge and
+    still, with nothing else happening for a while: start tracking again, from when it went quiet.
+  - Tracking started again this way doesn't hold back waking up: any sign of being up counts, and
+    stops it again. At most MAX_RESTARTS a morning.
 """
 
 from __future__ import annotations
@@ -43,7 +50,17 @@ DEFAULTS: dict[str, Any] = {
     "night_charge_hours": 3,     # a charge this long counts as a night's charge
     "in_use_minutes": 10,        # unlocked this long counts as up
     "quiet_minutes": 30,         # no tracking: quiet this long counts as asleep
+    "alarm": None,               # event entity: Sleep as Android's alarm clock
+    "start_tracking": None,      # script that starts sleep tracking
+    "stop_tracking": None,       # script that stops it
+    "restart_quiet_minutes": 15,  # after the alarm: quiet this long counts as back asleep
+    "snooze_restart_minutes": 10,  # snoozed this long with tracking stopped: start it again at once
+    "back_to_sleep_minutes": 120,  # how long after the alarm going back to sleep is looked for
 }
+
+MAX_RESTARTS = 2            # tracking started again at most this often a morning
+LATEST_MORNING = time(12, 0)  # an alarm or tracking stopping after this isn't waking up for the day
+RESTART_WAIT = timedelta(minutes=10)  # asked to start: tracking should have started within this
 
 
 def settings(options: dict | None) -> dict[str, Any]:
@@ -55,7 +72,7 @@ def settings(options: dict | None) -> dict[str, Any]:
 
 
 def watched(s: dict) -> list[str]:
-    ids = [s[k] for k in ("sleep_tracking", "charging", "phone_locked", "activity", "person") if s.get(k)]
+    ids = [s[k] for k in ("sleep_tracking", "charging", "phone_locked", "activity", "person", "alarm") if s.get(k)]
     return ids + s["lights"] + s["signs"] + s["keep_awake"]
 
 
@@ -68,11 +85,26 @@ def _clock(value: str) -> time:
     return time(h, m)
 
 
+def restarts_tracking(s: dict) -> bool:
+    """Going back to sleep starts sleep tracking again: needs tracking and a script to start it."""
+    return bool(s.get("sleep_tracking") and s.get("start_tracking"))
+
+
 @dataclass
 class Change:
     awake: bool
     at: datetime
     source: str
+
+
+@dataclass
+class Action:
+    """Something to do in Home Assistant: start_tracking, stop_tracking, or back_asleep (tell the
+    app that this morning's wake-up doesn't count)."""
+    kind: str
+    at: datetime
+    reason: str
+    since: datetime | None = None  # start_tracking: asleep since
 
 
 @dataclass
@@ -91,11 +123,25 @@ class Rules:
     last_activity: datetime | None = None   # signs, unlocks, walking
     home: bool | None = None
     busy: bool = False                      # something in keep_awake is on
+    locked: bool | None = None              # the phone is locked now
+    locked_since: datetime | None = None
+    woke_at: datetime | None = None         # this morning's alarm dismissed (or tracking stopped)
+    snoozed_at: datetime | None = None      # the alarm is snoozed, since
+    stopped_at: datetime | None = None      # sleep tracking last stopped
+    restarts: int = 0                       # tracking started again this morning
+    restart_day: str | None = None          # ...counted for this day
+    restarted: bool = False                 # tracking is running because we started it again
+    restart_asked: datetime | None = None   # asked to start tracking, waiting for it
+    restart_from: datetime | None = None    # ...asleep since
     pending: list[Change] = field(default_factory=list)
+    actions: list[Action] = field(default_factory=list)
 
     # ----- what's remembered across restarts -----
 
-    MEMORY = ("tracking", "charging_since", "lights_off_since", "last_activity")
+    MEMORY = ("tracking", "charging_since", "lights_off_since", "last_activity", "woke_at", "snoozed_at",
+              "stopped_at", "restarts", "restart_day", "restarted", "restart_asked", "restart_from")
+    TIMES = ("charging_since", "lights_off_since", "last_activity", "woke_at", "snoozed_at", "stopped_at",
+             "restart_asked", "restart_from")
 
     def memory(self) -> dict[str, Any]:
         out = {}
@@ -107,11 +153,15 @@ class Rules:
     def restore(self, data: dict | None) -> None:
         for k in self.MEMORY:
             v = (data or {}).get(k)
-            if v and k != "tracking":
+            if k in self.TIMES and v:
                 try:
                     v = datetime.fromisoformat(v)
                 except (TypeError, ValueError):
                     v = None
+            elif k == "restarts":
+                v = int(v) if isinstance(v, (int, float)) else 0
+            elif k == "restarted":
+                v = bool(v)
             setattr(self, k, v)
 
     # ----- helpers -----
@@ -134,11 +184,17 @@ class Rules:
         t = self._local(at).time().replace(tzinfo=None)
         return t >= _clock(self.s["bedtime_after"]) or t < _clock(self.s["bedtime_until"])
 
+    def _is_morning(self, at: datetime) -> bool:
+        """Between the earliest wake-up and late morning: when going back to sleep is looked for."""
+        t = self._local(at).time().replace(tzinfo=None)
+        return _clock(self.s["earliest"]) <= t < LATEST_MORNING
+
     def may_wake(self, now: datetime, strong: bool = False) -> bool:
-        """Asleep, it's late enough, and (unless strong) sleep tracking isn't still running."""
+        """Asleep, it's late enough, and (unless strong) sleep tracking isn't still running.
+        Tracking we started again doesn't count: going back to sleep is checked, not certain."""
         if self.awake:
             return False
-        if not strong and self.s["sleep_tracking"] and self.tracking == "started":
+        if not strong and self.s["sleep_tracking"] and self.tracking == "started" and not self.restarted:
             return False
         since = self.since or now
         if not self._is_night(since):
@@ -157,7 +213,10 @@ class Rules:
 
     def _wake(self, now: datetime, at: datetime, source: str, strong: bool = False) -> Change | None:
         if self.may_wake(now, strong):
-            return self._set(True, at, source)
+            change = self._set(True, at, source)
+            if change and self.restarted and self.tracking == "started" and self.s["stop_tracking"]:
+                self.actions.append(Action("stop_tracking", now, f"up: {source}"))
+            return change
         return None
 
     # ----- what Home Assistant saw -----
@@ -168,11 +227,46 @@ class Rules:
     def tracking_event(self, event_type: str | None, at: datetime) -> Change | None:
         if event_type in ("started", "resumed"):
             self.tracking = "started"
+            asked, self.restart_asked = self.restart_asked, None
+            self.restarted = bool(asked and timedelta(0) <= at - asked <= RESTART_WAIT)
+            if self.restarted:  # back asleep, whatever the switch said in between
+                self.actions.append(Action("back_asleep", at, "sleep tracking started again", self.restart_from))
             if self.awake:
+                if self.restarted:
+                    return self._set(False, self.restart_from or at, "sleep tracking started again")
                 return self._set(False, at, "sleep tracking started")
         elif event_type in ("stopped", "paused"):
             self.tracking = "stopped"
+            self.stopped_at = at
+            self.restarted = False
+            self._morning_ends(at)
         return None
+
+    def alarm_event(self, event_type: str | None, at: datetime) -> None:
+        """Sleep as Android's alarm clock: snoozed, or dismissed (the morning starts)."""
+        if event_type == "snooze_clicked":
+            self.snoozed_at = at
+        elif event_type in ("alert_dismiss", "snooze_canceled"):
+            self.snoozed_at = None
+            self._morning_ends(at)
+
+    def _morning_ends(self, at: datetime) -> None:
+        """The alarm went off or tracking stopped in the morning: watch for going back to sleep."""
+        if not self._is_morning(at):
+            return
+        self.woke_at = at
+        day = self._local(at).date().isoformat()
+        if self.restart_day != day:
+            self.restart_day, self.restarts = day, 0
+
+    def stop_from_notification(self, now: datetime) -> Change | None:
+        """Tapped Stop on the "back to sleep" notification: awake, and no more restarts today."""
+        self.restarts = MAX_RESTARTS
+        self.restart_day = self._local(now).date().isoformat()
+        self.woke_at = self.snoozed_at = self.restart_asked = None
+        if self.tracking == "started" and self.s["stop_tracking"]:
+            self.actions.append(Action("stop_tracking", now, "stopped from the notification"))
+        return self._set(True, now, "stopped sleep tracking")
 
     def charging_changed(self, on: bool, at: datetime, now: datetime) -> Change | None:
         if on:
@@ -185,6 +279,8 @@ class Rules:
 
     def lock_changed(self, locked: bool, at: datetime) -> None:
         """Only a change counts: a phone can say "unlocked" all night without being touched."""
+        self.locked = locked
+        self.locked_since = at if locked else None
         if locked:
             self.unlocked_at = None
         else:
@@ -230,7 +326,51 @@ class Rules:
             change = self._wake(now, at, "phone in use")
             if change:
                 return change
+        self._back_to_sleep(now)
         return self._fallback_sleep(now)
+
+    def _back_to_sleep(self, now: datetime) -> Action | None:
+        """Start sleep tracking again: the alarm's been snoozed a while, or the morning's gone
+        quiet again after it."""
+        s = self.s
+        if not restarts_tracking(s) or self.tracking != "stopped" or self.busy or self.home is False:
+            return None
+        if self.restart_asked and now - self.restart_asked < RESTART_WAIT:
+            return None  # asked already: waiting for tracking to start
+        if self.restart_day == self._local(now).date().isoformat() and self.restarts >= MAX_RESTARTS:
+            return None
+        if s["charging"] and not self.charging_since:
+            return None  # off the charger: up
+        if s["phone_locked"] and self.locked is False:
+            return None  # using the phone
+        window = timedelta(minutes=float(s["back_to_sleep_minutes"]))
+        snooze = self.snoozed_at
+        if snooze and self._is_morning(snooze) and now - snooze <= window and (
+                now - snooze >= timedelta(minutes=float(s["snooze_restart_minutes"]))):
+            since = self.stopped_at if self.stopped_at and self.stopped_at >= snooze else snooze
+            minutes = round((now - snooze).total_seconds() / 60)
+            return self._restart(now, since, f"alarm snoozed for {minutes} minutes")
+        if not self.woke_at or now - self.woke_at > window:
+            return None
+        marks = [self.woke_at]
+        for t in (self.last_activity, self.locked_since, self.charging_since):
+            if t:
+                marks.append(t)
+        quiet_from = max(marks)
+        if now - quiet_from >= timedelta(minutes=float(s["restart_quiet_minutes"])):
+            return self._restart(now, quiet_from, f"quiet since {self._local(quiet_from).strftime('%H:%M')}")
+        return None
+
+    def _restart(self, now: datetime, since: datetime, reason: str) -> Action:
+        day = self._local(now).date().isoformat()
+        if self.restart_day != day:
+            self.restart_day, self.restarts = day, 0
+        self.restarts += 1
+        self.restart_asked, self.restart_from = now, since
+        self.woke_at = self.snoozed_at = None  # until the next alarm or stop
+        action = Action("start_tracking", now, reason, since)
+        self.actions.append(action)
+        return action
 
     def _fallback_sleep(self, now: datetime) -> Change | None:
         """No sleep tracking tonight: home, on charge, lights off and quiet for a while."""

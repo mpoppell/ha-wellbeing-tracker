@@ -43,19 +43,34 @@ def events(rows: list[dict]) -> list[tuple[datetime, str]]:
     return sorted(seen.items())
 
 
-def nights_from_sleep_as_android(tracking: list[dict], phases: list[dict], tz=None) -> list[dict]:
-    """Each finished night: {start, end, phases: [(start, end, phase)]}.
+# How Sleep as Android sessions become nights. Tracking is often stopped and started again in one
+# night: false starts while falling asleep, getting up for a bit, or going back to sleep after
+# the alarm (which Home Assistant can restart). Parts close together are one night.
+SHORTEST_NIGHT_PART = timedelta(minutes=30)  # a session this long can be a night on its own
+SHORTEST_PART = timedelta(minutes=10)        # shorter than this is never kept
+JOIN_GAP = timedelta(hours=2)                # parts closer than this are one night
+LONGEST_NIGHT = timedelta(hours=16)
+SMOOTHING = timedelta(minutes=5)             # live phases shorter than this are folded into their neighbours
+
+# Life Dashboard's names for Health Connect stages -> ours. Unknown stages are left out.
+RECORD_STAGES = {"awake": "awake", "out_of_bed": "awake", "light": "light", "deep": "deep", "rem": "rem",
+                 "sleeping": ASLEEP}
+SLEEP_AS_ANDROID_APP = "com.urbandroid.sleep"
+
+
+def _sessions(tracking: list[dict], phases: list[dict]) -> list[dict]:
+    """Each finished tracking session: {start, end, guessed}. A session shorter than SHORTEST_PART
+    is left out.
 
     Two things Home Assistant's record doesn't always get right, handled here:
-    * A second "started" while a night is already running (Sleep as Android restarting its own
-      tracking) isn't a new night: if phases were still coming in, the night started at the first.
-    * A "stopped" with no "started" (Home Assistant was restarting when tracking began): the night
-      starts at the first sleep phase after the last one ended, if there are phases to go on.
+    * A second "started" while a session is already running (Sleep as Android restarting its own
+      tracking) isn't a new session: if phases were still coming in, it started at the first.
+    * A "stopped" with no "started" (Home Assistant was restarting when tracking began): the
+      session starts at the first sleep phase after the last one ended, if there are phases.
     """
     marks = events(tracking)
     phase_times = [t for t, k in events(phases) if k in PHASE_EVENTS]
-    steps = [(t, PHASE_EVENTS[k]) for t, k in events(phases) if k in PHASE_EVENTS]
-    nights = []
+    out = []
     start = None
     start_guessed = False
     last_end = None
@@ -66,20 +81,145 @@ def nights_from_sleep_as_android(tracking: list[dict], phases: list[dict], tz=No
             start, start_guessed = t, False
         elif kind == "stopped":
             if start is None and last_end is not None:
-                # no start seen: begin at the first phase since the previous night ended. Only when
+                # no start seen: begin at the first phase since the previous session ended. Only when
                 # that end is in view, so a night cut off by the start of the history isn't guessed.
-                first = next((p for p in phase_times if last_end < p < t and t - p <= timedelta(hours=16)), None)
+                first = next((p for p in phase_times if last_end < p < t and t - p <= LONGEST_NIGHT), None)
                 if first:
                     start, start_guessed = first, True
-            if start and t - start >= timedelta(minutes=30):
-                night = _fill(start, t, steps)
-                if start_guessed:
-                    at = start.astimezone(tz) if tz else start
-                    night["why"] = [{"at": at.isoformat(timespec="minutes"),
-                                     "what": "First sleep phase. Home Assistant missed the start of tracking, so the night begins here"}]
-                nights.append(night)
+            if start and t - start >= SHORTEST_PART:
+                out.append({"start": start, "end": t, "guessed": start_guessed})
             last_end = t
             start, start_guessed = None, False
+    return out
+
+
+def smooth(blocks: list[tuple[datetime, datetime, str]], shortest: timedelta = SMOOTHING) -> list[tuple[datetime, datetime, str]]:
+    """Sleep as Android's live phases flicker: "deep" for two minutes, "light" for one. The app
+    redraws the night from all of it once tracking ends; this is an approximation of that. Any
+    phase shorter than `shortest` goes to the phase before it (or after it, at the very start),
+    shortest first, and neighbours in the same phase are joined."""
+    out = [list(b) for b in blocks]
+    while len(out) > 1:
+        i = min(range(len(out)), key=lambda k: out[k][1] - out[k][0])
+        if out[i][1] - out[i][0] >= shortest:
+            break
+        if i > 0:
+            out[i - 1][1] = out[i][1]
+        else:
+            out[1][0] = out[0][0]
+        del out[i]
+        joined = []
+        for b in out:
+            if joined and joined[-1][2] == b[2]:
+                joined[-1][1] = b[1]
+            else:
+                joined.append(b)
+        out = joined
+    return [tuple(b) for b in out]
+
+
+def records_from_life_dashboard(rows: list[dict], apps: tuple[str, ...] = (SLEEP_AS_ANDROID_APP,)) -> list[dict]:
+    """Sleep as Android's own record of each night, with the stages the app worked out once
+    tracking ended, as Life Dashboard (Health Connect) reports it in the `stages` attribute of
+    its Last sleep asleep sensor. Only records from `apps` count. Each: {start, end, phases}."""
+    seen: dict[tuple, dict] = {}
+    for r in rows:
+        a = r.get("attributes") or {}
+        source = a.get("source")
+        if apps and source and source not in apps:
+            continue
+        start, end = _when(a.get("start")), _when(a.get("end"))
+        if not start or not end or end <= start:
+            continue
+        stages = []
+        for st in a.get("stages") or []:
+            if not isinstance(st, dict):
+                continue
+            phase = RECORD_STAGES.get(str(st.get("stage") or "").lower())
+            s, e = _when(st.get("start")), _when(st.get("end"))
+            if phase and s and e and e > s:
+                stages.append((max(s, start), min(e, end), phase))
+        stages = sorted(x for x in stages if x[1] > x[0])
+        if not stages:
+            continue
+        blocks = []
+        at = start
+        for s, e, phase in stages:
+            if s > at:
+                blocks.append((at, s, "awake"))  # a gap in the record is time awake
+            s = max(s, at)
+            if e <= s:
+                continue
+            if blocks and blocks[-1][2] == phase and blocks[-1][1] == s:
+                blocks[-1] = (blocks[-1][0], e, phase)
+            else:
+                blocks.append((s, e, phase))
+            at = e
+        if end > at:
+            blocks.append((at, end, "awake"))
+        seen[(start, end)] = {"start": start, "end": end, "phases": blocks, "record": True}  # a later copy wins
+    return sorted(seen.values(), key=lambda x: x["start"])
+
+
+def nights_from_sleep_as_android(tracking: list[dict], phases: list[dict], tz=None,
+                                 records: list[dict] | None = None) -> list[dict]:
+    """Each finished night: {start, end, phases: [(start, end, phase)], why}.
+
+    A night is built from Sleep as Android's tracking sessions:
+    * Its phases come from Sleep as Android's own record when Life Dashboard has it (`records`,
+      see records_from_life_dashboard). Otherwise they're estimated from the live phase events,
+      smoothed, and the night says so; the record replaces the estimate when it arrives.
+    * Sessions less than JOIN_GAP apart are one night, with the time between them awake. A
+      short session counts only as part of a night, so false starts while falling asleep are
+      left out, but going back to sleep after the alarm is kept.
+    """
+    steps = [(t, PHASE_EVENTS[k]) for t, k in events(phases) if k in PHASE_EVENTS]
+    parts = _sessions(tracking, phases)
+    recs = list(records or [])
+    for rec in recs:  # the app's record of a session replaces the live version of it
+        parts = [p for p in parts if not (p["start"] < rec["end"] and rec["start"] < p["end"])]
+    parts = sorted(parts + recs, key=lambda p: p["start"])
+
+    groups: list[list[dict]] = []
+    for p in parts:
+        long = p.get("record") or p["end"] - p["start"] >= SHORTEST_NIGHT_PART
+        g = groups[-1] if groups else None
+        if g and p["start"] - g[-1]["end"] <= JOIN_GAP and p["end"] - g[0]["start"] <= LONGEST_NIGHT:
+            g.append(p)
+        elif long:
+            groups.append([p])
+        # else: a short session with no night to belong to (a false start): left out
+
+    local = (lambda d: d.astimezone(tz)) if tz else (lambda d: d)  # noqa: E731
+    nights = []
+    for g in groups:
+        blocks: list[tuple] = []
+        why = []
+        for i, p in enumerate(g):
+            if i:
+                if p["start"] > g[i - 1]["end"]:
+                    blocks.append((g[i - 1]["end"], p["start"], "awake"))
+                why.append({"at": local(p["start"]).isoformat(timespec="minutes"),
+                            "what": "Sleep tracking started again: one night with the part before"})
+            if p.get("record"):
+                part_blocks = p["phases"]
+            else:
+                part_blocks = smooth(_fill(p["start"], p["end"], steps)["phases"])
+                why.append({"at": local(p["start"]).isoformat(timespec="minutes"),
+                            "what": "Phases estimated from Sleep as Android's live phases until its own record arrives"})
+            if p.get("guessed"):
+                why.append({"at": local(p["start"]).isoformat(timespec="minutes"),
+                            "what": "First sleep phase. Home Assistant missed the start of tracking, so the night begins here"})
+            for b in part_blocks:
+                if blocks and blocks[-1][2] == b[2] and blocks[-1][1] == b[0]:
+                    blocks[-1] = (blocks[-1][0], b[1], b[2])
+                else:
+                    blocks.append(tuple(b))
+        night = {"start": g[0]["start"], "end": g[-1]["end"], "phases": blocks, "source": "sleep_as_android",
+                 "estimated": any(not p.get("record") for p in g)}
+        if why:
+            night["why"] = sorted(why, key=lambda w: w["at"])
+        nights.append(night)
     return nights
 
 
@@ -114,6 +254,14 @@ def nights_from_segments(rows: list[dict]) -> list[dict]:
         if e - s >= timedelta(hours=1):
             seen[s] = e
     return [{"start": s, "end": e, "phases": [(s, e, ASLEEP)], "source": "android"} for s, e in sorted(seen.items())]
+
+
+def trim(night: dict, start: datetime, end: datetime) -> dict:
+    """The night between start and end only: what's outside isn't counted, and the phases inside
+    stay exactly as they were (cut at the new ends)."""
+    s, e = max(start, night["start"]), min(end, night["end"])
+    phases = [(max(a, s), min(b, e), p) for a, b, p in night["phases"] if min(b, e) > max(a, s)]
+    return {**night, "start": s, "end": e, "phases": phases}
 
 
 def summary(night: dict, tz) -> dict:
