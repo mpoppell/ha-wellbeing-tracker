@@ -189,6 +189,14 @@ def build_router(current_user) -> APIRouter:
     def reset_night(night: str, user: dict = Depends(current_user), e=Depends(engine)) -> dict:
         return e.reset_night(user["id"], _day(night))
 
+    @router.put("/sleep/nights/{night}/trim")
+    def trim_night(night: str, payload: dict = Body(...), user: dict = Depends(current_user), e=Depends(engine)) -> dict:
+        return e.trim_night(user["id"], _day(night), payload.get("start"), payload.get("end"))
+
+    @router.delete("/sleep/nights/{night}/trim")
+    def untrim_night(night: str, user: dict = Depends(current_user), e=Depends(engine)) -> dict:
+        return e.untrim_night(user["id"], _day(night))
+
     @router.post("/sleep/import")
     async def sleep_import(user: dict = Depends(current_user), e=Depends(engine)) -> dict:
         """Fetch everything Home Assistant still has (about ten days)."""

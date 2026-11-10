@@ -226,3 +226,82 @@ def test_asleep_from_home_assistant(tmp_path):
     assert again["wake"]["source"] == "phone in use"
     assert core.post("/api/integration/asleep", headers=auth, json={"user_id": "u1", "at": "nope"}).status_code == 422
     assert core.post("/api/integration/asleep", headers=auth, json={"user_id": "nobody"}).status_code == 404
+
+
+# ----- trimming a tracked night -----
+
+def trim_env(tmp_path):
+    db = Database(tmp_path / "w.db")
+    db.migrate()
+    db.touch_user("u1", "matt", "Matthew")
+    ha = FakeHA()
+    ha.states.append({"entity_id": RECORD, **MONDAY_RECORD})
+    history = {"event.sleep_as_android_sleep_tracking_2": MONDAY, "event.sleep_as_android_sleep_phase_2": MONDAY_PHASES}
+
+    async def get_history(entity_id, start, end, attributes=False):
+        return history.get(entity_id, [])
+    ha.get_history = get_history
+    engine = Engine(db, ha, tz=SYD, clock=Clock("2026-11-09T12:00"))
+    tracker = next(t for t in db.list_trackers("u1") if t["kind"] == "sleep")
+    db.update_tracker("u1", tracker["id"], {"config": {"nights": {
+        "tracking": "event.sleep_as_android_sleep_tracking_2", "phases": "event.sleep_as_android_sleep_phase_2"}}})
+    asyncio.run(engine.sync_nights())
+    return db, engine
+
+
+def hours(db):
+    [entry] = db.list_entries("u1", "2026-11-09", "2026-11-09")
+    return entry["value_json"]["hours"]
+
+
+def test_trim_counts_only_the_part_you_choose(tmp_path):
+    db, engine = trim_env(tmp_path)
+    [whole] = engine.sleep_view("u1")["nights"]
+    assert (whole["start"], whole["end"]) == ("2026-11-09T04:58+11:00", "2026-11-09T09:59+11:00")
+    view = engine.trim_night("u1", "2026-11-09", local("2026-11-09T05:20").isoformat(), local("2026-11-09T09:48").isoformat())
+    [n] = view["nights"]
+    assert (n["start"], n["end"]) == ("2026-11-09T05:20+11:00", "2026-11-09T09:48+11:00")
+    assert n["trimmed"]["tracked_start"] == "2026-11-09T04:58+11:00" and n["trimmed"]["tracked_end"] == "2026-11-09T09:59+11:00"
+    # the phases inside are Sleep as Android's, untouched; only the ends are cut
+    assert [(p["start"][11:16], p["end"][11:16], p["phase"]) for p in n["phases"]][:3] == [
+        ("05:20", "06:10", "light"), ("06:10", "07:00", "deep"), ("07:00", "07:30", "rem")]
+    assert n["totals"]["deep"] == whole["totals"]["deep"] and n["asleep"] == whole["asleep"]  # only awake time left out
+    assert n["in_bed"] == whole["in_bed"] - 22 - 11
+    assert any("Trimmed by you" in w["what"] for w in n["why"])
+    assert hours(db) == round(n["asleep"] / 60, 2)
+
+
+def test_trimming_into_sleep_reduces_it(tmp_path):
+    db, engine = trim_env(tmp_path)
+    [whole] = engine.sleep_view("u1")["nights"]
+    [n] = engine.trim_night("u1", "2026-11-09", local("2026-11-09T04:58").isoformat(),
+                            local("2026-11-09T06:40").isoformat())["nights"]
+    assert n["totals"]["deep"] == 30 and n["asleep"] == 50 + 30
+    assert hours(db) == round(80 / 60, 2)
+    [back] = engine.untrim_night("u1", "2026-11-09")["nights"]
+    assert back["asleep"] == whole["asleep"] and "trimmed" not in back
+    assert hours(db) == round(whole["asleep"] / 60, 2)
+
+
+def test_a_trim_can_only_shorten_and_survives_updates(tmp_path):
+    import pytest
+    from app.trackers import ValidationError
+    db, engine = trim_env(tmp_path)
+    with pytest.raises(ValidationError, match="only shorten"):
+        engine.trim_night("u1", "2026-11-09", local("2026-11-09T04:00").isoformat(), local("2026-11-09T09:00").isoformat())
+    with pytest.raises(ValidationError, match="30 minutes"):
+        engine.trim_night("u1", "2026-11-09", local("2026-11-09T06:00").isoformat(), local("2026-11-09T06:20").isoformat())
+    with pytest.raises(ValidationError, match="before it stops"):
+        engine.trim_night("u1", "2026-11-09", local("2026-11-09T07:00").isoformat(), local("2026-11-09T06:00").isoformat())
+    engine.trim_night("u1", "2026-11-09", local("2026-11-09T05:20").isoformat(), local("2026-11-09T09:48").isoformat())
+    asyncio.run(engine.sync_nights())  # Home Assistant updating the night keeps your trim
+    [n] = engine.sleep_view("u1")["nights"]
+    assert (n["start"], n["end"]) == ("2026-11-09T05:20+11:00", "2026-11-09T09:48+11:00")
+    [reset] = engine.reset_night("u1", "2026-11-09")["nights"]  # "use Home Assistant's times" undoes it
+    assert reset["start"] == "2026-11-09T04:58+11:00" and "trimmed" not in reset
+
+
+def test_trim_through_the_api(matt):
+    assert matt.put("/api/sleep/nights/2026-11-09/trim", json={"start": "2026-11-09T05:00:00+11:00",
+                                                               "end": "2026-11-09T08:00:00+11:00"}).status_code == 422
+    assert matt.delete("/api/sleep/nights/2026-11-09/trim").status_code == 200

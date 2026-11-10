@@ -1520,6 +1520,8 @@ button.plan-due:hover, button.plan-due:focus-visible { color: var(--accent-ink);
 .sleep-group { display: grid; gap: 6px; }
 .sleep-group-title { font-weight: 700; }
 .sleep-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.trim-preview { margin: 2px 0; }
+.trim-preview:empty { display: none; }
 .sleep-time { display: grid; gap: 4px; font-size: 0.9rem; color: var(--muted); }
 .sleep-time input { width: 100%; min-width: 0; font-size: 1.1rem; }
 .sleep-sum { margin: 0; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--sunken); }

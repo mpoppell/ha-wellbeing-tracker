@@ -190,6 +190,8 @@ You can use any of these together. Each morning shows the best one available:
 
 How the estimate works: bedtime is when everything you chose says you're in bed (lights off, phone on charge, phone not in use), and you're up when any of them changes. A trip to the bathroom or a quick look at your phone (under 15 minutes) doesn't end the night. If a light stays on all night, or the phone never goes on charge, that night goes by the others. If only the charger is chosen and it stays plugged in, you're counted as up within an hour of waking. Open a night and tap **How this was worked out** to see each step ("Lights out 11:40pm", "Phone on charge 11:42pm", "Asleep 11:58pm"...).
 
+**Trim a tracked night**: open a Sleep as Android night and tap **Trim start or end** to count only part of it, for example to leave out lying awake before you fell asleep or after you got up. Choose when to start and stop counting; the graph and time asleep update as you go. Sleep as Android's phases stay exactly as recorded (only the ends are cut), you can't add time outside what was tracked, and later updates from Home Assistant keep your trim. **Count the whole night** (or **Use Home Assistant's times**) undoes it. Sleep hours follow the trimmed night.
+
 Estimates can be wrong, so every night except Sleep as Android's can be changed:
 
 - **Change times**: set when you fell asleep and woke. Your times are kept and win over everything else. **Use Home Assistant's times** puts it back.

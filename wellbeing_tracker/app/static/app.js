@@ -2274,6 +2274,16 @@ async function openSleepSheet(pickNight) {
         ? el("button", { type: "button", class: "secondary small", onclick: () => openSleepTimes(current, n, () => openSleepSheet(current)) },
             n ? "Change times" : "Add this night")
         : null,
+      n && n.source === "sleep_as_android"
+        ? el("button", { type: "button", class: "secondary small", onclick: () => openSleepTrim(current, n, () => openSleepSheet(current)) },
+            n.trimmed ? "Change trim" : "Trim start or end")
+        : null,
+      n && n.trimmed
+        ? el("button", { type: "button", class: "link", onclick: async () => {
+            await reload(await api("DELETE", `api/sleep/nights/${current}/trim`));
+            toast("Counting the whole night again");
+          } }, "Count the whole night")
+        : null,
       n && n.source !== "sleep_as_android"
         ? el("button", { type: "button", class: "link", onclick: async () => {
             const fresh = await api("DELETE", `api/sleep/nights/${current}`);
@@ -2296,6 +2306,7 @@ async function openSleepSheet(pickNight) {
           el("div", { class: "supply-big" }, `${hm(n.asleep)} asleep`),
           el("p", { class: "row-sub" }, `${clockOf(n.start)} to ${clockOf(n.end)} · in bed ${hm(n.in_bed)}`
             + (n.fell_asleep_after ? ` · asleep after ${hm(n.fell_asleep_after)}` : "")),
+          n.trimmed ? el("p", { class: "row-sub" }, `Trimmed by you. Tracked ${clockOf(n.trimmed.tracked_start)} to ${clockOf(n.trimmed.tracked_end)}.`) : null,
           el("p", { class: `sleep-badge${n.estimate ? " estimate" : ""}` }, SLEEP_SOURCE[n.source] || "")),
         hypnogram(n, { caption }), caption, tiles, why,
       ] : el("p", { class: "row-sub" }, "Nothing recorded for this night."),
@@ -2314,6 +2325,82 @@ async function openSleepSheet(pickNight) {
     if (!sheet.open) sheet.showModal();
   };
   draw();
+}
+
+// Trim a tracked night: only the time between two moments counts. The phases inside stay exactly as
+// Sleep as Android recorded them; nothing outside the tracked night can be added.
+function openSleepTrim(night, n, done) {
+  const sheet = document.getElementById("sheet");
+  const tracked = n.trimmed
+    ? { start: n.trimmed.tracked_start, end: n.trimmed.tracked_end, phases: n.trimmed.tracked_phases }
+    : { start: n.start, end: n.end, phases: n.phases };
+  const hhmm = (iso) => /T(\d{2}:\d{2})/.exec(iso)[1];
+  const t0 = msOf(tracked.start), t1 = msOf(tracked.end);
+  // A clock time on the night before or the morning of: whichever falls inside the tracked night.
+  const at = (v) => {
+    if (!v) return null;
+    const [h, m] = v.split(":").map(Number);
+    const options = [addDays(night, -1), night].map((day) => { const d = dayToDate(day); d.setHours(h, m, 0, 0); return d; });
+    const inside = options.find((d) => d.getTime() >= t0 - 60000 && d.getTime() <= t1 + 60000);
+    return inside || options.reduce((a, b) => (Math.abs(b - (t0 + t1) / 2) < Math.abs(a - (t0 + t1) / 2) ? b : a));
+  };
+  const from = el("time-field", { value: hhmm(n.start), "aria-label": "Start counting at", placeholder: "Choose" });
+  const to = el("time-field", { value: hhmm(n.end), "aria-label": "Stop counting at", placeholder: "Choose" });
+  const preview = el("div", { class: "trim-preview" });
+  const summary = el("p", { class: "sleep-sum", "aria-live": "polite" });
+  const err = el("p", { class: "form-error", role: "alert", hidden: true });
+  const update = () => {
+    const a = at(from.value), b = at(to.value);
+    if (!a || !b || b <= a) {
+      summary.replaceChildren(el("span", { class: "row-sub" }, "Choose when to start and stop counting."));
+      preview.replaceChildren();
+      return;
+    }
+    const s = Math.max(a.getTime(), t0), e = Math.min(b.getTime(), t1);
+    const phases = tracked.phases
+      .map((p) => ({ ...p, s: Math.max(msOf(p.start), s), e: Math.min(msOf(p.end), e) }))
+      .filter((p) => p.e > p.s)
+      .map((p) => ({ start: localISO(new Date(p.s)), end: localISO(new Date(p.e)), phase: p.phase }));
+    const totals = { awake: 0, rem: 0, light: 0, deep: 0, asleep: 0 };
+    phases.forEach((p) => { totals[p.phase in totals ? p.phase : "asleep"] += (msOf(p.end) - msOf(p.start)) / 60000; });
+    const inBed = (e - s) / 60000;
+    const asleep = inBed - totals.awake;
+    preview.replaceChildren(hypnogram({ start: localISO(new Date(s)), end: localISO(new Date(e)), phases, totals,
+      has_phases: n.has_phases, asleep }, {}));
+    summary.replaceChildren(el("strong", {}, `${hm(asleep)} asleep`), ` · ${hm(inBed)} counted`,
+      inBed < (t1 - t0) / 60000 ? el("span", { class: "row-sub" }, ` (${hm((t1 - t0) / 60000 - inBed)} left out)`) : "");
+  };
+  [from, to].forEach((x) => x.addEventListener("input", update));
+  const form = el("form", { method: "dialog", class: "sleep-form", novalidate: true },
+    el("h2", {}, "Trim the night"),
+    el("p", { class: "row-sub", style: "margin:-8px 0 12px" },
+      `Tracked ${clockOf(tracked.start)} to ${clockOf(tracked.end)}. Only the time between these counts, for example to leave out lying awake before sleep or after you got up. The phases stay as Sleep as Android recorded them.`),
+    err,
+    el("div", { class: "sleep-times" },
+      el("div", { class: "sleep-pair" },
+        el("label", { class: "sleep-time" }, el("span", {}, "Start counting at"), from),
+        el("label", { class: "sleep-time" }, el("span", {}, "Stop counting at"), to)),
+      preview, summary),
+    el("div", { class: "actions" },
+      el("button", { type: "submit", class: "primary" }, "Save"),
+      el("button", { type: "button", class: "link", onclick: () => { from.value = hhmm(tracked.start); to.value = hhmm(tracked.end); update(); markSheetChanged(); } },
+        "Whole night"),
+      el("button", { type: "button", class: "link", onclick: () => (done ? done() : sheet.close()) }, "Cancel")));
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    err.hidden = true;
+    try {
+      const a = at(from.value), b = at(to.value);
+      if (!a || !b) throw new Error("Choose when to start and stop counting");
+      const fresh = await api("PUT", `api/sleep/nights/${night}/trim`, { start: localISO(a), end: localISO(b) });
+      state.sleep = { ...(state.sleep || {}), ...fresh };
+      await refreshCheckin();
+      if (done) done(fresh); else sheet.close();
+    } catch (e) { err.textContent = e.message; err.hidden = false; }
+  });
+  sheet.replaceChildren(form);
+  if (!sheet.open) sheet.showModal();
+  update();
 }
 
 // Last night, like Bearable: when you went to bed, fell asleep, woke up and got up, or just the total.

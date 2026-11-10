@@ -256,6 +256,14 @@ def nights_from_segments(rows: list[dict]) -> list[dict]:
     return [{"start": s, "end": e, "phases": [(s, e, ASLEEP)], "source": "android"} for s, e in sorted(seen.items())]
 
 
+def trim(night: dict, start: datetime, end: datetime) -> dict:
+    """The night between start and end only: what's outside isn't counted, and the phases inside
+    stay exactly as they were (cut at the new ends)."""
+    s, e = max(start, night["start"]), min(end, night["end"])
+    phases = [(max(a, s), min(b, e), p) for a, b, p in night["phases"] if min(b, e) > max(a, s)]
+    return {**night, "start": s, "end": e, "phases": phases}
+
+
 def summary(night: dict, tz) -> dict:
     """What the sleep screen shows for one night. Minutes throughout."""
     totals = {p: 0.0 for p in (*PHASES, ASLEEP)}

@@ -2191,6 +2191,7 @@ class Engine:
             sql += " AND night = ?"
             args.append(night)
         best: dict[str, dict] = {}
+        raw: dict[str, dict] = {}
         for r in conn.execute(sql, args).fetchall():
             n = {"start": parse(r["start_at"]), "end": parse(r["end_at"]), "source": r["source"],
                  "phases": [(parse(s), parse(e), p) for s, e, p in json.loads(r["phases"])],
@@ -2201,6 +2202,25 @@ class Engine:
             rank = (self.SLEEP_PRIORITY.get(r["source"], 9), -info["in_bed"])
             if r["night"] not in best or rank < best[r["night"]]["_rank"]:
                 best[r["night"]] = {**info, "_rank": rank}
+                raw[r["night"]] = n
+        # Your trims: only the time you chose counts, with the night's phases kept as they are.
+        trims = {r["night"]: r for r in conn.execute("SELECT * FROM sleep_trims WHERE tracker_id = ?", (tracker_id,))}
+        local = lambda d: d.astimezone(self.tz).isoformat(timespec="minutes")  # noqa: E731
+        for day, t in trims.items():
+            n = raw.get(day)
+            if not n or n["source"] in ("you", "removed"):
+                continue
+            cut = sleepdata.trim(n, parse(t["start_at"]), parse(t["end_at"]))
+            if cut["end"] <= cut["start"]:
+                continue
+            cut["why"] = list(n["why"]) + [{"at": local(cut["start"]), "what": f"Trimmed by you: counted from "
+                                            f"{cut['start'].astimezone(self.tz).strftime('%H:%M')} to {cut['end'].astimezone(self.tz).strftime('%H:%M')}"}]
+            info = sleepdata.summary(cut, self.tz)
+            info["night"] = day
+            info["estimate"] = best[day]["estimate"]
+            info["trimmed"] = {"tracked_start": local(n["start"]), "tracked_end": local(n["end"]),
+                               "tracked_phases": sleepdata.summary(n, self.tz)["phases"]}
+            best[day] = {**info, "_rank": best[day]["_rank"]}
         return best
 
     def _sleep_hours(self, conn, t: dict, night: str) -> None:
@@ -2307,6 +2327,45 @@ class Engine:
         with self.db.connect() as conn:
             conn.execute("DELETE FROM sleep_nights WHERE tracker_id = ? AND night = ? AND source IN ('you', 'removed')",
                          (tracker["id"], night))
+            conn.execute("DELETE FROM sleep_trims WHERE tracker_id = ? AND night = ?", (tracker["id"], night))
+            self._sleep_hours(conn, tracker, night)
+        return self.sleep_view(user_id, 30)
+
+    def trim_night(self, user_id: str, night: str, start: str, end: str) -> dict:
+        """Count only part of a tracked night, from start to end: the bit before you fell asleep, or
+        after you got up, left out. The night's phases stay as they were recorded."""
+        tracker = self._sleep_tracker(user_id)
+        try:
+            date.fromisoformat(night)
+            s, e = parse(start), parse(end)
+        except (TypeError, ValueError):
+            raise ValidationError("Choose when counting starts and stops") from None
+        with self.db.connect() as conn:
+            conn.execute("DELETE FROM sleep_trims WHERE tracker_id = ? AND night = ?", (tracker["id"], night))
+            n = self._nights(conn, tracker["id"], night=night).get(night)
+            if not n or n["source"] in ("you", "removed"):
+                raise ValidationError("There's no tracked night to trim. Use Change times instead")
+            first, last = parse(n["start"]), parse(n["end"])
+            if s >= e:
+                raise ValidationError("Counting has to start before it stops")
+            slack = timedelta(minutes=1)  # the times shown are rounded to the minute
+            if s < first - slack or e > last + slack:
+                raise ValidationError(f"Trimming can only shorten the night: choose times between "
+                                      f"{first.astimezone(self.tz).strftime('%H:%M')} and {last.astimezone(self.tz).strftime('%H:%M')}")
+            s, e = max(s, first), min(e, last)
+            if e - s < timedelta(minutes=30):
+                raise ValidationError("Leave at least 30 minutes")
+            if s > first or e < last:
+                conn.execute("INSERT INTO sleep_trims (tracker_id, night, start_at, end_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                             (tracker["id"], night, iso(s), iso(e), iso(self.clock())))
+            self._sleep_hours(conn, tracker, night)
+        return self.sleep_view(user_id, 30)
+
+    def untrim_night(self, user_id: str, night: str) -> dict:
+        """Count the whole tracked night again."""
+        tracker = self._sleep_tracker(user_id)
+        with self.db.connect() as conn:
+            conn.execute("DELETE FROM sleep_trims WHERE tracker_id = ? AND night = ?", (tracker["id"], night))
             self._sleep_hours(conn, tracker, night)
         return self.sleep_view(user_id, 30)
 
