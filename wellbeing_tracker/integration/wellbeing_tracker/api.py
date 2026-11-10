@@ -49,9 +49,10 @@ class WellbeingApi:
     async def overview(self) -> dict:
         return await self._request("GET", "overview")
 
-    async def answer(self, user_id: str, reminder_id: int, answer: str, reason: str | None = None) -> dict:
+    async def answer(self, user_id: str, reminder_id: int, answer: str, reason: str | None = None,
+                     taken_at: str | None = None) -> dict:
         return await self._request("POST", "answer", {"user_id": user_id, "reminder_id": reminder_id,
-                                                       "answer": answer, "reason": reason})
+                                                       "answer": answer, "reason": reason, "taken_at": taken_at})
 
     async def log(self, user_id: str, item: str, value: float) -> dict:
         return await self._request("POST", "log", {"user_id": user_id, "item": item, "value": value})

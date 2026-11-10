@@ -942,7 +942,8 @@ class Engine:
             if old == "off" and new == "on":
                 await self.toggle_turned_on(entity)
 
-    async def answer_reminder(self, rid: int, verb: str, reply: str | None = None, source: str = "notification") -> None:
+    async def answer_reminder(self, rid: int, verb: str, reply: str | None = None, source: str = "notification",
+                              taken_at: datetime | None = None) -> None:
         async with self.lock:
             now = self.clock()
             out = Outbox()
@@ -975,20 +976,24 @@ class Engine:
                     reason = (reply or "").strip()[:200] or None
                     infos = []
                     for d in doses:
-                        infos.append(self._resolve(conn, d, status, now, source, reason, out))
+                        infos.append(self._resolve(conn, d, status, now, source, reason, out,
+                                                   taken_at=taken_at if verb == "TAKEN" else None))
                     conn.execute("UPDATE reminders SET answered_at = ? WHERE id = ?", (iso(now), rid))
                     self._close(conn, r, now, out)
                     if infos:
                         out.add("event", r["user_id"], rid, status, infos)
                         if source == "notification" and self._person_for(conn, r["user_id"])["undo"]:
-                            out.add("notify", r["user_id"], self._undo_payload(rid, status, infos, now))
+                            out.add("notify", r["user_id"], self._undo_payload(rid, status, infos, taken_at or now))
             await self._flush(out)
 
     def _resolve(self, conn, dose, status: str, now: datetime, source: str, reason: str | None,
-                 out: Outbox, entry_id: int | None = None) -> dict:
-        """Mark one dose taken or skipped. Taken doses get a log entry and update linked toggles."""
+                 out: Outbox, entry_id: int | None = None, taken_at: datetime | None = None) -> dict:
+        """Mark one dose taken or skipped. Taken doses get a log entry and update linked toggles.
+        taken_at: when it was really taken, if earlier than now ("Taken at 8:02am"). Doses timed
+        from this one (Dex 7 hours after Vyvanse) count from that time too."""
+        when = taken_at or now
         if status == "taken" and entry_id is None:
-            local = now.astimezone(self.tz)
+            local = when.astimezone(self.tz)
             t = conn.execute("SELECT config FROM trackers WHERE id = ?", (dose["tracker_id"],)).fetchone()
             quantity = dose_quantity(json.loads(t["config"]) if t else {}, dose["quantity"])
             cur = conn.execute(
@@ -1003,14 +1008,14 @@ class Engine:
             entry_id = cur.lastrowid
         conn.execute(
             "UPDATE doses SET status = ?, entry_id = ?, reason = ?, resolved_at = ?, resolved_by = ? WHERE id = ?",
-            (status, entry_id if status == "taken" else None, reason, iso(now), source, dose["id"]),
+            (status, entry_id if status == "taken" else None, reason, iso(when), source, dose["id"]),
         )
         if status == "taken":
             s = self._schedule_for(conn, dose["tracker_id"])
             if s["linked_entity"] and source != "toggle":
                 out.add("toggle", s["linked_entity"], True)
             if s["linked_time_entity"]:
-                out.add("set_time", s["linked_time_entity"], now.astimezone(self.tz))
+                out.add("set_time", s["linked_time_entity"], when.astimezone(self.tz))
         return self._dose_info(conn, dose)
 
     def _undo_payload(self, rid: int, status: str, infos: list[dict], now: datetime) -> dict:
@@ -2493,12 +2498,39 @@ class Engine:
             "wake": self.wake_status(uid),
         }
 
-    async def answer_from_app(self, user_id: str, rid: int, verb: str, reply: str | None) -> None:
+    async def answer_from_app(self, user_id: str, rid: int, verb: str, reply: str | None,
+                              taken_at: str | None = None) -> None:
         with self.db.connect() as conn:
             r = conn.execute("SELECT user_id FROM reminders WHERE id = ?", (rid,)).fetchone()
         if not r or r["user_id"] != user_id:
             raise NotFound("Reminder not found")
-        await self.answer_reminder(rid, verb, reply, source="app")
+        at = self.taken_time(taken_at) if taken_at and verb == "TAKEN" else None
+        await self.answer_reminder(rid, verb, reply, source="app", taken_at=at)
+
+    def taken_time(self, value: str) -> datetime:
+        """'8:02', '08:02:30' or a full date and time -> when it was taken. A clock time later than
+        now means yesterday (taken at 11:50pm, answered after midnight). Never in the future."""
+        now = self.clock()
+        text = str(value).strip()
+        try:
+            if "T" in text or "-" in text:
+                at = datetime.fromisoformat(text)
+                at = at if at.tzinfo else at.replace(tzinfo=self.tz)
+            else:
+                parts = [int(p) for p in text.split(":")]
+                if len(parts) < 2 or not (0 <= parts[0] < 24 and 0 <= parts[1] < 60):
+                    raise ValueError
+                local = now.astimezone(self.tz)
+                at = local.replace(hour=parts[0], minute=parts[1], second=parts[2] if len(parts) > 2 else 0, microsecond=0)
+                if at > now + timedelta(minutes=1):
+                    at -= timedelta(days=1)
+        except (TypeError, ValueError):
+            raise ValidationError("Taken at needs a time like 08:02") from None
+        if at > now + timedelta(minutes=1):
+            raise ValidationError("Taken at can't be in the future")
+        if now - at > timedelta(days=1):
+            raise ValidationError("Taken at must be within the last day")
+        return min(at, now)
 
     # ================= filled in from Home Assistant =================
 

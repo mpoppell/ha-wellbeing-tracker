@@ -44,6 +44,7 @@ ANSWER_SCHEMA = vol.Schema({
     vol.Required("reminder_id"): vol.Coerce(int),
     vol.Required("answer"): cv.string,
     vol.Optional("reason"): cv.string,
+    vol.Optional("taken_at"): cv.string,  # "08:02" or a date and time: when it was really taken
 })
 LOG_SCHEMA = vol.Schema({
     vol.Required("item"): cv.string,
@@ -114,7 +115,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             raise ServiceValidationError("That reminder has already been answered")
         await check_allowed(call, owner["user_id"])
         try:
-            person = await coord.api.answer(owner["user_id"], rid, call.data["answer"], call.data.get("reason"))
+            person = await coord.api.answer(owner["user_id"], rid, call.data["answer"], call.data.get("reason"),
+                                            call.data.get("taken_at"))
         except WellbeingError as err:
             raise HomeAssistantError(str(err)) from err
         coord.update_person(person)

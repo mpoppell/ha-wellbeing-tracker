@@ -1359,3 +1359,50 @@ def test_delivery_status_says_what_happened(env):
     run(engine._notify("u1", {"title": "Test", "message": "x"}))
     s = engine.delivery_status("u1")
     assert s["last"]["result"] == "paused" and s["paused_until"] == "2026-10-15T07:00:00+11:00"
+
+
+# ----- "Taken at" from the dashboard card -----
+
+def test_taken_at_records_when_it_was_really_taken(env):
+    db, ha, clock, engine, med = env
+    v, d = chain_env(env)
+    clock.set("2026-10-14T07:00")
+    run(engine.tick())
+    rid = dose_rows(db, v["id"])[0]["reminder_id"]
+    # ticked off at 9:30, but it was taken at 7:05
+    clock.set("2026-10-14T09:30")
+    run(engine.answer_from_app("u1", rid, "TAKEN", None, "07:05"))
+    run(engine.tick())
+    dose = dose_rows(db, v["id"])[0]
+    assert dose["status"] == "taken"
+    with db.connect() as conn:
+        logged = conn.execute("SELECT logged_at FROM entries WHERE id = ?", (dose["entry_id"],)).fetchone()[0]
+    assert logged.startswith("2026-10-14T07:05")
+    # Dex 7 hours after Vyvanse counts from 7:05, not from 9:30
+    [dex] = dose_rows(db, d["id"])
+    assert dex["local_time"] == "14:05"
+
+
+def test_taken_at_rules(env):
+    db, ha, clock, engine, med = env
+    clock.set("2026-10-14T00:10")
+    # a clock time that hasn't come yet today means last night
+    assert engine.taken_time("23:50").astimezone(SYD).isoformat().startswith("2026-10-13T23:50")
+    assert engine.taken_time("00:05").astimezone(SYD).isoformat().startswith("2026-10-14T00:05")
+    with pytest.raises(ValidationError):
+        engine.taken_time("25:00")
+    with pytest.raises(ValidationError):
+        engine.taken_time("2026-10-14T03:00:00+11:00")  # in the future
+    with pytest.raises(ValidationError):
+        engine.taken_time("2026-10-11T08:00:00+11:00")  # days ago
+
+
+def test_skip_from_the_card_needs_no_reason(env):
+    db, ha, clock, engine, med = env
+    v = med("Vyvanse")
+    schedule(engine, v["id"], times=["07:00"])
+    clock.set("2026-10-14T07:00")
+    run(engine.tick())
+    run(engine.answer_from_app("u1", dose_rows(db, v["id"])[0]["reminder_id"], "SKIP", None))
+    dose = dose_rows(db, v["id"])[0]
+    assert (dose["status"], dose["reason"]) == ("skipped", None)

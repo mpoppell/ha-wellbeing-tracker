@@ -30,6 +30,10 @@
         "reason": {
           "name": "Reason",
           "description": "Why it was skipped (optional)."
+        },
+        "taken_at": {
+          "name": "Taken at",
+          "description": "With taken: when it was really taken, if earlier than now. Today, or yesterday if that time hasn't come yet today."
         }
       }
     },

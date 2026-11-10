@@ -94,9 +94,11 @@ async def test_entities(hass: HomeAssistant, aioclient_mock):
 async def test_answering_and_logging(hass: HomeAssistant, aioclient_mock, hass_admin_user):
     await setup(hass, aioclient_mock)
     aioclient_mock.post(f"{URL}/api/integration/answer", json=person(inbox=[]))
-    await hass.services.async_call(DOMAIN, "answer_reminder", {"reminder_id": 12, "answer": "taken"}, blocking=True)
+    # "Taken at" from the dashboard card: the time goes through to the app
+    await hass.services.async_call(DOMAIN, "answer_reminder",
+                                   {"reminder_id": 12, "answer": "taken", "taken_at": "07:05"}, blocking=True)
     call = aioclient_mock.mock_calls[-1]
-    assert call[2] == {"user_id": "u1", "reminder_id": 12, "answer": "taken", "reason": None}
+    assert call[2] == {"user_id": "u1", "reminder_id": 12, "answer": "taken", "reason": None, "taken_at": "07:05"}
     await hass.async_block_till_done()
     assert hass.states.get("sensor.wellbeing_matthew_poppell_reminders_waiting").state == "0"
 

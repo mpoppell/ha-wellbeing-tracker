@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.30.0
+
+**Taken at, on the dashboard card.**
+
+- Reminders waiting on the Wellbeing dashboard card now offer **Taken at…** in place of Snooze. Pick when you really took it (it starts at the time it was due) and Save. The dose is logged at that time, and anything timed from it counts from then too: Dex 7 hours after Vyvanse follows the real Vyvanse time, not when you ticked it off. Snooze stays on your phone's notification.
+- **Skip** on the card skips straight away, without asking for a reason.
+- The `answer_reminder` action takes an optional `taken_at` time, for automations and other dashboards.
+
 ## 0.29.0
 
 **Back to sleep after the alarm is tracked, and nights use Sleep as Android's own phases.**

@@ -11,7 +11,6 @@ const SECTIONS = {
   mood: "Mood",
 };
 const DEFAULT_SECTIONS = ["waiting", "medications", "supply", "mood"];
-const SKIP_REASONS = ["Felt fine", "Side effects", "Ran out", "Not needed today"];
 
 const STYLE = `
   :host { display: block; }
@@ -45,6 +44,9 @@ const STYLE = `
   button.chip:hover { border-color: var(--primary-color); color: var(--primary-color); }
   .chip.taken { border-style: solid; border-color: transparent; background: var(--secondary-background-color); }
   .chip.due { border-style: solid; border-color: var(--primary-color); color: var(--primary-color); font-weight: 500; }
+  .taken-label { display: inline-flex; align-items: center; gap: 8px; font-size: 0.95em; color: var(--primary-text-color); }
+  .taken-at { font: inherit; min-height: 36px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--divider-color);
+    background: var(--card-background-color); color: var(--primary-text-color); color-scheme: light dark; }
   .chip.skipped, .chip.missed { text-decoration: line-through; color: var(--secondary-text-color); }
   .warn { display: inline-block; font-size: 0.8rem; font-weight: 500; padding: 3px 10px; border-radius: 12px; margin-top: 4px;
     background: rgba(var(--rgb-warning-color, 255, 166, 0), 0.18); color: var(--primary-text-color); }
@@ -172,7 +174,7 @@ class WellbeingCard extends HTMLElement {
 
   setConfig(config) {
     this._config = normalise(config);
-    this._skipFor = null;
+    this._takenAtFor = null; // the reminder whose "Taken at" time is being chosen
     this._render(true);
   }
 
@@ -240,16 +242,43 @@ class WellbeingCard extends HTMLElement {
     if (!items.length) return null;
     return h("section", {}, h("div", { class: "label" }, SECTIONS.waiting),
       items.map((item) => {
-        const skipping = this._skipFor === item.id;
-        const buttons = skipping
-          ? [...SKIP_REASONS.map((r) => h("button", { class: "b", onclick: (ev) => { this._skipFor = null; this._call("answer_reminder", { reminder_id: item.id, answer: "SKIP", reason: r }, ev.currentTarget); } }, r)),
-             h("button", { class: "b", onclick: (ev) => { this._skipFor = null; this._call("answer_reminder", { reminder_id: item.id, answer: "SKIP" }, ev.currentTarget); } }, "No reason"),
-             h("button", { class: "b", onclick: () => { this._skipFor = null; this._render(); } }, "Back")]
-          : item.actions.map((act, i) => h("button", { class: i === 0 ? "b primary" : "b",
-              onclick: (ev) => {
-                if (act.reason) { this._skipFor = item.id; this._render(); return; }
-                this._call("answer_reminder", { reminder_id: item.id, answer: act.verb }, ev.currentTarget);
-              } }, act.label));
+        const answer = (data, el) => this._call("answer_reminder", { reminder_id: item.id, ...data }, el);
+        const isDose = item.kind === "dose" || item.kind === "last_call";
+        let buttons;
+        if (this._takenAtFor === item.id) {
+          // When was it really taken? Starts at the time it was due.
+          const now = new Date();
+          const fallback = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+          const time = h("input", { type: "time", class: "taken-at", value: this._takenAtValue || item.since || fallback,
+            "aria-label": "Taken at", oninput: (ev) => { this._takenAtValue = ev.currentTarget.value; } });
+          buttons = [
+            h("label", { class: "taken-label" }, "Taken at", time),
+            h("button", { class: "b primary", onclick: (ev) => {
+              if (!time.value) { time.focus(); return; }
+              this._takenAtFor = null;
+              this._takenAtValue = null;
+              answer({ answer: "TAKEN", taken_at: time.value }, ev.currentTarget);
+            } }, "Save"),
+            h("button", { class: "b", onclick: () => { this._takenAtFor = null; this._takenAtValue = null; this._render(); } }, "Back")];
+        } else {
+          buttons = [];
+          for (const [i, act] of item.actions.entries()) {
+            if (act.verb === "SNOOZE" && isDose) {
+              // the dashboard offers "Taken at" instead of snooze: the usual case is having
+              // taken it on time and only now ticking it off
+              buttons.push(h("button", { class: "b", onclick: () => {
+                this._takenAtFor = item.id; this._takenAtValue = null; this._render();
+                const input = this.shadowRoot && this.shadowRoot.querySelector(".taken-at");
+                if (input) input.focus();
+              } }, "Taken at\u2026"));
+              continue;
+            }
+            buttons.push(h("button", { class: i === 0 ? "b primary" : "b", onclick: (ev) => {
+              // Skip just skips: no questions
+              answer({ answer: act.verb }, ev.currentTarget);
+            } }, act.label));
+          }
+        }
         return h("div", { class: "item" },
           h("div", { class: "item-title" }, item.title),
           item.message ? h("div", { class: "item-msg" }, item.message) : null,

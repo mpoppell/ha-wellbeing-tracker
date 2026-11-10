@@ -212,7 +212,7 @@ Both cards are added to your dashboard resources (**Settings → Dashboards → 
 
 **Dashboard card**: edit a dashboard, add a card and choose **Wellbeing** (or use `type: custom:wellbeing-card`). It shows:
 
-- reminders waiting, with the same buttons as your phone
+- reminders waiting, with **Taken**, **Taken at…** and **Skip**. Taken at is for a dose you took earlier and are only ticking off now: pick the time (it starts at when it was due) and Save. Anything timed from it, like Dex 7 hours after Vyvanse, counts from that time. Skip skips straight away, without asking why. Snooze stays on your phone's notification.
 - today's medications (tap a dose that's due to log it)
 - supply warnings and when to see your doctor
 - today's mood
@@ -313,6 +313,7 @@ action: wellbeing_tracker.answer_reminder
 data:
   reminder_id: 12        # from the Reminders waiting sensor
   answer: taken          # taken, snooze or skip
+  taken_at: "07:05"      # optional, with taken: when it was really taken (a time later than now means yesterday)
 ```
 
 ```yaml

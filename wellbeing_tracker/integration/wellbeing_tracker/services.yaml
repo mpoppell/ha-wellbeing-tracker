@@ -22,6 +22,10 @@ answer_reminder:
       example: Felt fine
       selector:
         text:
+    taken_at:
+      example: "08:02"
+      selector:
+        time:
 
 log_dose:
   fields:

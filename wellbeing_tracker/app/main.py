@@ -166,7 +166,7 @@ def create_app(settings: Settings, background: bool = False) -> FastAPI:
             rid = int(payload.get("reminder_id"))
         except (TypeError, ValueError):
             raise ValidationError("reminder_id must be a number") from None
-        await engine.answer_from_app(user["id"], rid, verb, payload.get("reason"))
+        await engine.answer_from_app(user["id"], rid, verb, payload.get("reason"), payload.get("taken_at"))
         await engine.tick()
         return engine.person_overview(user)
 
