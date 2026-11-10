@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.31.0
+
+**Edit a night's stages by dragging the edges between them.**
+
+- **Edit stages** on a tracked night: drag the line between two stages, or focus it and use the arrow keys (Shift for five minutes). Only the two stages either side of it change; a line stops at the next one, so there's never more than one stage at a time and the rest keep their times. A stage squeezed to nothing is removed, and same-stage neighbours join.
+- Edits are kept apart from the night, so Home Assistant can still update the rest of it, and they work together with a trim. **Use recorded stages** undoes them. Sleep hours follow.
+
 ## 0.30.0
 
 **Taken at, on the dashboard card.**

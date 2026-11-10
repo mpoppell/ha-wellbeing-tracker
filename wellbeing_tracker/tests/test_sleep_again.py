@@ -305,3 +305,90 @@ def test_trim_through_the_api(matt):
     assert matt.put("/api/sleep/nights/2026-11-09/trim", json={"start": "2026-11-09T05:00:00+11:00",
                                                                "end": "2026-11-09T08:00:00+11:00"}).status_code == 422
     assert matt.delete("/api/sleep/nights/2026-11-09/trim").status_code == 200
+
+
+# ----- editing stages -----
+
+def stages(n):
+    return [(p["start"][11:16], p["end"][11:16], p["phase"]) for p in n["phases"]]
+
+
+def as_payload(rows, day="2026-11-09"):
+    return [{"start": f"{day}T{a}:00+11:00", "end": f"{day}T{b}:00+11:00", "phase": p} for a, b, p in rows]
+
+
+def test_moving_an_edge_changes_only_the_two_stages_either_side(tmp_path):
+    db, engine = trim_env(tmp_path)
+    [n] = engine.sleep_view("u1")["nights"]
+    before = stages(n)
+    assert before[1:3] == [("05:20", "06:10", "light"), ("06:10", "07:00", "deep")]
+    edited = [list(x) for x in before]
+    edited[1][1] = edited[2][0] = "06:25"  # light ran on until 6:25
+    [after] = engine.edit_stages("u1", "2026-11-09", as_payload(edited))["nights"]
+    assert stages(after) == [tuple(x) for x in edited]
+    assert after["edited"] is True and any("edited by you" in w["what"] for w in after["why"])
+    assert after["totals"]["deep"] == n["totals"]["deep"] - 15 and after["totals"]["light"] == n["totals"]["light"] + 15
+    assert hours(db) == round(after["asleep"] / 60, 2)
+
+
+def test_a_stage_squeezed_to_nothing_goes_and_its_neighbours_join(tmp_path):
+    db, engine = trim_env(tmp_path)
+    [n] = engine.sleep_view("u1")["nights"]
+    rows = [list(x) for x in stages(n)]
+    i = next(k for k, r in enumerate(rows) if r[2] == "awake" and r[0] == "07:30")  # 7:30-7:40 awake, light either side? rem before
+    rows[i][1] = rows[i][0]  # squeezed to nothing
+    rows[i + 1][0] = rows[i][0]
+    [after] = engine.edit_stages("u1", "2026-11-09", as_payload(rows))["nights"]
+    assert ("07:30", "07:40", "awake") not in stages(after)
+    assert ("07:30", "08:19", "light") in stages(after)
+
+
+def test_stages_must_follow_one_another(tmp_path):
+    import pytest
+    from app.trackers import ValidationError
+    db, engine = trim_env(tmp_path)
+    [n] = engine.sleep_view("u1")["nights"]
+    rows = [list(x) for x in stages(n)]
+    gap = [r[:] for r in rows]
+    gap[2][0] = "06:20"  # a gap 6:10-6:20
+    with pytest.raises(ValidationError, match="no gaps or overlaps"):
+        engine.edit_stages("u1", "2026-11-09", as_payload(gap))
+    over = [r[:] for r in rows]
+    over[1][1] = "06:30"  # light runs into deep
+    with pytest.raises(ValidationError, match="no gaps or overlaps"):
+        engine.edit_stages("u1", "2026-11-09", as_payload(over))
+    short = rows[:-1]
+    with pytest.raises(ValidationError, match="whole night"):
+        engine.edit_stages("u1", "2026-11-09", as_payload(short))
+    bad = [r[:] for r in rows]
+    bad[0][2] = "dreaming"
+    with pytest.raises(ValidationError, match="one of"):
+        engine.edit_stages("u1", "2026-11-09", as_payload(bad))
+
+
+def test_edits_and_a_trim_together_survive_updates_and_undo(tmp_path):
+    db, engine = trim_env(tmp_path)
+    [n] = engine.trim_night("u1", "2026-11-09", local("2026-11-09T05:20").isoformat(), local("2026-11-09T09:48").isoformat())["nights"]
+    rows = [list(x) for x in stages(n)]
+    rows[0][1] = rows[1][0] = "05:40"  # light until 5:40, deep from then
+    [edited] = engine.edit_stages("u1", "2026-11-09", as_payload(rows))["nights"]
+    assert stages(edited)[0] == ("05:20", "05:40", "light") and edited["trimmed"]
+    asyncio.run(engine.sync_nights())  # Home Assistant updating the night keeps both
+    [kept] = engine.sleep_view("u1")["nights"]
+    assert stages(kept) == stages(edited)
+    # without the trim, your edits stay and the rest is as recorded
+    [whole] = engine.untrim_night("u1", "2026-11-09")["nights"]
+    assert stages(whole)[:3] == [("04:58", "05:20", "awake"), ("05:20", "05:40", "light"), ("05:40", "07:00", "deep")]
+    assert stages(whole)[-1] == ("09:48", "09:59", "awake")
+    [recorded] = engine.unedit_stages("u1", "2026-11-09")["nights"]
+    assert stages(recorded)[1:3] == [("05:20", "06:10", "light"), ("06:10", "07:00", "deep")]
+    whole_rows = [list(x) for x in stages(recorded)]
+    whole_rows[1][1] = whole_rows[2][0] = "05:40"
+    assert engine.edit_stages("u1", "2026-11-09", as_payload(whole_rows))["nights"][0]["edited"]
+    [reset] = engine.reset_night("u1", "2026-11-09")["nights"]
+    assert "edited" not in reset and stages(reset) == stages(recorded)
+
+
+def test_edit_stages_through_the_api(matt):
+    assert matt.put("/api/sleep/nights/2026-11-09/stages", json={"phases": []}).status_code == 422
+    assert matt.delete("/api/sleep/nights/2026-11-09/stages").status_code == 200

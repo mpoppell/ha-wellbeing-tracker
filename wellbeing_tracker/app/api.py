@@ -197,6 +197,14 @@ def build_router(current_user) -> APIRouter:
     def untrim_night(night: str, user: dict = Depends(current_user), e=Depends(engine)) -> dict:
         return e.untrim_night(user["id"], _day(night))
 
+    @router.put("/sleep/nights/{night}/stages")
+    def edit_stages(night: str, payload: dict = Body(...), user: dict = Depends(current_user), e=Depends(engine)) -> dict:
+        return e.edit_stages(user["id"], _day(night), payload.get("phases"))
+
+    @router.delete("/sleep/nights/{night}/stages")
+    def unedit_stages(night: str, user: dict = Depends(current_user), e=Depends(engine)) -> dict:
+        return e.unedit_stages(user["id"], _day(night))
+
     @router.post("/sleep/import")
     async def sleep_import(user: dict = Depends(current_user), e=Depends(engine)) -> dict:
         """Fetch everything Home Assistant still has (about ten days)."""
